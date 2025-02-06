@@ -97,7 +97,7 @@ PRESET_DATASETS = {
     },
     "other": {
         "foursquare_places": {
-            "url": "hf://datasets/foursquare/fsq-os-places/release/dt=2025-01-10/places/parquet/*.parquet",
+            "url": "hf://datasets/foursquare/fsq-os-places/release/dt=2025-02-06/places/parquet/*.parquet",
             "info_url": "https://docs.foursquare.com/data-products/docs/places-overview",
             "needs_validation": False,
             "display_name": "Foursquare Places"
