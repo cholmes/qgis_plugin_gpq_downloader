@@ -2,7 +2,7 @@ from qgis.PyQt.QtWidgets import (
     QAction, QFileDialog, QMessageBox, QDialog, 
     QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
     QPushButton, QComboBox, QProgressDialog, 
-    QRadioButton, QStackedWidget, QWidget
+    QRadioButton, QStackedWidget, QWidget, QCheckBox
 )
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtCore import pyqtSignal, QObject, Qt, QThread
@@ -161,150 +161,163 @@ class Worker(QObject):
         return None
 
     def run(self):
-        self.progress.emit("Connecting to database...")
-        source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
-        bbox = transform_bbox_to_4326(self.extent, source_crs)
-
-        conn = duckdb.connect()
         try:
-            # Install and load the spatial extension
-            self.progress.emit("Loading spatial extension...")
+            self.progress.emit("Connecting to database...")
+            source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+            bbox = transform_bbox_to_4326(self.extent, source_crs)
 
-            if self.output_file.lower().endswith('.duckdb'):
-                conn = duckdb.connect(self.output_file)  # Connect directly to output file
-            else:
-                conn = duckdb.connect() 
+            conn = duckdb.connect()
+            try:
+                # Install and load the spatial extension
+                self.progress.emit("Loading spatial extension...")
 
-            conn.execute("INSTALL httpfs;")
-            conn.execute("INSTALL spatial;")
-            conn.execute("LOAD httpfs;")
-            conn.execute("LOAD spatial;")
-
-            # Get schema early as we need it for both column names and bbox check
-            schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
-            schema_result = conn.execute(schema_query).fetchall()
-            self.validation_results['schema'] = schema_result
-
-            table_name = "download_data" # TODO: Better name, in line with user selected name
-
-            self.progress.emit("Preparing query...")
-            select_query = "SELECT *"
-            if not self.output_file.endswith(".parquet"):
-                # Construct the SELECT clause with array conversion to strings
-                columns = []
-                for row in schema_result:
-                    col_name = row[0]
-                    col_type = row[1]
-                    
-                    # Quote the column name to handle special characters
-                    quoted_col_name = f'"{col_name}"'
-                    
-                    if 'STRUCT' in col_type.upper() or 'MAP' in col_type.upper():
-                        columns.append(f"TO_JSON({quoted_col_name}) AS {quoted_col_name}")
-                    elif '[]' in col_type:  # Check for array types like VARCHAR[]
-                        columns.append(f"array_to_string({quoted_col_name}, ', ') AS {quoted_col_name}")
-                    elif col_type.upper() == 'UTINYINT':
-                        columns.append(f"CAST({quoted_col_name} AS INTEGER) AS {quoted_col_name}")
-                    else:
-                        columns.append(quoted_col_name)
-
-                # When we support more than overture just select the primary name when it's o
-                if 'overture' in self.dataset_url:
-                    select_query = f'SELECT "names"."primary" as name,{", ".join(columns)}'
+                if self.output_file.lower().endswith('.duckdb'):
+                    conn = duckdb.connect(self.output_file)  # Connect directly to output file
                 else:
-                    select_query = f'SELECT {", ".join(columns)}'
+                    conn = duckdb.connect() 
 
-            # Construct WHERE clause based on bbox information
-            bbox_column = self.validation_results.get('bbox_column')
-            if bbox_column:
-                # Use the validated bbox column (either 'bbox' or from metadata)
-                where_clause = f"""
-                WHERE "{bbox_column}".xmin BETWEEN {bbox.xMinimum()} AND {bbox.xMaximum()}
-                AND "{bbox_column}".ymin BETWEEN {bbox.yMinimum()} AND {bbox.yMaximum()}
-                """
-            else:
-                # Fall back to ST_Intersects if no bbox column found
-                where_clause = f"""
-                WHERE ST_Intersects(
-                    geometry,
-                    ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
+                conn.execute("INSTALL httpfs;")
+                conn.execute("INSTALL spatial;")
+                conn.execute("LOAD httpfs;")
+                conn.execute("LOAD spatial;")
+
+                # Get schema early as we need it for both column names and bbox check
+                schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
+                schema_result = conn.execute(schema_query).fetchall()
+                self.validation_results['schema'] = schema_result
+
+                table_name = "download_data"
+
+                self.progress.emit("Preparing query...")
+                select_query = "SELECT *"
+                if not self.output_file.endswith(".parquet"):
+                    # Construct the SELECT clause with array conversion to strings
+                    columns = []
+                    for row in schema_result:
+                        col_name = row[0]
+                        col_type = row[1]
+                        
+                        # Quote the column name to handle special characters
+                        quoted_col_name = f'"{col_name}"'
+                        
+                        if 'STRUCT' in col_type.upper() or 'MAP' in col_type.upper():
+                            columns.append(f"TO_JSON({quoted_col_name}) AS {quoted_col_name}")
+                        elif '[]' in col_type:  # Check for array types like VARCHAR[]
+                            columns.append(f"array_to_string({quoted_col_name}, ', ') AS {quoted_col_name}")
+                        elif col_type.upper() == 'UTINYINT':
+                            columns.append(f"CAST({quoted_col_name} AS INTEGER) AS {quoted_col_name}")
+                        else:
+                            columns.append(quoted_col_name)
+
+                    # Check if this is Overture data and has a names column
+                    has_names_column = any('names' in row[0] for row in schema_result)
+                    if 'overture' in self.dataset_url and has_names_column:
+                        select_query = f'SELECT "names"."primary" as name,{", ".join(columns)}'
+                    else:
+                        select_query = f'SELECT {", ".join(columns)}'
+
+                # Construct WHERE clause based on bbox information
+                bbox_column = self.validation_results.get('bbox_column')
+                if bbox_column:
+                    # Use the validated bbox column (either 'bbox' or from metadata)
+                    where_clause = f"""
+                    WHERE "{bbox_column}".xmin BETWEEN {bbox.xMinimum()} AND {bbox.xMaximum()}
+                    AND "{bbox_column}".ymin BETWEEN {bbox.yMinimum()} AND {bbox.yMaximum()}
+                    """
+                else:
+                    # Fall back to ST_Intersects if no bbox column found
+                    where_clause = f"""
+                    WHERE ST_Intersects(
+                        geometry,
+                        ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
                                             {bbox.xMaximum()} {bbox.yMinimum()},
                                             {bbox.xMaximum()} {bbox.yMaximum()},
                                             {bbox.xMinimum()} {bbox.yMaximum()},
                                             {bbox.xMinimum()} {bbox.yMinimum()}))')
-                )
+                    )
+                    """
+
+                # Base query
+                base_query = f"""
+                CREATE TABLE {table_name} AS (
+                    {select_query} FROM read_parquet('{self.dataset_url}')
+                    {where_clause}
+                ) 
                 """
-
-            # Base query
-            base_query = f"""
-            CREATE TABLE {table_name} AS (
-                {select_query} FROM read_parquet('{self.dataset_url}')
-                {where_clause}
-            ) 
-            """
-            self.progress.emit("Downloading data...")
-            print("Executing SQL query:")
-            print(base_query)
-            conn.execute(base_query)
-            
-            # Add check for empty results
-            row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-            if row_count == 0:
-                self.error.emit("No data found in the requested area. Check that your map extent overlaps with the data and/or expand your map extent.")
-                return
-
-            self.progress.emit("Processing data to requested format...")
-
-            file_extension = self.output_file.lower().split('.')[-1]
-
-            if file_extension == 'duckdb':
-                # Commit the transaction to ensure the data is saved
-                conn.commit()
-                if not self.killed:
-                    self.info.emit(
-                        "Data has been successfully saved to DuckDB database.\n\n"
-                        "Note: QGIS does not currently support loading DuckDB files directly."
-                    )
-            else:
-                copy_query = f"COPY {table_name} TO '{self.output_file}'"
-
-                if file_extension == "parquet":
-                    format_options = "(FORMAT 'parquet', COMPRESSION 'ZSTD');"
-                elif self.output_file.endswith(".gpkg"):
-                    format_options = "(FORMAT GDAL, DRIVER 'GPKG');"
-                elif self.output_file.endswith(".fgb"):
-                    format_options = "(FORMAT GDAL, DRIVER 'FlatGeobuf', SRS 'EPSG:4326');"
-                else:
-                    self.error.emit("Unsupported file format.")
-                
+                self.progress.emit("Downloading data...")
                 print("Executing SQL query:")
-                print(copy_query + format_options)
-                conn.execute(copy_query + format_options)
+                print(base_query)
+                conn.execute(base_query)
+                
+                # Add check for empty results
+                row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+                if row_count == 0:
+                    self.info.emit("No data found in the requested area. Check that your map extent overlaps with the data and/or expand your map extent. Skipping to next dataset if available.")
+                    self.finished.emit()
+                    return
 
-            
-            if self.killed:
-                return
+                self.progress.emit("Processing data to requested format...")
 
-            if not self.killed:
-                if self.output_file.lower().endswith('.duckdb'):
-                    self.info.emit(
-                        "Data has been successfully saved to DuckDB database.\n\n"
-                        "Note: QGIS does not currently support loading DuckDB files directly."
-                    )
+                file_extension = self.output_file.lower().split('.')[-1]
+
+                if file_extension == 'duckdb':
+                    # Commit the transaction to ensure the data is saved
+                    conn.commit()
+                    if not self.killed:
+                        self.info.emit(
+                            "Data has been successfully saved to DuckDB database.\n\n"
+                            "Note: QGIS does not currently support loading DuckDB files directly."
+                        )
                 else:
-                    self.load_layer.emit(self.output_file)
-                self.finished.emit()
+                    copy_query = f"COPY {table_name} TO '{self.output_file}'"
+
+                    if file_extension == "parquet":
+                        format_options = "(FORMAT 'parquet', COMPRESSION 'ZSTD');"
+                    elif self.output_file.endswith(".gpkg"):
+                        format_options = "(FORMAT GDAL, DRIVER 'GPKG');"
+                    elif self.output_file.endswith(".fgb"):
+                        format_options = "(FORMAT GDAL, DRIVER 'FlatGeobuf', SRS 'EPSG:4326');"
+                    else:
+                        self.error.emit("Unsupported file format.")
+                    
+                    print("Executing SQL query:")
+                    print(copy_query + format_options)
+                    conn.execute(copy_query + format_options)
+
+                
+                if self.killed:
+                    return
+
+                if not self.killed:
+                    if self.output_file.lower().endswith('.duckdb'):
+                        self.info.emit(
+                            "Data has been successfully saved to DuckDB database.\n\n"
+                            "Note: QGIS does not currently support loading DuckDB files directly."
+                        )
+                    else:
+                        self.load_layer.emit(self.output_file)
+                    self.finished.emit()
+
+            except Exception as e:
+                if not self.killed:
+                    # Change error to info if it's a "no data" error
+                    error_str = str(e)
+                    if "No data found" in error_str:
+                        self.info.emit(f"No data found in the requested area for {self.dataset_url}. Skipping to next dataset if available.")
+                        self.finished.emit()
+                    else:
+                        self.error.emit(error_str)
+            finally:
+                if not self.output_file.lower().endswith('.duckdb'): # Clean up temporary table
+                    try:
+                        conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+                    except:
+                        pass
+                conn.close()
 
         except Exception as e:
             if not self.killed:
                 self.error.emit(str(e))
-        finally:
-            if not self.output_file.lower().endswith('.duckdb'): # Clean up temporary table
-                try:
-                    conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-                except:
-                    pass
-            conn.close()
 
     def kill(self):
         self.killed = True
@@ -374,13 +387,14 @@ class ValidationWorker(QObject):
             conn.execute("INSTALL httpfs;")
             conn.execute("LOAD httpfs;")
             
-            if not self.needs_validation():
-                self.finished.emit(True, "Validation successful", {'has_bbox': True, 'bbox_column': 'bbox'})
-                return
-            
             self.progress.emit("Checking data format...")
-            schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
-            schema_result = conn.execute(schema_query).fetchall()
+            try:
+                # Try to read the schema to verify it's a valid parquet file
+                schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
+                schema_result = conn.execute(schema_query).fetchall()
+            except Exception as e:
+                self.finished.emit(False, "Could not read the parquet file. Please check the URL and try again.", {})
+                return
             
             # Store schema and check for BBOX
             validation_results = {
@@ -404,6 +418,30 @@ class ValidationWorker(QObject):
                 # Emit signal for main thread to show warning
                 self.needs_bbox_warning.emit()
                 return
+
+            # Try to verify data exists in the area
+            self.progress.emit("Checking for data in the area...")
+            try:
+                where_clause = ""
+                if validation_results['bbox_column']:
+                    bbox = transform_bbox_to_4326(self.extent, self.iface.mapCanvas().mapSettings().destinationCrs())
+                    where_clause = f"""
+                    WHERE "{validation_results['bbox_column']}".xmin BETWEEN {bbox.xMinimum()} AND {bbox.xMaximum()}
+                    AND "{validation_results['bbox_column']}".ymin BETWEEN {bbox.yMinimum()} AND {bbox.yMaximum()}
+                    """
+                
+                test_query = f"""
+                SELECT COUNT(*) FROM read_parquet('{self.dataset_url}')
+                {where_clause}
+                LIMIT 1
+                """
+                result = conn.execute(test_query).fetchone()
+                if result[0] == 0:
+                    self.finished.emit(False, "No data found in the requested area. Check that your map extent overlaps with the data and/or expand your map extent.", {})
+                    return
+            except Exception as e:
+                # If the query fails, continue anyway as the file might be valid but structured differently
+                pass
 
             self.finished.emit(True, "Validation successful", validation_results)
 
@@ -474,39 +512,7 @@ class DataSourceDialog(QDialog):
         custom_page.setLayout(custom_layout)
         
         # Overture Maps page
-        overture_page = QWidget()
-        overture_layout = QVBoxLayout()
-        self.overture_combo = QComboBox()
-        self.overture_combo.addItems([
-            dataset.get('display_name', key.title()) 
-            for key, dataset in PRESET_DATASETS['overture'].items()
-        ])
-        overture_layout.addWidget(self.overture_combo)
-        
-        # Add base subtype combo
-        self.base_subtype_widget = QWidget()
-        base_subtype_layout = QVBoxLayout()
-        base_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Add left margin for indentation
-        self.base_subtype_label = QLabel("Base Layer Type:")
-        self.base_subtype_combo = QComboBox()
-        self.base_subtype_combo.addItems([
-            "infrastructure",
-            "land",
-            "land_cover",
-            "land_use",
-            "water",
-            "bathymetry"
-        ])
-        base_subtype_layout.addWidget(self.base_subtype_label)
-        base_subtype_layout.addWidget(self.base_subtype_combo)
-        self.base_subtype_widget.setLayout(base_subtype_layout)
-        self.base_subtype_widget.hide()  # Initially hidden
-        
-        overture_layout.addWidget(self.base_subtype_widget)
-        overture_page.setLayout(overture_layout)
-        
-        # Connect the overture combo change signal
-        self.overture_combo.currentTextChanged.connect(self.handle_overture_selection)
+        self.setup_overture_page()
         
         # Source Cooperative page
         sourcecoop_page = QWidget()
@@ -553,7 +559,7 @@ class DataSourceDialog(QDialog):
         
         # Add pages to stack
         self.stack.addWidget(custom_page)
-        self.stack.addWidget(overture_page)
+        self.stack.addWidget(self.setup_overture_page())
         self.stack.addWidget(sourcecoop_page)
         self.stack.addWidget(other_page)
         
@@ -583,122 +589,183 @@ class DataSourceDialog(QDialog):
         # Add after setting up the sourcecoop_combo
         self.update_sourcecoop_link(self.sourcecoop_combo.currentText())
         
-    def handle_overture_selection(self, text):
-        """Show/hide base subtype combo based on selection"""
-        self.base_subtype_widget.setVisible(text == "Base")
+    def setup_overture_page(self):
+        overture_page = QWidget()
+        overture_layout = QVBoxLayout()
+        
+        # Create horizontal layout for main checkboxes
+        checkbox_layout = QHBoxLayout()
+        
+        # Create a widget to hold checkboxes
+        self.overture_checkboxes = {}
+        for key in PRESET_DATASETS['overture'].keys():
+            if key != 'base':  # Handle base separately
+                checkbox = QCheckBox(key.title())
+                self.overture_checkboxes[key] = checkbox
+                checkbox_layout.addWidget(checkbox)
+        
+        # Add the horizontal checkbox layout to main layout
+        overture_layout.addLayout(checkbox_layout)
+        
+        # Add base layer section
+        base_group = QWidget()
+        base_layout = QVBoxLayout()
+        base_layout.setContentsMargins(0, 10, 0, 0)  # Add some top margin
+        
+        self.base_checkbox = QCheckBox("Base")
+        self.overture_checkboxes['base'] = self.base_checkbox
+        base_layout.addWidget(self.base_checkbox)
+        
+        # Add base subtype checkboxes
+        self.base_subtype_widget = QWidget()
+        base_subtype_layout = QHBoxLayout()  # Horizontal layout for subtypes
+        base_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Add left margin for indentation
+        
+        # Replace combo box with checkboxes
+        self.base_subtype_checkboxes = {}
+        # Dictionary to map internal names to display names
+        subtype_display_names = {
+            'infrastructure': 'Infrastructure',
+            'land': 'Land',
+            'land_cover': 'Land Cover',
+            'land_use': 'Land Use',
+            'water': 'Water',
+            'bathymetry': 'Bathymetry'
+        }
+        
+        for subtype in PRESET_DATASETS['overture']['base']['subtypes']:
+            # Use the display name for the checkbox text
+            checkbox = QCheckBox(subtype_display_names[subtype])
+            self.base_subtype_checkboxes[subtype] = checkbox
+            base_subtype_layout.addWidget(checkbox)
+        
+        self.base_subtype_widget.setLayout(base_subtype_layout)
+        self.base_subtype_widget.hide()
+        
+        base_layout.addWidget(self.base_subtype_widget)
+        base_group.setLayout(base_layout)
+        overture_layout.addWidget(base_group)
+        
+        # Connect base checkbox to show/hide subtype checkboxes and resize dialog
+        self.base_checkbox.toggled.connect(self.base_subtype_widget.setVisible)
+        self.base_checkbox.toggled.connect(self.adjust_dialog_size)
+        
+        overture_page.setLayout(overture_layout)
+        return overture_page
+
+    def adjust_dialog_size(self, checked):
+        """Adjust dialog size when base checkbox is toggled"""
+        if checked:
+            # Get current size
+            current_size = self.size()
+            # Add height for the base subtypes (adjust the 50 value if needed)
+            self.resize(current_size.width() + 100, current_size.height())
+        else:
+            # Restore original size
+            current_size = self.size()
+
+            self.resize(current_size.width() - 100, current_size.height())
+
 
     def validate_and_accept(self):
         """Validate the input and accept the dialog if valid"""
-        url = self.get_url()
-        if not url:
-            QMessageBox.warning(self, "Validation Error", "Please enter a URL or select a dataset")
+        urls = self.get_urls()
+        if not urls:
+            QMessageBox.warning(self, "Validation Error", "Please select at least one dataset")
             return
         
-        # For custom URLs, do some basic validation
+        # For Overture datasets, we know they're valid so we can skip validation
+        if self.overture_radio.isChecked():
+            self.selected_urls = urls
+            self.accept()
+            return
+        
+        # For custom URLs, do validation
         if self.custom_radio.isChecked():
-            if not (url.startswith('http://') or url.startswith('https://') or 
-                   url.startswith('s3://') or url.startswith('file://') or url.startswith('hf://')):
-                QMessageBox.warning(self, "Validation Error", 
-                    "URL must start with http://, https://, s3://, hf://,or file://")
+            for url in urls:
+                if not (url.startswith('http://') or url.startswith('https://') or 
+                       url.startswith('s3://') or url.startswith('file://') or url.startswith('hf://')):
+                    QMessageBox.warning(self, "Validation Error", 
+                        "URL must start with http://, https://, s3://, hf://, or file://")
+                    return
+            
+                # Create progress dialog for validation
+                progress_dialog = QProgressDialog("Validating URL...", "Cancel", 0, 0, self)
+                progress_dialog.setWindowModality(Qt.WindowModal)
+                
+                # Create validation worker
+                self.validation_worker = ValidationWorker(url, self.iface, self.iface.mapCanvas().extent())
+                self.validation_thread = QThread()
+                self.validation_worker.moveToThread(self.validation_thread)
+                
+                # Connect signals
+                self.validation_thread.started.connect(self.validation_worker.run)
+                self.validation_worker.progress.connect(progress_dialog.setLabelText)
+                self.validation_worker.finished.connect(
+                    lambda success, message, results: self.handle_validation_result(
+                        success, message, results, progress_dialog, urls
+                    )
+                )
+                self.validation_worker.needs_bbox_warning.connect(self.show_bbox_warning)
+                
+                # Start validation
+                self.validation_thread.start()
+                progress_dialog.exec_()
                 return
-
-        # Set requires_validation based on the selected dataset
-        self.requires_validation = True
-        if self.overture_radio.isChecked() or \
-           (self.sourcecoop_radio.isChecked()):
-            self.requires_validation = False
-
-        # Create progress dialog
-        self.progress_dialog = QProgressDialog("Starting validation...", "Cancel", 0, 0, self)
-        self.progress_dialog.setWindowTitle("Validating Data Source")
-        self.progress_dialog.setWindowModality(Qt.WindowModal)
-        self.progress_dialog.setMinimumDuration(0)
         
-        # Get the current canvas extent
-        extent = self.iface.mapCanvas().extent()
-        
-        # Setup validation worker
-        self.validation_worker = ValidationWorker(url, self.iface, extent)
-        self.validation_thread = QThread()
-        self.validation_worker.moveToThread(self.validation_thread)
-        
-        # Connect signals
-        self.validation_thread.started.connect(self.validation_worker.run)
-        self.validation_worker.progress.connect(self.update_progress)
-        self.validation_worker.needs_bbox_warning.connect(self.show_bbox_warning)
-        self.validation_worker.finished.connect(self.handle_validation_result)
-        self.validation_worker.finished.connect(lambda: self.cleanup_validation(True))
-        self.progress_dialog.canceled.connect(lambda: self.cleanup_validation(False))
-        
-        # Start validation
-        self.validation_thread.start()
-        self.progress_dialog.show()
+        # For other preset sources, we can skip validation
+        self.selected_urls = urls
+        self.accept()
 
-    def update_progress(self, message):
-        if hasattr(self, 'progress_dialog') and self.progress_dialog:
-            self.progress_dialog.setLabelText(message)
-
-    def handle_validation_result(self, success, message, validation_results):
-        """Handle validation result in the dialog"""
+    def handle_validation_result(self, success, message, results, progress_dialog, urls):
+        """Handle the validation result"""
+        progress_dialog.close()
+        self.validation_thread.quit()
+        self.validation_thread.wait()
+        
         if success:
-            self.validation_complete.emit(True, message, validation_results)
+            self.selected_urls = urls
             self.accept()
         else:
-            QMessageBox.warning(self, "Validation Error", message)
-            self.validation_complete.emit(False, message, validation_results)
+            QMessageBox.warning(self, "Validation Error", 
+                "Could not validate the URL. Please check that the URL points to a valid GeoParquet file and try again.")
 
-    def cleanup_validation(self, success):
-        if self.validation_worker:
-            self.validation_worker.deleteLater()
-            self.validation_worker = None
-            
-        if self.validation_thread:
-            self.validation_thread.quit()
-            self.validation_thread.wait()
-            self.validation_thread.deleteLater()
-            self.validation_thread = None
-
-        if hasattr(self, 'progress_dialog') and self.progress_dialog:
-            self.progress_dialog.close()
-            self.progress_dialog = None
-
-        if not success:
-            self.reject()
-
-    def closeEvent(self, event):
-        """Handle dialog closing"""
-        self.cleanup_validation(False)
-        super().closeEvent(event)
-
-    def get_url(self):
+    def get_urls(self):
+        """Returns a list of URLs for selected datasets"""
         if self.custom_radio.isChecked():
-            return self.url_input.text().strip()
+            return [self.url_input.text().strip()]
         elif self.overture_radio.isChecked():
-            theme = self.overture_combo.currentText().lower()
-            dataset = PRESET_DATASETS['overture'][theme]
-            if theme == "transportation":
-                type_str = "segment"
-            elif theme == "divisions":
-                type_str = "division_area"
-            elif theme == "addresses":
-                type_str = "*"
-            elif theme == "base":
-                type_str = self.base_subtype_combo.currentText()
-            else:
-                type_str = theme.rstrip('s')  # remove trailing 's' for singular form
-            return dataset['url_template'].format(subtype=type_str)
+            urls = []
+            for theme, checkbox in self.overture_checkboxes.items():
+                if checkbox.isChecked():
+                    dataset = PRESET_DATASETS['overture'][theme]
+                    if theme == "transportation":
+                        type_str = "segment"
+                    elif theme == "divisions":
+                        type_str = "division_area"
+                    elif theme == "addresses":
+                        type_str = "*"
+                    elif theme == "base":
+                        # Handle multiple base subtypes
+                        for subtype, subtype_checkbox in self.base_subtype_checkboxes.items():
+                            if subtype_checkbox.isChecked():
+                                urls.append(dataset['url_template'].format(subtype=subtype))
+                        continue  # Skip the normal URL append for base
+                    else:
+                        type_str = theme.rstrip('s')  # remove trailing 's' for singular form
+                    urls.append(dataset['url_template'].format(subtype=type_str))
+            return urls
         elif self.sourcecoop_radio.isChecked():
             selection = self.sourcecoop_combo.currentText()
-            dataset = next((dataset for dataset in PRESET_DATASETS['source_cooperative'].values() if dataset['display_name'] == selection), None)
-            if dataset:
-                return dataset['url']
+            dataset = next((dataset for dataset in PRESET_DATASETS['source_cooperative'].values() 
+                           if dataset['display_name'] == selection), None)
+            return [dataset['url']] if dataset else []
         elif self.other_radio.isChecked():
             selection = self.other_combo.currentText()
             dataset = next((dataset for dataset in PRESET_DATASETS['other'].values() 
-                          if dataset['display_name'] == selection), None)
-            if dataset:
-                return dataset['url']
-        return ""
+                           if dataset['display_name'] == selection), None)
+            return [dataset['url']] if dataset else []
+        return []
 
     def update_sourcecoop_link(self, selection):
         """Update the link based on the selected dataset"""
@@ -780,69 +847,88 @@ class QgisPluginGeoParquet:
 
     def run(self, default_source=None):
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
-
         dialog.overture_radio.setChecked(True)
         
-        # Connect validation complete signal to handle the result
-        dialog.validation_complete.connect(
-            lambda success, message, results: self.handle_validation_complete(
-                success, message, results, dialog.get_url(), self.iface.mapCanvas().extent(), dialog
-            )
-        )
-        
-        if dialog.exec_() != QDialog.Accepted:
-            return
-
-    def handle_validation_complete(self, success, message, validation_results, url, extent, dialog):
-        """Handle validation completion and start download if successful."""
-        if success:
-            # Get current date for filename
-            current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        if dialog.exec_() == QDialog.Accepted:
+            # Get the selected URLs from the dialog
+            urls = dialog.selected_urls
+            extent = self.iface.mapCanvas().extent()
             
-            # Generate the default filename based on dialog selection
-            if dialog.overture_radio.isChecked():
-                theme = dialog.overture_combo.currentText().lower()
-                if theme == "base":
-                    subtype = dialog.base_subtype_combo.currentText()
-                    filename = f"overture_base_{subtype}_{current_date}.parquet"
+            # First, collect all file locations from user
+            download_queue = []
+            for url in urls:
+                # Get current date for filename
+                current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                
+                # Generate filename based on the URL and source type
+                if dialog.overture_radio.isChecked():
+                    # Extract theme from URL
+                    theme = url.split('theme=')[1].split('/')[0]
+                    if 'type=' in url:
+                        type_str = url.split('type=')[1].split('/')[0]
+                        if theme == 'base':
+                            filename = f"overture_base_{type_str}_{current_date}.parquet"
+                        else:
+                            # Use theme name directly for other types
+                            filename = f"overture_{theme}_{current_date}.parquet"
+                    else:
+                        filename = f"overture_{theme}_{current_date}.parquet"
+                elif dialog.sourcecoop_radio.isChecked():
+                    # Get the selected dataset name from the combo box
+                    dataset_name = dialog.sourcecoop_combo.currentText()
+                    # Convert to snake case and clean up the name
+                    clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
+                    filename = f"sourcecoop_{clean_name}_{current_date}.parquet"
+                elif dialog.other_radio.isChecked():
+                    # Get the selected dataset name from the combo box
+                    dataset_name = dialog.other_combo.currentText()
+                    # Convert to snake case and clean up the name
+                    clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_')
+                    filename = f"other_{clean_name}_{current_date}.parquet"
                 else:
-                    filename = f"overture_{theme}_{current_date}.parquet"
+                    # Custom URL case
+                    filename = f"custom_download_{current_date}.parquet"
+
+                default_save_path = str(self.download_dir / filename)
+                
+                # Show save file dialog
+                output_file, selected_filter = QFileDialog.getSaveFileName(
+                    self.iface.mainWindow(),
+                    f"Save Data for {theme if dialog.overture_radio.isChecked() else 'dataset'}",
+                    default_save_path,
+                    "GeoParquet (*.parquet);;DuckDB Database (*.duckdb);;GeoPackage (*.gpkg);;FlatGeobuf (*.fgb)"
+                )
+                
+                if output_file:
+                    # Add to download queue instead of starting download immediately
+                    download_queue.append((url, output_file))
+                else:
+                    # If user cancels any save dialog, abort the whole process
+                    return
             
-            elif dialog.sourcecoop_radio.isChecked():
-                selection = dialog.sourcecoop_combo.currentText()
-                # Convert display name to safe filename format
-                safe_name = selection.lower().replace(" ", "_").replace("/", "_")
-                filename = f"sourcecoop_{safe_name}_{current_date}.parquet"
-            
-            else:  # custom URL
-                filename = f"custom_download_{current_date}.parquet"
+            # Now process downloads one at a time
+            self.process_download_queue(download_queue, extent)
 
-            default_save_path = str(self.download_dir / filename)
-
-            # Show save file dialog
-            output_file, selected_filter = QFileDialog.getSaveFileName(
-                self.iface.mainWindow(),
-                "Save Data",
-                default_save_path,
-                "GeoParquet (*.parquet);;DuckDB Database (*.duckdb);;GeoPackage (*.gpkg);;FlatGeobuf (*.fgb)"
-            )
-
-            if output_file:
-                self.output_file = output_file
-                self.download_and_save(url, extent, output_file, validation_results)
-        else:
-            QMessageBox.warning(self.iface.mainWindow(), "Validation Error", message)
-
-
-    def download_and_save(self, dataset_url, extent, output_file, validation_results):
+    def process_download_queue(self, download_queue, extent):
+        """Process downloads sequentially"""
+        if not download_queue:
+            return
+        
+        # Get the next download
+        url, output_file = download_queue[0]
+        remaining_queue = download_queue[1:]
+        
+        # Create validation results (we know Overture URLs are valid)
+        validation_results = {'has_bbox': True, 'bbox_column': 'bbox'}
+        
         # Create progress dialog
         self.progress_dialog = QProgressDialog("Starting download...", "Cancel", 0, 0, self.iface.mainWindow())
         self.progress_dialog.setWindowTitle("Downloading Data")
         self.progress_dialog.setWindowModality(Qt.NonModal)
         self.progress_dialog.setMinimumDuration(0)
         
-        # Create worker with validation results
-        self.worker = Worker(dataset_url, extent, output_file, self.iface, validation_results)
+        # Create worker
+        self.worker = Worker(url, extent, output_file, self.iface, validation_results)
         self.worker_thread = QThread()
         
         # Move worker to thread
@@ -853,13 +939,20 @@ class QgisPluginGeoParquet:
         self.worker.error.connect(self.handle_error)
         self.worker.load_layer.connect(self.load_layer)
         self.worker.info.connect(self.show_info)
-        self.worker.finished.connect(self.cleanup_thread)
+        self.worker.finished.connect(lambda: self.handle_download_complete(remaining_queue, extent))
         self.worker.progress.connect(self.update_progress)
         self.progress_dialog.canceled.connect(self.cancel_download)
         
         # Show the progress dialog and start the thread
         self.progress_dialog.show()
         self.worker_thread.start()
+
+    def handle_download_complete(self, remaining_queue, extent):
+        """Handle completion of a download and start the next one if any"""
+        self.cleanup_thread()
+        if remaining_queue:
+            # Start the next download
+            self.process_download_queue(remaining_queue, extent)
 
     def handle_error(self, message):
         self.progress_dialog.close()
