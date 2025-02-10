@@ -2,20 +2,20 @@ import os
 import platform
 import subprocess
 import sys
-from pathlib import Path
 
 from qgis.PyQt.QtWidgets import QProgressBar
 from qgis.PyQt.QtCore import QCoreApplication, QTimer
-from qgis.core import Qgis, QgsTask, QgsApplication
+from qgis.core import QgsTask, QgsApplication
 from qgis.utils import iface
 
 # Global flag to track installation status
 _duckdb_ready = False
 
+
 class DuckDBInstallerTask(QgsTask):
     def __init__(self, callback):
         # Simple initialization with just CanCancel flag
-        super().__init__('Installing DuckDB', QgsTask.CanCancel)
+        super().__init__("Installing DuckDB", QgsTask.CanCancel)
         self.success = False
         self.message = ""
         self.exception = None
@@ -33,25 +33,29 @@ class DuckDBInstallerTask(QgsTask):
                 possible_paths = [
                     os.path.join(qgis_bin, "python3"),
                     os.path.join(qgis_bin, "bin", "python3"),
-                    os.path.join(qgis_bin, "Resources", "python", "bin", "python3")
+                    os.path.join(qgis_bin, "Resources", "python", "bin", "python3"),
                 ]
-                py_path = next((path for path in possible_paths if os.path.exists(path)), sys.executable)
+                py_path = next(
+                    (path for path in possible_paths if os.path.exists(path)),
+                    sys.executable,
+                )
             else:
                 py_path = sys.executable
-                
+
             # print(f"Using Python path: {py_path}")
             # print(f"Running pip install command...")
-            
+
             subprocess.check_call([py_path, "-m", "pip", "install", "--user", "duckdb"])
-            
+
             # print("Pip install completed, reloading modules...")
             import importlib
+
             importlib.invalidate_caches()
-            
+
             self.success = True
             self.message = "DuckDB installed successfully"
             return True
-            
+
         except subprocess.CalledProcessError as e:
             self.exception = e
             self.message = f"Pip install failed: {str(e)}"
@@ -67,10 +71,11 @@ class DuckDBInstallerTask(QgsTask):
         global _duckdb_ready
         msg_bar = iface.messageBar()
         msg_bar.clearWidgets()
-        
+
         if result and self.success:
             try:
                 import duckdb
+
                 self.message = f"DuckDB {duckdb.__version__} installed successfully"
             except ImportError:
                 pass
@@ -84,9 +89,11 @@ class DuckDBInstallerTask(QgsTask):
             print(self.message)
             _duckdb_ready = False
 
+
 def ensure_duckdb(callback=None):
     try:
         import duckdb
+
         version = duckdb.__version__
         from packaging import version as version_parser
 
@@ -118,15 +125,15 @@ def ensure_duckdb(callback=None):
             # Create and start the task
             task = DuckDBInstallerTask(callback)
             # print("Created installer task")
-            
+
             # Get the task manager and add the task
             task_manager = QgsApplication.taskManager()
             # print(f"Task manager has {task_manager.count()} tasks")
-            
+
             # Add task and check if it was added successfully
-            success = task_manager.addTask(task)
+            task_manager.addTask(task)
             # print(f"Task added successfully: {success}")
-            
+
             # Check task status
             # print(f"Task manager now has {task_manager.count()} tasks")
             # print(f"Task description: {task.description()}")
@@ -150,11 +157,11 @@ def ensure_duckdb(callback=None):
                         return
                     QTimer.singleShot(1000, check_status)
                 elif status == QgsTask.Running:
-                    #print("Task is running")
+                    # print("Task is running")
                     QTimer.singleShot(1000, check_status)
                 elif status == QgsTask.Complete:
                     print("Task completed")
-            
+
             # Start checking status after a short delay
             QTimer.singleShot(100, check_status)
 
@@ -166,8 +173,10 @@ def ensure_duckdb(callback=None):
             print(f"Failed to setup task with error: {str(e)}")
             print(f"Error type: {type(e)}")
             import traceback
+
             print(f"Traceback: {traceback.format_exc()}")
             return False
+
 
 # Instead of a standalone delayed_plugin_load, we now embed the real plugin loading logic
 # into our dummy plugin.
@@ -178,7 +187,9 @@ class DummyPlugin:
 
     def initGui(self):
         # Optionally show a temporary message or a "loading" placeholder
-        self.iface.messageBar().pushInfo("Info", "Plugin is loading… Please wait while dependencies install.")
+        self.iface.messageBar().pushInfo(
+            "Info", "Plugin is loading… Please wait while dependencies install."
+        )
 
     def unload(self):
         # Unload the real plugin if it has been loaded.
@@ -186,19 +197,23 @@ class DummyPlugin:
             self.real_plugin.unload()
 
     def loadRealPlugin(self):
-        from .qgis_plugin_gpq_downloader import QgisPluginGeoParquet
+        from gpq_downloader.plugin import QgisPluginGeoParquet
+
         self.real_plugin = QgisPluginGeoParquet(self.iface)
         # The real plugin adds the buttons and other UI elements
         self.real_plugin.initGui()
-        self.iface.messageBar().pushSuccess("Success", "Plugin fully loaded with all functionalities")
+        self.iface.messageBar().pushSuccess(
+            "Success", "Plugin fully loaded with all functionalities"
+        )
         # print("Real plugin loaded and UI initialized.")
+
 
 def classFactory(iface):
     """Plugin entry point"""
     # Setup the path for duckdb
     plugin_dir = os.path.dirname(__file__)
-    ext_libs_path = os.path.join(plugin_dir, 'ext-libs')
-    duckdb_path = os.path.join(ext_libs_path, 'duckdb')
+    ext_libs_path = os.path.join(plugin_dir, "ext-libs")
+    duckdb_path = os.path.join(ext_libs_path, "duckdb")
 
     # Add paths to sys.path if they're not already there
     for path in [ext_libs_path, duckdb_path]:
@@ -207,9 +222,9 @@ def classFactory(iface):
 
     # Create the dummy plugin instance
     dummy_plugin = DummyPlugin(iface)
-    
+
     # Schedule DuckDB installation and, once complete, load the real plugin UI.
     QTimer.singleShot(0, lambda: ensure_duckdb(dummy_plugin.loadRealPlugin))
-    
+
     # Return the dummy plugin so QGIS has a valid plugin instance immediately
     return dummy_plugin

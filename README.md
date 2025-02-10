@@ -16,7 +16,7 @@ needs to be installed. As of version 0.3 the plugin should try to automatically 
 
 If the installation of DuckDB doesn't work, then on Windows you can use the [QDuckDB plugin](https://oslandia.gitlab.io/qgis/qduckdb/) which includes a precompiled binary. They also document how to install DuckDB on [Linux](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#linux) and [Mac OS/X](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#macos).
 
-See [metadata.txt](./metadata.txt) for more installation notes.
+See [metadata.txt](gpq_downloader/metadata.txt) for more installation notes.
 
 ## Usage
 

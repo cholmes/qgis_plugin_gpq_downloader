@@ -1,0 +1,94 @@
+{
+    "overture": {
+        "buildings": {
+            "url_template": "s3://overturemaps-us-west-2/release/2025-01-22.0/theme=buildings/type=building/*",
+            "info_url": "https://docs.overturemaps.org/reference/buildings",
+            "needs_validation": false
+        },
+        "places": {
+            "url_template": "s3://overturemaps-us-west-2/release/2025-01-22.0/theme=places/type=place/*",
+            "info_url": "https://docs.overturemaps.org/reference/places",
+            "needs_validation": false
+        },
+        "transportation": {
+            "url_template": "s3://overturemaps-us-west-2/release/2025-01-22.0/theme=transportation/type=segment/*",
+            "info_url": "https://docs.overturemaps.org/reference/transportation",
+            "needs_validation": false
+        },
+        "addresses": {
+            "url_template": "s3://overturemaps-us-west-2/release/2025-01-22.0/theme=addresses/type=*/*",
+            "info_url": "https://docs.overturemaps.org/reference/addresses",
+            "needs_validation": false
+        },
+        "base": {
+            "url_template": "s3://overturemaps-us-west-2/release/2025-01-22.0/theme=base/type={subtype}/*",
+            "info_url": "https://docs.overturemaps.org/reference/base",
+            "needs_validation": false,
+            "subtypes": [
+                "infrastructure",
+                "land",
+                "land_cover",
+                "land_use",
+                "water",
+                "bathymetry"
+            ]
+        },
+        "divisions": {
+            "url_template": "s3://overturemaps-us-west-2/release/2025-01-22.0/theme=divisions/type=division_area/*",
+            "info_url": "https://docs.overturemaps.org/reference/administrative",
+            "needs_validation": false
+        }
+    },
+    "source_cooperative": {
+        "planet_eu_boundaries": {
+            "url": "https://data.source.coop/planet/eu-field-boundaries/field_boundaries.parquet",
+            "info_url": "https://source.coop/repositories/planet/eu-field-boundaries/description",
+            "needs_validation": false,
+            "display_name": "Planet EU Field Boundaries (2022)"
+        },
+        "usda_crop": {
+            "url": "https://data.source.coop/fiboa/us-usda-cropland/us_usda_cropland.parquet",
+            "info_url": "https://source.coop/fiboa/us-usda-cropland/description",
+            "needs_validation": false,
+            "display_name": "USDA Crop Sequence Boundaries"
+        },
+        "ca_crop": {
+            "url": "https://data.source.coop/fiboa/us-ca-scm/us_ca_scm.parquet",
+            "info_url": "https://source.coop/repositories/fiboa/us-ca-scm/description",
+            "needs_validation": false,
+            "display_name": "California Crop Mapping"
+        },
+        "vida_buildings": {
+            "url": "s3://us-west-2.opendata.source.coop/vida/google-microsoft-osm-open-buildings/geoparquet/by_country/*/*.parquet",
+            "info_url": "https://source.coop/repositories/vida/google-microsoft-osm-open-buildings/description",
+            "needs_validation": false,
+            "display_name": "VIDA Google/Microsoft/OSM Buildings"
+        },
+        "us_structures": {
+            "url": "s3://us-west-2.opendata.source.coop/wherobots/usa-structures/geoparquet/*.parquet",
+            "info_url": "https://source.coop/wherobots/usa-structures/geoparquet",
+            "needs_validation": false,
+            "display_name": "US Structures from ORNL by Wherobots"
+        },
+        "fsq_places_fused": {
+            "url": "s3://us-west-2.opendata.source.coop/fused/fsq-os-places/2025-01-10/places/*.parquet",
+            "info_url": "https://source.coop/repositories/fused/fsq-os-places/description",
+            "needs_validation": false,
+            "display_name": "Foursquare Open Source Places - Fused-partitioned"
+        },
+        "nhd_flowlines": {
+            "url": "https://data.source.coop/cholmes/nhd/NHDFlowline.parquet",
+            "info_url": "https://source.coop/repositories/cholmes/nhd/description",
+            "needs_validation": true,
+            "display_name": "NHD Flowlines (experimental)"
+        }
+    },
+    "other": {
+        "foursquare_places": {
+            "url": "hf://datasets/foursquare/fsq-os-places/release/dt=2025-02-06/places/parquet/*.parquet",
+            "info_url": "https://docs.foursquare.com/data-products/docs/places-overview",
+            "needs_validation": false,
+            "display_name": "Foursquare Places"
+        }
+    }
+}

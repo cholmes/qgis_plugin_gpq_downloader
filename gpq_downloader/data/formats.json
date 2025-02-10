@@ -1,0 +1,18 @@
+{
+    "GeoParquet (*.parquet)": {
+        "extension": ".parquet",
+        "format_options": "(FORMAT 'parquet', COMPRESSION 'ZSTD')"
+    },
+    "GeoPackage (*.gpkg)": {
+        "extension": ".gpkg",
+        "format_options": "(FORMAT GDAL, DRIVER 'GPKG', SRS 'EPSG:4326')"
+    },
+    "FlatGeobuf (*.fgb)": {
+        "extension": ".fgb",
+        "format_options": "(FORMAT GDAL, DRIVER 'FlatGeobuf', SRS 'EPSG:4326')"
+    },
+    "GeoJSON (*.geojson)": {
+        "extension": ".geojson",
+        "format_options": "(FORMAT GDAL, DRIVER 'GeoJSON', SRS 'EPSG:4326')"
+    }
+}

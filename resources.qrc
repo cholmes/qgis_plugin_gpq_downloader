@@ -1,9 +1,0 @@
-<RCC>
-    <qresource prefix="/qgis_plugin_gpq_downloader">
-        <file>icons/download.svg</file>
-        <file>icons/overture-logo.svg</file>
-        <file>icons/source-coop.svg</file>
-        <file>icons/parquet-download.svg</file>
-        <file>icons/parquet-download.png</file>
-    </qresource>
-</RCC>
