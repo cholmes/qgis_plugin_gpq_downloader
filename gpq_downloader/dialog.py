@@ -267,7 +267,7 @@ class DataSourceDialog(QDialog):
 
                 # Create progress dialog for validation
                 progress_dialog = QProgressDialog("Validating URL...", "Cancel", 0, 0, self)
-                progress_dialog.setWindowModality(Qt.WindowModal)
+                progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
 
                 # Create validation worker
                 self.validation_worker = ValidationWorker(url, self.iface, self.iface.mapCanvas().extent())
@@ -286,7 +286,7 @@ class DataSourceDialog(QDialog):
 
                 # Start validation
                 self.validation_thread.start()
-                progress_dialog.exec_()
+                progress_dialog.exec()
                 return
 
         # For other preset sources, we can skip validation
@@ -409,12 +409,12 @@ class DataSourceDialog(QDialog):
             "This dataset doesn't have a bbox column, which means downloads will be slower. "
             "GeoParquet 1.1 files with a bbox column work much better - tell your data provider to upgrade!\n\n"
             "Do you want to continue with the download?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
 
         validation_results = {"has_bbox": False, "schema": None}
-        if reply == QMessageBox.No:
+        if reply == QMessageBox.StandardButton.No:
             self.validation_complete.emit(
                 False, "Download cancelled by user.", validation_results
             )

@@ -69,7 +69,7 @@ class QgisPluginGeoParquet:
         if not selected_name:
             dialog.overture_radio.setChecked(True)
         
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             # Get the selected URLs from the dialog
             urls = dialog.selected_urls
             extent = self.iface.mapCanvas().extent()
@@ -236,7 +236,7 @@ class QgisPluginGeoParquet:
                 layout.addWidget(button_box)
 
                 dialog.setLayout(layout)
-                dialog.exec_()
+                dialog.exec()
                 return
 
         layer_name = Path(output_file).stem  # Get filename without extension
@@ -325,7 +325,7 @@ class QgisPluginGeoParquet:
         proceed_button.clicked.connect(lambda: dialog.done(2))
 
         while True:
-            result = dialog.exec_()
+            result = dialog.exec()
             if result == 1:
                 selected_format = format_combo.currentText()
                 extension = selected_format.split("*")[1].rstrip(")")
@@ -342,7 +342,7 @@ class QgisPluginGeoParquet:
                 if output_file:
                     self.progress_dialog = QProgressDialog("Starting download...", "Cancel", 0, 0, self.iface.mainWindow())
                     self.progress_dialog.setWindowTitle("Downloading Data")
-                    self.progress_dialog.setWindowModality(Qt.NonModal)
+                    self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
                     self.progress_dialog.setMinimumDuration(0)
                     
                     self.output_file = output_file
@@ -375,7 +375,7 @@ class QgisPluginGeoParquet:
             elif result == 2:
                 self.progress_dialog = QProgressDialog("Starting download...", "Cancel", 0, 0, self.iface.mainWindow())
                 self.progress_dialog.setWindowTitle("Downloading Data")
-                self.progress_dialog.setWindowModality(Qt.NonModal)
+                self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
                 self.progress_dialog.setMinimumDuration(0)
                 
                 self.worker = Worker(
@@ -419,7 +419,7 @@ class QgisPluginGeoParquet:
             message, "Cancel", 0, 0, self.iface.mainWindow()
         )
         progress_dialog.setWindowTitle(title)
-        progress_dialog.setWindowModality(Qt.NonModal)
+        progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
         progress_dialog.setMinimumDuration(0)
         return progress_dialog
 
@@ -473,7 +473,7 @@ class QgisPluginGeoParquet:
             "Cancel", 0, 0, self.iface.mainWindow()
         )
         self.progress_dialog.setWindowTitle("Downloading Data")
-        self.progress_dialog.setWindowModality(Qt.NonModal)
+        self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
         self.progress_dialog.setMinimumDuration(0)
         
         # Create worker with layer name
