@@ -119,33 +119,38 @@ class Worker(QObject):
 
                 table_name = "download_data"
 
-                self.progress.emit(f"Preparing query for{layer_info}...")
+                self.progress.emit(f"Preparing query for {layer_info}...")
+
+                # Start building the SELECT query
                 select_query = "SELECT *"
                 if not self.output_file.endswith(".parquet"):
-                    # Construct the SELECT clause with array conversion to strings
+                    # Construct the SELECT clause with array conversion to strings and dynamic struct handling
                     columns = []
                     for row in schema_result:
                         col_name = row[0]
                         col_type = row[1]
-                        
+
                         # Quote the column name to handle special characters
                         quoted_col_name = f'"{col_name}"'
                         
+                        # Handle STRUCT and MAP columns with TO_JSON
                         if 'STRUCT' in col_type.upper() or 'MAP' in col_type.upper():
                             columns.append(f"TO_JSON({quoted_col_name}) AS {quoted_col_name}")
-                        elif '[]' in col_type:  # Check for array types like VARCHAR[]
+                        
+                        # Handle array types like VARCHAR[] by converting them to strings
+                        elif '[]' in col_type:  
                             columns.append(f"array_to_string({quoted_col_name}, ', ') AS {quoted_col_name}")
+                        
+                        # Handle UTINYINT as INTEGER
                         elif col_type.upper() == 'UTINYINT':
                             columns.append(f"CAST({quoted_col_name} AS INTEGER) AS {quoted_col_name}")
+                        
+                        # Otherwise, use the column as-is
                         else:
                             columns.append(quoted_col_name)
 
-                    # Check if this is Overture data and has a names column
-                    has_names_column = any('names' in row[0] for row in schema_result)
-                    if 'overture' in self.dataset_url and has_names_column:
-                        select_query = f'SELECT "names"."primary" as name,{", ".join(columns)}'
-                    else:
-                        select_query = f'SELECT {", ".join(columns)}'
+                    # Final query without Overture-specific check
+                    select_query = f'SELECT {", ".join(columns)}'
 
                 # Construct WHERE clause based on bbox information
                 bbox_column = self.validation_results.get('bbox_column')
