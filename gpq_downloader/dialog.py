@@ -221,6 +221,18 @@ class DataSourceDialog(QDialog):
         # Add after setting up the sourcecoop_combo
         self.update_sourcecoop_link(self.sourcecoop_combo.currentText())
 
+        # Load checkbox states during initialization
+        self.load_checkbox_states()
+
+        # Connect each checkbox to save its state when toggled
+        for checkbox in self.overture_checkboxes.values():
+            checkbox.toggled.connect(self.save_checkbox_states)
+        for checkbox in self.base_subtype_checkboxes.values():
+            checkbox.toggled.connect(self.save_checkbox_states)
+
+        # Ensure to call save_checkbox_states when the dialog is accepted
+        self.ok_button.clicked.connect(self.save_checkbox_states)
+
     def save_radio_button_state(self) -> None:
         if self.custom_radio.isChecked():
             button_name = self.custom_radio.text()
@@ -429,3 +441,44 @@ class DataSourceDialog(QDialog):
             self.resize(self.width() + width, self.height())
         else:
             self.resize(self.width() - width, self.height())
+
+    def save_checkbox_states(self) -> None:
+        # Save main checkboxes
+        for key, checkbox in self.overture_checkboxes.items():
+            QgsSettings().setValue(
+                f"gpq_downloader/checkbox_{key}",
+                checkbox.isChecked(),
+                section=QgsSettings.Plugins,
+            )
+        
+        # Save base subtype checkboxes
+        for key, checkbox in self.base_subtype_checkboxes.items():
+            QgsSettings().setValue(
+                f"gpq_downloader/base_subtype_checkbox_{key}",
+                checkbox.isChecked(),
+                section=QgsSettings.Plugins,
+            )
+
+    def load_checkbox_states(self) -> None:
+        # Load main checkboxes
+        for key, checkbox in self.overture_checkboxes.items():
+            checked = QgsSettings().value(
+                f"gpq_downloader/checkbox_{key}",
+                False,
+                type=bool,
+                section=QgsSettings.Plugins,
+            )
+            checkbox.setChecked(checked)
+        
+        # Load base subtype checkboxes
+        for key, checkbox in self.base_subtype_checkboxes.items():
+            checked = QgsSettings().value(
+                f"gpq_downloader/base_subtype_checkbox_{key}",
+                False,
+                type=bool,
+                section=QgsSettings.Plugins,
+            )
+            checkbox.setChecked(checked)
+            
+        # Update base subtype widget visibility based on base checkbox state
+        self.base_subtype_widget.setVisible(self.base_checkbox.isChecked())
