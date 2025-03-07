@@ -100,7 +100,7 @@ class Worker(QObject):
             conn = duckdb.connect()
             try:
                 # Install and load the spatial extension
-                self.progress.emit(f"Loading spatial extension for{layer_info}...")
+                self.progress.emit(f"Loading spatial extension{layer_info}...")
 
                 if self.output_file.lower().endswith('.duckdb'):
                     conn = duckdb.connect(self.output_file)  # Connect directly to output file
@@ -119,7 +119,7 @@ class Worker(QObject):
 
                 table_name = "download_data"
 
-                self.progress.emit(f"Preparing query for{layer_info}...")
+                self.progress.emit(f"Preparing query{layer_info}...")
                 select_query = "SELECT *"
                 if not self.output_file.endswith(".parquet"):
                     # Construct the SELECT clause with array conversion to strings
