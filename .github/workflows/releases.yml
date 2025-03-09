@@ -1,0 +1,62 @@
+name: Build and Release QGIS Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers only when pushing tags like v0.7.0, v1.1.3, etc.
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check version in metadata.txt
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=${VERSION#v}  # Remove 'v' prefix if present
+          FILE_VERSION=$(grep '^version=' gpq_downloader/metadata.txt | cut -d '=' -f 2)
+          echo "Release version: $VERSION"
+          echo "File version: $FILE_VERSION"
+          if [ "$VERSION" != "$FILE_VERSION" ]; then
+            echo "Version mismatch! Release version ($VERSION) does not match file version ($FILE_VERSION)."
+            exit 1
+          fi  
+
+      - name: Zip the plugin
+        run: |
+          mkdir -p release
+          echo "Creating zip file..."
+          zip -r release/qgis_plugin_gpq_downloader.zip . \
+          -x "*.DS_Store" "*.gitignore" "*/.git/*" "*/__pycache__/*" "*.pyc" "*.pyo" "*.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qgis-plugin-release
+          path: release/qgis_plugin_gpq_downloader.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download zipped plugin
+        uses: actions/download-artifact@v4
+        with:
+          name: qgis-plugin-release
+          path: .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: qgis_plugin_gpq_downloader.zip
+          body: "Automated release of QGIS plugin for Overture Maps."
+          draft: false  # Ensure the release is published
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
