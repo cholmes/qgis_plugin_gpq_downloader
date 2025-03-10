@@ -426,7 +426,7 @@ class DataSourceDialog(QDialog):
             QMessageBox.StandardButton.No,
         )
 
-        validation_results = {"has_bbox": False, "schema": None, "bbox_column": None}
+        validation_results = {"has_bbox": False, "schema": None, "bbox_column": None, "geometry_column": "geometry"}
         if reply == QMessageBox.StandardButton.No:
             self.validation_complete.emit(
                 False, "Download cancelled by user.", validation_results

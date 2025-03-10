@@ -99,7 +99,7 @@ class Worker(QObject):
             bbox = transform_bbox_to_4326(self.extent, source_crs)
 
             # Log validation results dictionary at the beginning of run
-            #logger.log(f"Full validation_results at start of run: {self.validation_results}")
+            logger.log(f"Full validation_results at start of run: {self.validation_results}")
 
             conn = duckdb.connect()
             try:
@@ -120,6 +120,40 @@ class Worker(QObject):
                 schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
                 schema_result = conn.execute(schema_query).fetchall()
                 self.validation_results['schema'] = schema_result
+                
+                # Log the schema for debugging
+                logger.log("Schema in Worker:")
+                for row in schema_result:
+                    logger.log(f"Column: {row[0]}, Type: {row[1]}")
+
+                # If geometry_column is not in validation_results, detect it now
+                if 'geometry_column' not in self.validation_results:
+                    logger.log("No geometry_column in validation_results, detecting now")
+                    self.validation_results['geometry_column'] = 'geometry'  # Default
+                    geometry_found = False
+                    
+                    for row in schema_result:
+                        col_name = row[0]
+                        col_type = row[1].upper()
+                        logger.log(f"Checking column {col_name} with type {col_type} for geometry")
+                        if 'GEOMETRY' in col_type or 'GEOGRAPHY' in col_type:
+                            self.validation_results['geometry_column'] = col_name
+                            logger.log(f"Found geometry column by type: {col_name}")
+                            geometry_found = True
+                            break
+                    
+                    if not geometry_found:
+                        # Try a different approach - look for columns
+                        logger.log("No standard geometry column found, trying alternative detection")
+                        for row in schema_result:
+                            col_name = row[0].lower()
+                            if col_name == 'geom' or col_name == 'the_geom' or col_name == 'wkb_geometry':
+                                self.validation_results['geometry_column'] = row[0]  # Use original case
+                                logger.log(f"Found likely geometry column by name: {row[0]}")
+                                geometry_found = True
+                                break
+                
+                logger.log(f"Final geometry column detection result: {self.validation_results['geometry_column']}")
 
                 table_name = "download_data"
 
@@ -168,7 +202,9 @@ class Worker(QObject):
 
                 # Now use the corrected validation_results
                 bbox_column = self.validation_results.get('bbox_column')
+                geometry_column = self.validation_results.get('geometry_column', 'geometry')
                 #logger.log(f"Final bbox_column value: {bbox_column}")
+                #logger.log(f"Using geometry column: {geometry_column}")
 
                 if bbox_column is not None:
                     #logger.log(f"Using bbox column for query: {bbox_column}")
@@ -180,7 +216,7 @@ class Worker(QObject):
                     #logger.log("Using spatial filter instead of bbox")
                     where_clause = f"""
                     WHERE ST_Intersects(
-                        geometry,
+                        "{geometry_column}",
                         ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
                                             {bbox.xMaximum()} {bbox.yMinimum()},
                                             {bbox.xMaximum()} {bbox.yMaximum()},
@@ -228,23 +264,13 @@ class Worker(QObject):
                             self.file_size_warning.emit(estimated_size)
                             return
 
-                    # Construct the COPY query with Hilbert sorting
-                    # First, find the geometry column name from the schema
-                    geometry_column = 'geometry'  # Default fallback
-                    if 'schema' in self.validation_results and self.validation_results['schema']:
-                        for row in self.validation_results['schema']:
-                            col_name = row[0]
-                            col_type = row[1].upper()
-                            if 'GEOMETRY' in col_type or 'GEOGRAPHY' in col_type:
-                                geometry_column = f'"{col_name}"'
-                                break
-
+                    # Use the geometry column from validation results for the Hilbert sorting
                     copy_query = f"""
                     COPY (
                         SELECT * FROM {table_name}
                         ORDER BY ST_Hilbert(
-                            {geometry_column},
-                            (SELECT ST_Extent(ST_Extent_Agg(COLUMNS({geometry_column})))::BOX_2D FROM {table_name})
+                            "{geometry_column}",
+                            (SELECT ST_Extent(ST_Extent_Agg(COLUMNS("{geometry_column}")))::BOX_2D FROM {table_name})
                         )
                     ) TO '{self.output_file}'"""
 
@@ -457,7 +483,7 @@ class ValidationWorker(QObject):
                 self.finished.emit(
                     True,
                     "Validation successful",
-                    {"has_bbox": True, "bbox_column": "bbox"},
+                    {"has_bbox": True, "bbox_column": "bbox", "geometry_column": "geometry"},
                 )
                 return
 
@@ -465,12 +491,21 @@ class ValidationWorker(QObject):
             schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
             schema_result = conn.execute(schema_query).fetchall()
 
-            # Store schema and check for BBOX
+            # Store schema and check for BBOX and geometry column
             validation_results = {
                 "schema": schema_result,
                 "has_bbox": False,
                 "bbox_column": None,
+                "geometry_column": "geometry",  # Default fallback
             }
+
+            # Find geometry column from schema
+            for row in schema_result:
+                col_name = row[0]
+                col_type = row[1].upper()
+                if 'GEOMETRY' in col_type or 'GEOGRAPHY' in col_type:
+                    validation_results["geometry_column"] = col_name
+                    break
 
             # Check for standard bbox column first
             if any(

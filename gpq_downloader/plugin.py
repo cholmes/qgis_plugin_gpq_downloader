@@ -481,7 +481,23 @@ class QgisPluginGeoParquet:
                     layer_name = f"Overture {theme.title()}"
         
         # Create validation results (we know Overture URLs are valid)
-        validation_results = {'has_bbox': True, 'bbox_column': 'bbox'}
+        validation_results = {'has_bbox': True, 'bbox_column': 'bbox', 'geometry_column': 'geometry'}
+        
+        # For non-Overture data, try to detect the geometry column name from the URL
+        if 'overture' not in url:
+            from . import logger
+            logger.log(f"Processing URL: {url}")
+            
+            # Try to extract dataset name from URL for better logging
+            dataset_name = url.split('/')[-1].split('?')[0]
+            logger.log(f"Dataset name from URL: {dataset_name}")
+            
+            # For specific known datasets, set the geometry column
+            if 'addresses.nobbox.pq' in url or 'addresses.pq' in url:
+                logger.log("Detected addresses dataset, setting geometry column to 'geom'")
+                validation_results['geometry_column'] = 'geom'
+        
+        logger.log(f"Initial validation_results: {validation_results}")
         
         # Create progress dialog
         self.progress_dialog = QProgressDialog(
@@ -505,9 +521,9 @@ class QgisPluginGeoParquet:
         self.worker.error.connect(self.handle_error)
         self.worker.load_layer.connect(self.load_layer)
         self.worker.info.connect(self.show_info)
+        self.worker.file_size_warning.connect(self.handle_large_file_warning)
         self.worker.finished.connect(lambda: self.handle_download_complete(remaining_queue, extent))
         self.worker.progress.connect(self.update_progress)
-        self.worker.file_size_warning.connect(self.handle_large_file_warning)
         self.progress_dialog.canceled.connect(self.cancel_download)
         
         # Show the progress dialog and start the thread
