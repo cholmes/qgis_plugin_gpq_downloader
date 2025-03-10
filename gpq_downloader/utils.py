@@ -229,12 +229,22 @@ class Worker(QObject):
                             return
 
                     # Construct the COPY query with Hilbert sorting
+                    # First, find the geometry column name from the schema
+                    geometry_column = 'geometry'  # Default fallback
+                    if 'schema' in self.validation_results and self.validation_results['schema']:
+                        for row in self.validation_results['schema']:
+                            col_name = row[0]
+                            col_type = row[1].upper()
+                            if 'GEOMETRY' in col_type or 'GEOGRAPHY' in col_type:
+                                geometry_column = f'"{col_name}"'
+                                break
+
                     copy_query = f"""
                     COPY (
                         SELECT * FROM {table_name}
                         ORDER BY ST_Hilbert(
-                            geometry,
-                            (SELECT ST_Extent(ST_Extent_Agg(COLUMNS(geometry)))::BOX_2D FROM {table_name})
+                            {geometry_column},
+                            (SELECT ST_Extent(ST_Extent_Agg(COLUMNS({geometry_column})))::BOX_2D FROM {table_name})
                         )
                     ) TO '{self.output_file}'"""
 
