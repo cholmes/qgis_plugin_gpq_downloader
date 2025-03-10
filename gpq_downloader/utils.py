@@ -99,7 +99,7 @@ class Worker(QObject):
             bbox = transform_bbox_to_4326(self.extent, source_crs)
 
             # Log validation results dictionary at the beginning of run
-            logger.log(f"Full validation_results at start of run: {self.validation_results}")
+            #logger.log(f"Full validation_results at start of run: {self.validation_results}")
 
             conn = duckdb.connect()
             try:
@@ -122,20 +122,20 @@ class Worker(QObject):
                 self.validation_results['schema'] = schema_result
                 
                 # Log the schema for debugging
-                logger.log("Schema in Worker:")
-                for row in schema_result:
-                    logger.log(f"Column: {row[0]}, Type: {row[1]}")
+                #logger.log("Schema in Worker:")
+                #for row in schema_result:
+                    #logger.log(f"Column: {row[0]}, Type: {row[1]}")
 
                 # If geometry_column is not in validation_results, detect it now
                 if 'geometry_column' not in self.validation_results:
-                    logger.log("No geometry_column in validation_results, detecting now")
+                    #logger.log("No geometry_column in validation_results, detecting now")
                     self.validation_results['geometry_column'] = 'geometry'  # Default
                     geometry_found = False
                     
                     for row in schema_result:
                         col_name = row[0]
                         col_type = row[1].upper()
-                        logger.log(f"Checking column {col_name} with type {col_type} for geometry")
+                        #logger.log(f"Checking column {col_name} with type {col_type} for geometry")
                         if 'GEOMETRY' in col_type or 'GEOGRAPHY' in col_type:
                             self.validation_results['geometry_column'] = col_name
                             logger.log(f"Found geometry column by type: {col_name}")
@@ -144,16 +144,16 @@ class Worker(QObject):
                     
                     if not geometry_found:
                         # Try a different approach - look for columns
-                        logger.log("No standard geometry column found, trying alternative detection")
+                        #logger.log("No standard geometry column found, trying alternative detection")
                         for row in schema_result:
                             col_name = row[0].lower()
                             if col_name == 'geom' or col_name == 'the_geom' or col_name == 'wkb_geometry':
                                 self.validation_results['geometry_column'] = row[0]  # Use original case
-                                logger.log(f"Found likely geometry column by name: {row[0]}")
+                                #logger.log(f"Found likely geometry column by name: {row[0]}")
                                 geometry_found = True
                                 break
                 
-                logger.log(f"Final geometry column detection result: {self.validation_results['geometry_column']}")
+               #logger.log(f"Final geometry column detection result: {self.validation_results['geometry_column']}")
 
                 table_name = "download_data"
 
