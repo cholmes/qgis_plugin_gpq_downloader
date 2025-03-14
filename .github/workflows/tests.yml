@@ -18,10 +18,10 @@ jobs:
       with:
         python-version: '3.10'
     
-    - name: Install QGIS and Xvfb
+    - name: Install QGIS, PyQt5.sip and Xvfb
       run: |
         sudo apt-get update
-        sudo apt-get install -y python3-qgis qgis xvfb
+        sudo apt-get install -y python3-qgis qgis xvfb python3-pyqt5.sip
     
     - name: Install dependencies
       run: |
