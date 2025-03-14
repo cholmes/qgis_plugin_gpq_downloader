@@ -9,33 +9,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+    container:
+      image: qgis/qgis:release-3_34  # QGIS docker image with QGIS 3.34
+      
     steps:
     - uses: actions/checkout@v2
     
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: '3.10'
-    
-    - name: Install QGIS, PyQt5.sip and Xvfb
+    - name: Install Python dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y python3-qgis qgis xvfb python3-pyqt5.sip
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        # Install PyQt5-sip from PyPI to ensure that the module is available.
-        pip install PyQt5-sip
-        pip install .[dev]
-    
+        python3 -m pip install --upgrade pip
+        pip3 install pytest pytest-qt
+        pip3 install .[dev]
+        
     - name: Run tests with xvfb
       run: |
-        # Set QGIS prefix, so the QGIS libraries know where to find their resources.
-        export QGIS_PREFIX_PATH="/usr"
-        # Prepend QGIS library directory to LD_LIBRARY_PATH.
-        export LD_LIBRARY_PATH="/usr/lib/qgis:${LD_LIBRARY_PATH}"
-        # Include both common locations in PYTHONPATH.
-        export PYTHONPATH="/usr/lib/python3/dist-packages:/usr/share/qgis/python:${PYTHONPATH}"
+        # Make sure xvfb is installed in container
+        apt-get update && apt-get install -y xvfb
+        
+        # Run tests with virtual display
         xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" pytest 
