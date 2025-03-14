@@ -34,6 +34,8 @@ jobs:
       run: |
         # Set QGIS prefix, so the QGIS libraries know where to find their resources.
         export QGIS_PREFIX_PATH="/usr"
+        # Prepend QGIS library directory to LD_LIBRARY_PATH.
+        export LD_LIBRARY_PATH="/usr/lib/qgis:${LD_LIBRARY_PATH}"
         # Include both common locations in PYTHONPATH.
         export PYTHONPATH="/usr/lib/python3/dist-packages:/usr/share/qgis/python:${PYTHONPATH}"
         xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" pytest 
