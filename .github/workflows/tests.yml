@@ -30,5 +30,8 @@ jobs:
     
     - name: Run tests with xvfb
       run: |
-        export PYTHONPATH="/usr/share/qgis/python:${PYTHONPATH}"
+        # Set QGIS prefix, so the QGIS libraries know where to find their resources.
+        export QGIS_PREFIX_PATH="/usr"
+        # Include both common locations in PYTHONPATH.
+        export PYTHONPATH="/usr/lib/python3/dist-packages:/usr/share/qgis/python:${PYTHONPATH}"
         xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" pytest 
