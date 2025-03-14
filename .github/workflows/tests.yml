@@ -26,6 +26,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        # Install PyQt5-sip from PyPI to ensure that the module is available.
+        pip install PyQt5-sip
         pip install .[dev]
     
     - name: Run tests with xvfb
