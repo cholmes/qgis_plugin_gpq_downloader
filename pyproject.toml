@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpq_downloader"
+version = "0.8.0"
+description = "QGIS plugin for downloading and processing GeoParquet files"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "GPL-3.0-or-later"}
+authors = [
+    {name = "Chris Holmes", email = "cholmes@9eo.org"}
+]
+
+[project.urls]
+"Homepage" = "https://github.com/cholmes/qgis_plugin_gpq_downloader"
+"Bug Tracker" = "https://github.com/yourusername/qgis_plugin_gpq_downloader/issues"
+
+[tool.setuptools]
+packages = ["gpq_downloader"]
+
+[tool.pytest.ini_options]
+testpaths = ["gpq_downloader/tests"]
+python_files = "test_*.py"
+addopts = "--cov=gpq_downloader"
+
+[tool.coverage.run]
+source = ["gpq_downloader"]
+omit = ["gpq_downloader/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pass",
+    "raise ImportError",
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py37', 'py38', 'py39', 'py310']
+include = '\.pyi?$'
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-qt>=4.2.0",
+    "pytest-mock>=3.11.1",
+    "pytest-cov>=4.1.0",
+    "duckdb>=1.1.0",
+    "black>=23.3.0",
+]

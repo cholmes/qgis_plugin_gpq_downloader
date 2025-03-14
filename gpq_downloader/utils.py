@@ -17,13 +17,17 @@ def transform_bbox_to_4326(extent, source_crs):
         source_crs (QgsCoordinateReferenceSystem): The source CRS of the extent
 
     Returns:
-        QgsRectangle: The transformed extent in EPSG:4326
+        QgsRectangle: The transformed extent in EPSG:4326, or None if inputs are invalid
     """
+    if extent is None or source_crs is None:
+        return None
+        
     dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
 
     if source_crs != dest_crs:
         transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
-        return transform.transformBoundingBox(extent)
+        extent = transform.transformBoundingBox(extent)
+    
     return extent
 
 
@@ -470,6 +474,14 @@ class ValidationWorker(QObject):
         return None
 
     def run(self):
+        # Initialize validation results with default values
+        validation_results = {
+            "schema": None,
+            "has_bbox": False,
+            "bbox_column": None,
+            "geometry_column": "geometry"  # Default fallback
+        }
+        
         try:
             self.progress.emit("Connecting to data source...")
             conn = duckdb.connect()
@@ -479,42 +491,29 @@ class ValidationWorker(QObject):
             conn.execute("LOAD httpfs;")
 
             if not self.needs_validation():
-                #logger.log("Dataset doesn't need validation, using default bbox column")
-                self.finished.emit(
-                    True,
-                    "Validation successful",
-                    {"has_bbox": True, "bbox_column": "bbox", "geometry_column": "geometry"},
-                )
+                validation_results.update({
+                    "has_bbox": True,
+                    "bbox_column": "bbox",
+                })
+                self.finished.emit(True, "Validation successful", validation_results)
                 return
 
             self.progress.emit("Checking data format...")
             schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
             schema_result = conn.execute(schema_query).fetchall()
 
-            # Store schema and check for BBOX and geometry column
-            validation_results = {
-                "schema": schema_result,
-                "has_bbox": False,
-                "bbox_column": None,
-                "geometry_column": "geometry",  # Default fallback
-            }
-
-            # Find geometry column from schema
-            for row in schema_result:
-                col_name = row[0]
-                col_type = row[1].upper()
-                if 'GEOMETRY' in col_type or 'GEOGRAPHY' in col_type:
-                    validation_results["geometry_column"] = col_name
-                    break
+            # Update validation results with schema
+            validation_results["schema"] = schema_result
 
             # Check for standard bbox column first
-            if any(
+            has_bbox = any(
                 row[0].lower() == "bbox" and "struct" in row[1].lower()
                 for row in schema_result
-            ):
+            )
+            
+            if has_bbox:
                 validation_results["has_bbox"] = True
                 validation_results["bbox_column"] = "bbox"
-                #logger.log(f"Emitting finished with bbox column: {validation_results}")
                 self.finished.emit(True, "Validation successful", validation_results)
             else:
                 # Check metadata for alternative bbox column
@@ -522,18 +521,20 @@ class ValidationWorker(QObject):
                 if bbox_column:
                     validation_results["has_bbox"] = True
                     validation_results["bbox_column"] = bbox_column
-                    #logger.log(f"Emitting finished with metadata bbox column: {validation_results}")
                     self.finished.emit(True, "Validation successful", validation_results)
                 else:
-                    # Emit signal for main thread to show warning
-                    #logger.log("No bbox column found, emitting warning signal")
+                    # No bbox column found - emit warning signal first
                     self.needs_bbox_warning.emit()
-                    # Also emit the finished signal with the correct validation results
-                    #logger.log(f"Emitting finished with no bbox column: {validation_results}")
+                    # Then emit finished signal with no bbox results
                     self.finished.emit(True, "Validation with no bbox column", validation_results)
 
         except Exception as e:
-            self.finished.emit(False, f"Error validating source: {str(e)}", {})
+            logger.log(f"Error in ValidationWorker: {str(e)}")
+            # Emit warning before error if no bbox was found
+            if not validation_results.get("has_bbox"):
+                self.needs_bbox_warning.emit()
+            # Still emit validation results with default values in case of error
+            self.finished.emit(False, f"Error validating source: {str(e)}", validation_results)
         finally:
             conn.close()
 
