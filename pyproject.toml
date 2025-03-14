@@ -53,3 +53,6 @@ dev = [
     "duckdb>=1.1.0",
     "black>=23.3.0",
 ]
+
+[tool.setuptools.package-data]
+gpq_downloader = ["data/*.json"]

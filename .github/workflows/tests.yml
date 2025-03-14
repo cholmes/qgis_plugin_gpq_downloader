@@ -19,7 +19,26 @@ jobs:
       run: |
         python3 -m pip install --upgrade pip
         pip3 install pytest pytest-qt
-        pip3 install .[dev]
+        # Install in development mode to ensure data files are available
+        pip3 install -e .[dev]
+        
+    - name: Debug package installation
+      run: |
+        # Print out installed package location
+        python3 -c "import gpq_downloader; print(gpq_downloader.__file__)"
+        # Check if data directory exists
+        ls -la $(python3 -c "import gpq_downloader; import os; print(os.path.dirname(gpq_downloader.__file__))")/data || echo "Data directory not found"
+        
+    - name: Create data directory if missing
+      run: |
+        # Create data directory if it doesn't exist
+        PACKAGE_DIR=$(python3 -c "import gpq_downloader; import os; print(os.path.dirname(gpq_downloader.__file__))")
+        mkdir -p $PACKAGE_DIR/data
+        # If presets.json doesn't exist, create a minimal version
+        if [ ! -f "$PACKAGE_DIR/data/presets.json" ]; then
+          echo '{"datasets": {}}' > $PACKAGE_DIR/data/presets.json
+          echo "Created minimal presets.json file at $PACKAGE_DIR/data/presets.json"
+        fi
         
     - name: Run tests with xvfb
       run: |
