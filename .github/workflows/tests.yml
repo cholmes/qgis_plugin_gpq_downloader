@@ -30,4 +30,5 @@ jobs:
     
     - name: Run tests with xvfb
       run: |
+        export PYTHONPATH="/usr/share/qgis/python:${PYTHONPATH}"
         xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" pytest 
