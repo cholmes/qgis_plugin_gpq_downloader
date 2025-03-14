@@ -47,7 +47,7 @@ cd "${TEMP_DIR}"
 # Create zip file excluding unwanted files
 echo "Creating zip file..."
 zip -r "${ZIP_FILENAME}" qgis_plugin_gpq_downloader/ \
-  -x "*.DS_Store" "*.gitignore" "*/.git/*" "*/__pycache__/*" "*.pyc" "*.pyo" "*.zip"
+  -x "*.DS_Store" "*.gitignore" "*/.git/*" "*/__pycache__/*" "*.pyc" "*.pyo" "*.zip" "*/tests/*"
 
 # Move the zip file back to the original directory
 mv "${ZIP_FILENAME}" "${OLDPWD}/"
