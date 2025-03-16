@@ -490,6 +490,7 @@ class DataSourceDialog(QDialog):
         # This method should handle the validation results
         # Check how it's setting validation_results
         pass
+
 class DownloadAreaDialog(QDialog):
     """Dialog for selecting the download area options."""
     
@@ -558,3 +559,50 @@ class DownloadAreaDialog(QDialog):
     def get_selected_option(self):
         """Return the selected download area option."""
         return self.selected_option
+
+class DrawAreaInstructionsDialog(QDialog):
+    """Dialog shown while drawing the download area on the map."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Draw Download Area")
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Set up the dialog's user interface."""
+        layout = QVBoxLayout()
+        
+        # Add instructions label
+        draw_label = QLabel(
+            "1. Click and drag on the map to draw the download area.\n"
+            "2. Release mouse button when you're done drawing.\n"
+            "3. Click OK to confirm the area or draw again to modify.\n"
+            "4. Click Cancel to abort."
+        )
+        draw_label.setWordWrap(True)
+        layout.addWidget(draw_label)
+        
+        # Add button layout
+        button_layout = QHBoxLayout()
+        
+        # Add OK button (disabled by default)
+        self.ok_button = QPushButton("OK")
+        self.ok_button.setEnabled(False)  # Disabled until rectangle is drawn
+        self.ok_button.clicked.connect(self.accept)
+        button_layout.addWidget(self.ok_button)
+        
+        # Add cancel button
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_button)
+        
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+    
+    def enable_ok_button(self):
+        """Enable the OK button after a rectangle is drawn."""
+        self.ok_button.setEnabled(True)
+    
+    def disable_ok_button(self):
+        """Disable the OK button when starting a new rectangle."""
+        self.ok_button.setEnabled(False)
