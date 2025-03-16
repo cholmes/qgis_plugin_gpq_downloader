@@ -490,3 +490,119 @@ class DataSourceDialog(QDialog):
         # This method should handle the validation results
         # Check how it's setting validation_results
         pass
+
+class DownloadAreaDialog(QDialog):
+    """Dialog for selecting the download area options."""
+    
+    def __init__(self, parent=None, iface=None):
+        super().__init__(parent)
+        self.iface = iface
+        self.setWindowTitle("Select Download Area")
+        self.setMinimumWidth(400)
+        self.selected_option = "current_extent"  # Default option
+        self.selected_layer = None
+        
+        # Create main layout
+        layout = QVBoxLayout()
+        
+        # Add header label
+        header_label = QLabel("Select area to download:")
+        header_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(header_label)
+        
+        # Create radio buttons for each option
+        self.current_extent_radio = QRadioButton("Download current extent")
+        self.current_extent_radio.setChecked(True)  # Default option
+        self.current_extent_radio.toggled.connect(self.toggle_option)
+        layout.addWidget(self.current_extent_radio)
+        
+        self.draw_area_radio = QRadioButton("Draw an area to download")
+        self.draw_area_radio.toggled.connect(self.toggle_option)
+        layout.addWidget(self.draw_area_radio)
+        
+        self.entire_dataset_radio = QRadioButton("Download the entire dataset")
+        self.entire_dataset_radio.toggled.connect(self.toggle_option)
+        layout.addWidget(self.entire_dataset_radio)
+        
+        # Add info label
+        info_label = QLabel("Note: Downloading large areas may take a long time and result in very large files.")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        
+        # Add spacer
+        layout.addSpacing(20)
+        
+        # Add buttons
+        button_layout = QHBoxLayout()
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.reject)
+        self.ok_button = QPushButton("OK")
+        self.ok_button.clicked.connect(self.accept)
+        self.ok_button.setDefault(True)
+        
+        button_layout.addWidget(self.cancel_button)
+        button_layout.addWidget(self.ok_button)
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def toggle_option(self):
+        """Handle radio button selection changes."""
+        sender = self.sender()
+        if sender == self.current_extent_radio and sender.isChecked():
+            self.selected_option = "current_extent"
+        elif sender == self.draw_area_radio and sender.isChecked():
+            self.selected_option = "draw_area"
+        elif sender == self.entire_dataset_radio and sender.isChecked():
+            self.selected_option = "entire_dataset"
+    
+    def get_selected_option(self):
+        """Return the selected download area option."""
+        return self.selected_option
+
+class DrawAreaInstructionsDialog(QDialog):
+    """Dialog shown while drawing the download area on the map."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Draw Download Area")
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Set up the dialog's user interface."""
+        layout = QVBoxLayout()
+        
+        # Add instructions label
+        draw_label = QLabel(
+            "1. Click and drag on the map to draw the download area.\n"
+            "2. Release mouse button when you're done drawing.\n"
+            "3. Click OK to confirm the area or draw again to modify.\n"
+            "4. Click Cancel to abort."
+        )
+        draw_label.setWordWrap(True)
+        layout.addWidget(draw_label)
+        
+        # Add button layout
+        button_layout = QHBoxLayout()
+        
+        # Add OK button (disabled by default)
+        self.ok_button = QPushButton("OK")
+        self.ok_button.setEnabled(False)  # Disabled until rectangle is drawn
+        self.ok_button.clicked.connect(self.accept)
+        button_layout.addWidget(self.ok_button)
+        
+        # Add cancel button
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_button)
+        
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+    
+    def enable_ok_button(self):
+        """Enable the OK button after a rectangle is drawn."""
+        self.ok_button.setEnabled(True)
+    
+    def disable_ok_button(self):
+        """Disable the OK button when starting a new rectangle."""
+        self.ok_button.setEnabled(False)

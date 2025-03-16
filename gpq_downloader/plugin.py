@@ -19,9 +19,12 @@ from qgis.core import QgsProject, QgsVectorLayer, QgsSettings
 import os
 import datetime
 from pathlib import Path
+from PyQt5.QtWidgets import QApplication
 
-from .dialog import DataSourceDialog
+from .dialog import DataSourceDialog, DownloadAreaDialog, DrawAreaInstructionsDialog
 from .utils import Worker
+from .map_tool import MapToolDrawRectangle
+from qgis.core import QgsRectangle
 
 
 class QgisPluginGeoParquet:
@@ -76,6 +79,7 @@ class QgisPluginGeoParquet:
         self.worker = None
         self.worker_thread = None
         
+        # First show the data source dialog
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
 
         selected_name = QgsSettings().value("gpq_downloader/radio_selection", section=QgsSettings.Plugins)
@@ -85,57 +89,126 @@ class QgisPluginGeoParquet:
         if not selected_name:
             dialog.overture_radio.setChecked(True)
         
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Get the selected URLs from the dialog
-            urls = dialog.get_urls()
-            extent = self.iface.mapCanvas().extent()
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
             
-            # First, collect all file locations from user
-            download_queue = []
-            for url in urls:
-                # Get current date for filename
-                current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-                
-                # Generate filename based on the URL and source type
-                if dialog.overture_radio.isChecked():
-                    # Extract theme from URL
-                    theme = url.split('theme=')[1].split('/')[0]
-                    if 'type=' in url:
-                        type_str = url.split('type=')[1].split('/')[0]
-                        if theme == 'base':
-                            filename = f"overture_base_{type_str}_{current_date}.parquet"
-                        else:
-                            filename = f"overture_{theme}_{current_date}.parquet"
-                    else:
-                        filename = f"overture_{theme}_{current_date}.parquet"
-                elif dialog.sourcecoop_radio.isChecked():
-                    dataset_name = dialog.sourcecoop_combo.currentText()
-                    clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
-                    filename = f"sourcecoop_{clean_name}_{current_date}.parquet"
-                elif dialog.other_radio.isChecked():
-                    dataset_name = dialog.other_combo.currentText()
-                    clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_')
-                    filename = f"other_{clean_name}_{current_date}.parquet"
+        # Get the selected URLs from the dialog
+        urls = dialog.get_urls()
+            
+        # Now show the download area dialog
+        area_dialog = DownloadAreaDialog(self.iface.mainWindow(), self.iface)
+        if area_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+            
+        selected_option = area_dialog.get_selected_option()
+        
+        # Get the appropriate extent based on the selected option
+        if selected_option == "current_extent":
+            extent = self.iface.mapCanvas().extent()
+        elif selected_option == "draw_area":
+            # Show the drawing instructions dialog
+            draw_dialog = DrawAreaInstructionsDialog(self.iface.mainWindow())
+            draw_dialog.setWindowFlags(draw_dialog.windowFlags() | Qt.WindowStaysOnTopHint)
+            draw_dialog.setModal(False)
+            
+            # Store references we'll need later
+            self._source_dialog = dialog
+            self._urls = urls
+            self.drawn_extent = None
+            
+            # Create and activate the map tool for drawing
+            map_tool = MapToolDrawRectangle(self.iface.mapCanvas(), draw_dialog)
+            self.iface.mapCanvas().setMapTool(map_tool)
+            
+            # Connect the map tool's signals
+            map_tool.rectangleCreated.connect(self.handle_drawn_rectangle)
+            map_tool.drawingCanceled.connect(self.handle_drawing_canceled)
+            
+            # Show the dialog without blocking
+            draw_dialog.show()
+            
+            # Wait for the dialog result
+            if draw_dialog.exec() == QDialog.DialogCode.Accepted:
+                # User clicked OK, use the current rectangle
+                if hasattr(map_tool, 'currentRectangle'):
+                    extent = map_tool.currentRectangle
+                    self.iface.mapCanvas().unsetMapTool(map_tool)
                 else:
-                    filename = f"custom_download_{current_date}.parquet"
+                    return
+            else:
+                # User clicked Cancel
+                self.iface.mapCanvas().unsetMapTool(map_tool)
+                return
+        else:  # entire_dataset
+            extent = None
+        
+        # Start the download process
+        self.start_download_process(urls, extent)
 
+    def start_download_process(self, urls, extent):
+        """Start the download process with the given URLs and extent."""
+        # First, collect all file locations from user
+        download_queue = []
+        for url in urls:
+            # Get current date for filename
+            current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            # Generate filename based on the URL and source type
+            if hasattr(self, '_source_dialog') and self._source_dialog:
+                dialog = self._source_dialog
+            else:
+                # Handle case where dialog reference is not available
+                filename = f"custom_download_{current_date}.parquet"
                 default_save_path = str(self.download_dir / filename)
-                
-                # Show save file dialog
                 output_file, selected_filter = QFileDialog.getSaveFileName(
                     self.iface.mainWindow(),
-                    f"Save Data for {theme if dialog.overture_radio.isChecked() else 'dataset'}",
+                    "Save Data",
                     default_save_path,
                     "GeoParquet (*.parquet);;DuckDB Database (*.duckdb);;GeoPackage (*.gpkg);;FlatGeobuf (*.fgb);;GeoJSON (*.geojson)"
                 )
-                
                 if output_file:
                     download_queue.append((url, output_file))
+                continue
+
+            if dialog.overture_radio.isChecked():
+                # Extract theme from URL
+                theme = url.split('theme=')[1].split('/')[0]
+                if 'type=' in url:
+                    type_str = url.split('type=')[1].split('/')[0]
+                    if theme == 'base':
+                        filename = f"overture_base_{type_str}_{current_date}.parquet"
+                    else:
+                        filename = f"overture_{theme}_{current_date}.parquet"
                 else:
-                    return
+                    filename = f"overture_{theme}_{current_date}.parquet"
+            elif dialog.sourcecoop_radio.isChecked():
+                dataset_name = dialog.sourcecoop_combo.currentText()
+                clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
+                filename = f"sourcecoop_{clean_name}_{current_date}.parquet"
+            elif dialog.other_radio.isChecked():
+                dataset_name = dialog.other_combo.currentText()
+                clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_')
+                filename = f"other_{clean_name}_{current_date}.parquet"
+            else:
+                filename = f"custom_download_{current_date}.parquet"
+
+            default_save_path = str(self.download_dir / filename)
             
-            # Now process downloads one at a time
-            self.process_download_queue(download_queue, extent)
+            # Show save file dialog
+            output_file, selected_filter = QFileDialog.getSaveFileName(
+                self.iface.mainWindow(),
+                f"Save Data for {theme if dialog.overture_radio.isChecked() else 'dataset'}",
+                default_save_path,
+                "GeoParquet (*.parquet);;DuckDB Database (*.duckdb);;GeoPackage (*.gpkg);;FlatGeobuf (*.fgb);;GeoJSON (*.geojson)"
+            )
+            
+            if output_file:
+                download_queue.append((url, output_file))
+            else:
+                return
+        
+        # Now process downloads one at a time
+        self.process_download_queue(download_queue, extent)
 
     def handle_validation_complete(
         self, success, message, validation_results, url, extent, dialog
@@ -536,6 +609,20 @@ class QgisPluginGeoParquet:
         if remaining_queue:
             # Start the next download
             self.process_download_queue(remaining_queue, extent)
+
+    def handle_drawn_rectangle(self, rect):
+        """Handle when a rectangle is successfully drawn."""
+        # Get the map canvas CRS
+        source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+        # Transform the rectangle to the project CRS if needed
+        self.drawn_extent = rect
+        # Reset the map tool
+        self.iface.mapCanvas().unsetMapTool(None)
+
+    def handle_drawing_canceled(self):
+        """Handle when drawing is canceled."""
+        self.drawn_extent = None
+        self.iface.mapCanvas().unsetMapTool(None)
 
 
 def classFactory(iface):
