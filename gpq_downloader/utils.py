@@ -210,8 +210,10 @@ class Worker(QObject):
                 #logger.log(f"Final bbox_column value: {bbox_column}")
                 #logger.log(f"Using geometry column: {geometry_column}")
 
-                if bbox_column is not None:
-                    #logger.log(f"Using bbox column for query: {bbox_column}")
+                # Modify the where clause based on whether we have a bbox
+                if bbox is None:
+                    where_clause = ""  # No spatial filter when downloading entire dataset
+                elif bbox_column is not None:
                     where_clause = f"""
                     WHERE "{bbox_column}".xmin BETWEEN {bbox.xMinimum()} AND {bbox.xMaximum()}
                     AND "{bbox_column}".ymin BETWEEN {bbox.yMinimum()} AND {bbox.yMaximum()}
