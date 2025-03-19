@@ -1,27 +1,27 @@
 {
     "overture": {
         "buildings": {
-            "url_template": "s3://overturemaps-us-west-2/release/2025-02-19.0/theme=buildings/type=building/*",
+            "url_template": "s3://overturemaps-us-west-2/release/2025-03-19.0/theme=buildings/type=building/*",
             "info_url": "https://docs.overturemaps.org/reference/buildings",
             "needs_validation": false
         },
         "places": {
-            "url_template": "s3://overturemaps-us-west-2/release/2025-02-19.0/theme=places/type=place/*",
+            "url_template": "s3://overturemaps-us-west-2/release/2025-03-19.0/theme=places/type=place/*",
             "info_url": "https://docs.overturemaps.org/reference/places",
             "needs_validation": false
         },
         "transportation": {
-            "url_template": "s3://overturemaps-us-west-2/release/2025-02-19.0/theme=transportation/type=segment/*",
+            "url_template": "s3://overturemaps-us-west-2/release/2025-03-19.0/theme=transportation/type=segment/*",
             "info_url": "https://docs.overturemaps.org/reference/transportation",
             "needs_validation": false
         },
         "addresses": {
-            "url_template": "s3://overturemaps-us-west-2/release/2025-02-19.0/theme=addresses/type=*/*",
+            "url_template": "s3://overturemaps-us-west-2/release/2025-03-19.0/theme=addresses/type=*/*",
             "info_url": "https://docs.overturemaps.org/reference/addresses",
             "needs_validation": false
         },
         "base": {
-            "url_template": "s3://overturemaps-us-west-2/release/2025-02-19.0/theme=base/type={subtype}/*",
+            "url_template": "s3://overturemaps-us-west-2/release/2025-03-19.0/theme=base/type={subtype}/*",
             "info_url": "https://docs.overturemaps.org/reference/base",
             "needs_validation": false,
             "subtypes": [
@@ -34,7 +34,7 @@
             ]
         },
         "divisions": {
-            "url_template": "s3://overturemaps-us-west-2/release/2025-02-19.0/theme=divisions/type=division_area/*",
+            "url_template": "s3://overturemaps-us-west-2/release/2025-03-19.0/theme=divisions/type=division_area/*",
             "info_url": "https://docs.overturemaps.org/reference/administrative",
             "needs_validation": false
         }
