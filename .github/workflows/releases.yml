@@ -1,0 +1,51 @@
+name: Build and Release QGIS Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers only when pushing tags like v0.8.1, v1.2.3, etc.
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run make_release.sh
+        run: |
+          chmod +x make_release.sh
+          ./make_release.sh ${GITHUB_REF#refs/tags/}
+
+      - name: List files in current directory (debug)
+        run: ls -lh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qgis-plugin-release
+          path: "*.zip"  # Ensure the correct ZIP file is uploaded
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download zipped plugin
+        uses: actions/download-artifact@v4
+        with:
+          name: qgis-plugin-release
+          path: .
+
+      - name: List files in current directory (debug)
+        run: ls -lh
+
+      - name: Attach ZIP to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: "gpq_downloader_*.zip"
+          body: "Automated release of QGIS plugin for Overture Maps."
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
