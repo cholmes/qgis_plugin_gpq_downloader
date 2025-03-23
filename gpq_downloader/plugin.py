@@ -100,7 +100,7 @@ class QgisPluginGeoParquet:
         if area_dialog.exec() != QDialog.DialogCode.Accepted:
             return
             
-        selected_option = area_dialog.get_selected_option()
+        selected_option, file_path = area_dialog.get_selected_option()
         
         # Get the appropriate extent based on the selected option
         if selected_option == "current_extent":
@@ -138,14 +138,44 @@ class QgisPluginGeoParquet:
             else:
                 # User clicked Cancel
                 self.iface.mapCanvas().unsetMapTool(map_tool)
+                return self.run()
+        elif selected_option == "file_upload":
+            if not file_path:
+                QMessageBox.warning(
+                    self.iface.mainWindow(),
+                    "No File Selected",
+                    "Please select a file to use for the extent."
+                )
+                return self.run()
+            
+            # Load the vector layer
+            vector_layer = QgsVectorLayer(file_path, "temp_extent", "ogr")
+            if not vector_layer.isValid():
+                QMessageBox.critical(
+                    self.iface.mainWindow(),
+                    "Invalid File",
+                    "The selected file could not be loaded as a vector layer."
+                )
                 return
-        else:  # entire_dataset
-            extent = None
+            
+            # Get the extent of the vector layer
+            extent = vector_layer.extent()
+            
+            # Transform extent if needed
+            if vector_layer.crs() != self.iface.mapCanvas().mapSettings().destinationCrs():
+                transform = QgsCoordinateTransform(
+                    vector_layer.crs(),
+                    self.iface.mapCanvas().mapSettings().destinationCrs(),
+                    QgsProject.instance()
+                )
+                extent = transform.transformBoundingBox(extent)
+        else:  
+            pass
         
         # Start the download process
-        self.start_download_process(urls, extent)
+        self.start_download_process(dialog, urls, extent)
 
-    def start_download_process(self, urls, extent):
+    def start_download_process(self, dialog, urls, extent):
         """Start the download process with the given URLs and extent."""
         # First, collect all file locations from user
         download_queue = []
@@ -154,22 +184,6 @@ class QgisPluginGeoParquet:
             current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
             
             # Generate filename based on the URL and source type
-            if hasattr(self, '_source_dialog') and self._source_dialog:
-                dialog = self._source_dialog
-            else:
-                # Handle case where dialog reference is not available
-                filename = f"custom_download_{current_date}.parquet"
-                default_save_path = str(self.download_dir / filename)
-                output_file, selected_filter = QFileDialog.getSaveFileName(
-                    self.iface.mainWindow(),
-                    "Save Data",
-                    default_save_path,
-                    "GeoParquet (*.parquet);;DuckDB Database (*.duckdb);;GeoPackage (*.gpkg);;FlatGeobuf (*.fgb);;GeoJSON (*.geojson)"
-                )
-                if output_file:
-                    download_queue.append((url, output_file))
-                continue
-
             if dialog.overture_radio.isChecked():
                 # Extract theme from URL
                 theme = url.split('theme=')[1].split('/')[0]

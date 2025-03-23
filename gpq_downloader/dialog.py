@@ -14,6 +14,7 @@ from qgis.PyQt.QtWidgets import (
     QStackedWidget,
     QWidget,
     QCheckBox,
+    QFileDialog,
 )
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread
 from qgis.core import QgsSettings
@@ -501,6 +502,7 @@ class DownloadAreaDialog(QDialog):
         self.setMinimumWidth(400)
         self.selected_option = "current_extent"  # Default option
         self.selected_layer = None
+        self.uploaded_file = None
         
         # Create main layout
         layout = QVBoxLayout()
@@ -519,18 +521,28 @@ class DownloadAreaDialog(QDialog):
         self.draw_area_radio = QRadioButton("Draw an area to download")
         self.draw_area_radio.toggled.connect(self.toggle_option)
         layout.addWidget(self.draw_area_radio)
+
+        # Add file upload option
+        self.file_upload_radio = QRadioButton("Upload a vector file")
+        self.file_upload_radio.toggled.connect(self.toggle_option)
+        layout.addWidget(self.file_upload_radio)
+
+        # Add file selection widgets
+        self.file_selection_widget = QWidget()
+        file_layout = QHBoxLayout()
+        self.file_path_edit = QLineEdit()
+        self.file_path_edit.setReadOnly(True)
+        self.browse_button = QPushButton("Browse")
+        self.browse_button.clicked.connect(self.browse_file)
+        file_layout.addWidget(self.file_path_edit)
+        file_layout.addWidget(self.browse_button)
+        self.file_selection_widget.setLayout(file_layout)
+        self.file_selection_widget.setEnabled(False)
+        layout.addWidget(self.file_selection_widget)
         
-        self.entire_dataset_radio = QRadioButton("Download the entire dataset")
-        self.entire_dataset_radio.toggled.connect(self.toggle_option)
-        layout.addWidget(self.entire_dataset_radio)
-        
-        # Add info label
-        info_label = QLabel("Note: Downloading large areas may take a long time and result in very large files.")
-        info_label.setWordWrap(True)
-        layout.addWidget(info_label)
         
         # Add spacer
-        layout.addSpacing(20)
+        layout.addSpacing(10)
         
         # Add buttons
         button_layout = QHBoxLayout()
@@ -551,14 +563,31 @@ class DownloadAreaDialog(QDialog):
         sender = self.sender()
         if sender == self.current_extent_radio and sender.isChecked():
             self.selected_option = "current_extent"
+            self.file_selection_widget.setEnabled(False)
         elif sender == self.draw_area_radio and sender.isChecked():
             self.selected_option = "draw_area"
-        elif sender == self.entire_dataset_radio and sender.isChecked():
-            self.selected_option = "entire_dataset"
+            self.file_selection_widget.setEnabled(False)
+        elif sender == self.file_upload_radio and sender.isChecked():
+            self.selected_option = "file_upload"
+            self.file_selection_widget.setEnabled(True)
     
+    def browse_file(self):
+        """Open file dialog to select a vector file."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Vector File",
+            "",
+            "Vector Files (*.shp *.geojson *.gpkg *.fgb *.parquet);;All Files (*.*)"
+        )
+        if file_path:
+            self.file_path_edit.setText(file_path)
+            self.uploaded_file = file_path
+
     def get_selected_option(self):
-        """Return the selected download area option."""
-        return self.selected_option
+        """Return the selected download area option and file path if applicable."""
+        if self.selected_option == "file_upload":
+            return self.selected_option, self.uploaded_file
+        return self.selected_option, None
 
 class DrawAreaInstructionsDialog(QDialog):
     """Dialog shown while drawing the download area on the map."""
