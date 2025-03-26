@@ -15,7 +15,7 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtCore import Qt, QThread
-from qgis.core import QgsProject, QgsVectorLayer, QgsSettings
+from qgis.core import QgsProject, QgsVectorLayer, QgsSettings, QgsCoordinateReferenceSystem, QgsRectangle, QgsCoordinateTransform
 import os
 import datetime
 from pathlib import Path
@@ -24,7 +24,6 @@ from PyQt5.QtWidgets import QApplication
 from .dialog import DataSourceDialog, DownloadAreaDialog, DrawAreaInstructionsDialog
 from .utils import Worker
 from .map_tool import MapToolDrawRectangle
-from qgis.core import QgsRectangle
 
 
 class QgisPluginGeoParquet:

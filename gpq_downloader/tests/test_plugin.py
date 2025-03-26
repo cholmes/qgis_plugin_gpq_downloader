@@ -21,35 +21,78 @@ def test_plugin_run_with_active_download(qgs_app, mock_iface):
         mock_warning.assert_called_once()
         assert "Download in Progress" in mock_warning.call_args[0][1]
 
+@patch('gpq_downloader.plugin.DownloadAreaDialog')
 @patch('gpq_downloader.plugin.DataSourceDialog')
-def test_plugin_run_dialog_rejected(mock_dialog, qgs_app, mock_iface):
+def test_plugin_run_dialog_rejected(mock_data_source_dialog, mock_area_dialog, qgs_app, mock_iface):
     """Test run method when dialog is rejected"""
     plugin = QgisPluginGeoParquet(mock_iface)
     
-    # Setup mock dialog
-    dialog_instance = MagicMock()
-    dialog_instance.exec.return_value = QDialog.Rejected
-    mock_dialog.return_value = dialog_instance
+    # Setup mock data source dialog
+    data_source_dialog_instance = MagicMock()
+    data_source_dialog_instance.exec.return_value = QDialog.Rejected
+    mock_data_source_dialog.return_value = data_source_dialog_instance
+    
+    # Setup mock area dialog (shouldn't be called if first dialog is rejected)
+    area_dialog_instance = MagicMock()
+    mock_area_dialog.return_value = area_dialog_instance
     
     plugin.run()
     
-    dialog_instance.exec.assert_called_once()
+    # Verify first dialog was shown
+    data_source_dialog_instance.exec.assert_called_once()
+    # Verify second dialog was not shown
+    area_dialog_instance.exec.assert_not_called()
+    # Verify worker wasn't created
     assert plugin.worker is None
     assert plugin.worker_thread is None
 
+@patch('gpq_downloader.plugin.DownloadAreaDialog')
+@patch('gpq_downloader.plugin.DataSourceDialog')
+def test_plugin_run_area_dialog_rejected(mock_data_source_dialog, mock_area_dialog, qgs_app, mock_iface):
+    """Test run method when area dialog is rejected"""
+    plugin = QgisPluginGeoParquet(mock_iface)
+    
+    # Setup mock data source dialog
+    data_source_dialog_instance = MagicMock()
+    data_source_dialog_instance.exec.return_value = QDialog.Accepted
+    data_source_dialog_instance.get_urls.return_value = ["https://example.com/test.parquet"]
+    mock_data_source_dialog.return_value = data_source_dialog_instance
+    
+    # Setup mock area dialog
+    area_dialog_instance = MagicMock()
+    area_dialog_instance.exec.return_value = QDialog.Rejected
+    mock_area_dialog.return_value = area_dialog_instance
+    
+    plugin.run()
+    
+    # Verify both dialogs were shown in order
+    data_source_dialog_instance.exec.assert_called_once()
+    area_dialog_instance.exec.assert_called_once()
+    # Verify worker wasn't created
+    assert plugin.worker is None
+    assert plugin.worker_thread is None
+
+
 @patch('gpq_downloader.plugin.QgsSettings')
 @patch('gpq_downloader.plugin.QFileDialog.getSaveFileName')
+@patch('gpq_downloader.plugin.DownloadAreaDialog')
 @patch('gpq_downloader.plugin.DataSourceDialog')
-def test_plugin_run_with_download(mock_dialog, mock_save_dialog, mock_settings, qgs_app, mock_iface, tmp_path):
+def test_plugin_run_with_download(mock_data_source_dialog, mock_area_dialog, mock_save_dialog, mock_settings, qgs_app, mock_iface, tmp_path):
     """Test run method with successful download setup"""
     plugin = QgisPluginGeoParquet(mock_iface)
     
-    # Setup mock dialog
-    dialog_instance = MagicMock()
-    dialog_instance.exec.return_value = QDialog.Accepted
-    dialog_instance.get_urls.return_value = ["https://example.com/test.parquet?theme=buildings"]
-    dialog_instance.overture_radio.isChecked.return_value = True
-    mock_dialog.return_value = dialog_instance
+    # Setup mock data source dialog
+    data_source_dialog_instance = MagicMock()
+    data_source_dialog_instance.exec.return_value = QDialog.Accepted
+    data_source_dialog_instance.get_urls.return_value = ["https://example.com/test.parquet?theme=buildings"]
+    data_source_dialog_instance.overture_radio.isChecked.return_value = True
+    mock_data_source_dialog.return_value = data_source_dialog_instance
+    
+    # Setup mock area dialog
+    area_dialog_instance = MagicMock()
+    area_dialog_instance.exec.return_value = QDialog.Accepted
+    area_dialog_instance.get_selected_option.return_value = ("current_extent", None)
+    mock_area_dialog.return_value = area_dialog_instance
     
     # Setup mock save dialog
     output_file = str(tmp_path / "test.parquet")
@@ -67,6 +110,9 @@ def test_plugin_run_with_download(mock_dialog, mock_save_dialog, mock_settings, 
         with patch.object(plugin, 'process_download_queue'):
             plugin.run()
     
+    # Verify both dialogs were shown
+    data_source_dialog_instance.exec.assert_called_once()
+    area_dialog_instance.exec.assert_called_once()
     mock_save_dialog.assert_called_once()
 
 def test_plugin_handle_error(qgs_app, mock_iface):
