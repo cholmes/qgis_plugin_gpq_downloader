@@ -14,6 +14,7 @@ from qgis.PyQt.QtWidgets import (
     QStackedWidget,
     QWidget,
     QCheckBox,
+    QFileDialog,
 )
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread
 from qgis.core import QgsSettings
@@ -490,3 +491,147 @@ class DataSourceDialog(QDialog):
         # This method should handle the validation results
         # Check how it's setting validation_results
         pass
+
+class DownloadAreaDialog(QDialog):
+    """Dialog for selecting the download area options."""
+    
+    def __init__(self, parent=None, iface=None):
+        super().__init__(parent)
+        self.iface = iface
+        self.setWindowTitle("Select Download Area")
+        self.setMinimumWidth(400)
+        self.selected_option = "current_extent"  # Default option
+        self.selected_layer = None
+        self.uploaded_file = None
+        
+        # Create main layout
+        layout = QVBoxLayout()
+        
+        # Add header label
+        header_label = QLabel("Select area to download:")
+        header_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(header_label)
+        
+        # Create radio buttons for each option
+        self.current_extent_radio = QRadioButton("Download current extent")
+        self.current_extent_radio.setChecked(True)  # Default option
+        self.current_extent_radio.toggled.connect(self.toggle_option)
+        layout.addWidget(self.current_extent_radio)
+        
+        self.draw_area_radio = QRadioButton("Draw an area to download")
+        self.draw_area_radio.toggled.connect(self.toggle_option)
+        layout.addWidget(self.draw_area_radio)
+
+        # Add file upload option
+        self.file_upload_radio = QRadioButton("Upload a vector file")
+        self.file_upload_radio.toggled.connect(self.toggle_option)
+        layout.addWidget(self.file_upload_radio)
+
+        # Add file selection widgets
+        self.file_selection_widget = QWidget()
+        file_layout = QHBoxLayout()
+        self.file_path_edit = QLineEdit()
+        self.file_path_edit.setReadOnly(True)
+        self.browse_button = QPushButton("Browse")
+        self.browse_button.clicked.connect(self.browse_file)
+        file_layout.addWidget(self.file_path_edit)
+        file_layout.addWidget(self.browse_button)
+        self.file_selection_widget.setLayout(file_layout)
+        self.file_selection_widget.setEnabled(False)
+        layout.addWidget(self.file_selection_widget)
+        
+        
+        # Add spacer
+        layout.addSpacing(10)
+        
+        # Add buttons
+        button_layout = QHBoxLayout()
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.reject)
+        self.ok_button = QPushButton("OK")
+        self.ok_button.clicked.connect(self.accept)
+        self.ok_button.setDefault(True)
+        
+        button_layout.addWidget(self.cancel_button)
+        button_layout.addWidget(self.ok_button)
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def toggle_option(self):
+        """Handle radio button selection changes."""
+        sender = self.sender()
+        if sender == self.current_extent_radio and sender.isChecked():
+            self.selected_option = "current_extent"
+            self.file_selection_widget.setEnabled(False)
+        elif sender == self.draw_area_radio and sender.isChecked():
+            self.selected_option = "draw_area"
+            self.file_selection_widget.setEnabled(False)
+        elif sender == self.file_upload_radio and sender.isChecked():
+            self.selected_option = "file_upload"
+            self.file_selection_widget.setEnabled(True)
+    
+    def browse_file(self):
+        """Open file dialog to select a vector file."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Vector File",
+            "",
+            "Vector Files (*.shp *.geojson *.gpkg *.fgb *.parquet);;All Files (*.*)"
+        )
+        if file_path:
+            self.file_path_edit.setText(file_path)
+            self.uploaded_file = file_path
+
+    def get_selected_option(self):
+        """Return the selected download area option and file path if applicable."""
+        if self.selected_option == "file_upload":
+            return self.selected_option, self.uploaded_file
+        return self.selected_option, None
+
+class DrawAreaInstructionsDialog(QDialog):
+    """Dialog shown while drawing the download area on the map."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Draw Download Area")
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Set up the dialog's user interface."""
+        layout = QVBoxLayout()
+        
+        # Add instructions label
+        draw_label = QLabel(
+            "1. Click and drag on the map to draw the download area.\n"
+            "2. Release mouse button when you're done drawing.\n"
+            "3. Click OK to confirm the area or draw again to modify.\n"
+            "4. Click Cancel to abort."
+        )
+        draw_label.setWordWrap(True)
+        layout.addWidget(draw_label)
+        
+        # Add button layout
+        button_layout = QHBoxLayout()
+        
+        # Add OK button (disabled by default)
+        self.ok_button = QPushButton("OK")
+        self.ok_button.setEnabled(False)  # Disabled until rectangle is drawn
+        self.ok_button.clicked.connect(self.accept)
+        button_layout.addWidget(self.ok_button)
+        
+        # Add cancel button
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_button)
+        
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+    
+    def enable_ok_button(self):
+        """Enable the OK button after a rectangle is drawn."""
+        self.ok_button.setEnabled(True)
+    
+    def disable_ok_button(self):
+        """Disable the OK button when starting a new rectangle."""
+        self.ok_button.setEnabled(False)
