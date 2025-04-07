@@ -85,57 +85,66 @@ class QgisPluginGeoParquet:
         if not selected_name:
             dialog.overture_radio.setChecked(True)
         
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Get the selected URLs from the dialog
-            urls = dialog.get_urls()
-            extent = self.iface.mapCanvas().extent()
+        # Show the dialog non-modally
+        dialog.show()
+        
+        # Connect to the dialog's accepted signal to handle the result
+        dialog.accepted.connect(lambda: self.handle_dialog_accepted(dialog))
+
+    def handle_dialog_accepted(self, dialog):
+        """Handle the dialog being accepted"""
+        # Get the selected URLs from the dialog
+        urls = dialog.get_urls()
+        
+        # Get the custom extent from the dialog if available, otherwise use map canvas extent
+        extent = dialog.get_current_extent() or self.iface.mapCanvas().extent()
+        
+        # First, collect all file locations from user
+        download_queue = []
+        for url in urls:
+            # Get current date for filename
+            current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
             
-            # First, collect all file locations from user
-            download_queue = []
-            for url in urls:
-                # Get current date for filename
-                current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-                
-                # Generate filename based on the URL and source type
-                if dialog.overture_radio.isChecked():
-                    # Extract theme from URL
-                    theme = url.split('theme=')[1].split('/')[0]
-                    if 'type=' in url:
-                        type_str = url.split('type=')[1].split('/')[0]
-                        if theme == 'base':
-                            filename = f"overture_base_{type_str}_{current_date}.parquet"
-                        else:
-                            filename = f"overture_{theme}_{current_date}.parquet"
+            # Generate filename based on the URL and source type
+            if dialog.overture_radio.isChecked():
+                # Extract theme from URL
+                theme = url.split('theme=')[1].split('/')[0]
+                if 'type=' in url:
+                    type_str = url.split('type=')[1].split('/')[0]
+                    if theme == 'base':
+                        filename = f"overture_base_{type_str}_{current_date}.parquet"
                     else:
                         filename = f"overture_{theme}_{current_date}.parquet"
-                elif dialog.sourcecoop_radio.isChecked():
-                    dataset_name = dialog.sourcecoop_combo.currentText()
-                    clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
-                    filename = f"sourcecoop_{clean_name}_{current_date}.parquet"
-                elif dialog.other_radio.isChecked():
-                    dataset_name = dialog.other_combo.currentText()
-                    clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_')
-                    filename = f"other_{clean_name}_{current_date}.parquet"
                 else:
-                    filename = f"custom_download_{current_date}.parquet"
+                    filename = f"overture_{theme}_{current_date}.parquet"
+            elif dialog.sourcecoop_radio.isChecked():
+                dataset_name = dialog.sourcecoop_combo.currentText()
+                clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
+                filename = f"sourcecoop_{clean_name}_{current_date}.parquet"
+            elif dialog.other_radio.isChecked():
+                dataset_name = dialog.other_combo.currentText()
+                clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_')
+                filename = f"other_{clean_name}_{current_date}.parquet"
+            else:
+                filename = f"custom_download_{current_date}.parquet"
 
-                default_save_path = str(self.download_dir / filename)
-                
-                # Show save file dialog
-                output_file, selected_filter = QFileDialog.getSaveFileName(
-                    self.iface.mainWindow(),
-                    f"Save Data for {theme if dialog.overture_radio.isChecked() else 'dataset'}",
-                    default_save_path,
-                    "GeoParquet (*.parquet);;DuckDB Database (*.duckdb);;GeoPackage (*.gpkg);;FlatGeobuf (*.fgb);;GeoJSON (*.geojson)"
-                )
-                
-                if output_file:
-                    download_queue.append((url, output_file))
-                else:
-                    return
+            default_save_path = str(self.download_dir / filename)
             
-            # Now process downloads one at a time
-            self.process_download_queue(download_queue, extent)
+            # Show save file dialog
+            output_file, selected_filter = QFileDialog.getSaveFileName(
+                self.iface.mainWindow(),
+                f"Save Data for {theme if dialog.overture_radio.isChecked() else 'dataset'}",
+                default_save_path,
+                "GeoParquet (*.parquet);;DuckDB Database (*.duckdb);;GeoPackage (*.gpkg);;FlatGeobuf (*.fgb);;GeoJSON (*.geojson)"
+            )
+            
+            if output_file:
+                download_queue.append((url, output_file))
+            else:
+                return
+        
+        # Now process downloads one at a time
+        self.process_download_queue(download_queue, extent)
 
     def handle_validation_complete(
         self, success, message, validation_results, url, extent, dialog
