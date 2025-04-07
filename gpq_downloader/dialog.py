@@ -22,9 +22,10 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread
 from qgis.PyQt.QtGui import QIcon
-from qgis.core import QgsSettings, QgsRectangle
+from qgis.core import QgsSettings, QgsRectangle, QgsGeometry
 import os
 from .utils import ValidationWorker
+from .map_tools import RectangleMapTool, PolygonMapTool
 
 
 class DataSourceDialog(QDialog):
@@ -527,8 +528,10 @@ class DataSourceDialog(QDialog):
         
         # Create tool button with dropdown menu
         button_layout = QHBoxLayout()
+        
+        # Extent button
         self.extent_button = QToolButton()
-        self.extent_button.setText(" Extent")
+        self.extent_button.setText("Area of Interest")
         self.extent_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.extent_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         
@@ -537,7 +540,7 @@ class DataSourceDialog(QDialog):
         icon_path = os.path.join(base_path, "icons", "extents.svg")
         self.extent_button.setIcon(QIcon(icon_path))
         
-        # Create menu for the button
+        # Create menu for the extent button
         extent_menu = QMenu()
         
         # Add actions to menu
@@ -556,7 +559,35 @@ class DataSourceDialog(QDialog):
         # Connect button click to default action (use canvas extent)
         self.extent_button.clicked.connect(self.use_canvas_extent)
         
+        # Draw button
+        self.draw_button = QToolButton()
+        self.draw_button.setText("Draw")
+        self.draw_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.draw_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        
+        # Use the extent-draw-polygon.svg icon from the icons folder
+        draw_icon_path = os.path.join(base_path, "icons", "extent-draw-polygon.svg")
+        self.draw_button.setIcon(QIcon(draw_icon_path))
+        
+        # Create menu for the draw button
+        draw_menu = QMenu()
+        
+        # Add actions to menu
+        rectangle_action = QAction("Rectangle", self)
+        rectangle_action.triggered.connect(self.start_rectangle_draw)
+        
+        polygon_action = QAction("Polygon", self)
+        polygon_action.triggered.connect(self.start_polygon_draw)
+        
+        draw_menu.addAction(rectangle_action)
+        draw_menu.addAction(polygon_action)
+        
+        # Set the menu to the button
+        self.draw_button.setMenu(draw_menu)
+        
+        # Add buttons to layout
         button_layout.addWidget(self.extent_button)
+        button_layout.addWidget(self.draw_button)
         button_layout.addStretch()
         extent_layout.addLayout(button_layout)
         
@@ -633,3 +664,50 @@ class DataSourceDialog(QDialog):
         if self.iface and self.iface.mapCanvas():
             self.current_extent = self.iface.mapCanvas().extent()
             self.update_extent_display("Map Canvas")
+
+    def start_rectangle_draw(self):
+        """Start drawing a rectangle on the map canvas"""
+        if self.iface and self.iface.mapCanvas():
+            # Create and set the rectangle map tool
+            self.rectangle_tool = RectangleMapTool(self.iface.mapCanvas())
+            self.iface.mapCanvas().setMapTool(self.rectangle_tool)
+            
+            # Connect the signal
+            self.rectangle_tool.extentSelected.connect(self.on_rectangle_drawn)
+            
+            # Show instructions
+            self.iface.messageBar().pushMessage(
+                "Draw Rectangle", 
+                "Click and drag to draw a rectangle. Release to finish.", 
+                level=0, 
+                duration=5
+            )
+    
+    def start_polygon_draw(self):
+        """Start drawing a polygon on the map canvas"""
+        if self.iface and self.iface.mapCanvas():
+            # Create and set the polygon map tool
+            self.polygon_tool = PolygonMapTool(self.iface.mapCanvas())
+            self.iface.mapCanvas().setMapTool(self.polygon_tool)
+            
+            # Connect the signal
+            self.polygon_tool.polygonSelected.connect(self.on_polygon_drawn)
+            
+            # Show instructions
+            self.iface.messageBar().pushMessage(
+                "Draw Polygon", 
+                "Click to add vertices. Right-click to finish.", 
+                level=0, 
+                duration=5
+            )
+    
+    def on_rectangle_drawn(self, extent):
+        """Handle when a rectangle is drawn"""
+        self.current_extent = extent
+        self.update_extent_display("Drawn Rectangle")
+    
+    def on_polygon_drawn(self, geometry):
+        """Handle when a polygon is drawn"""
+        # Convert polygon geometry to extent for display
+        self.current_extent = geometry.boundingBox()
+        self.update_extent_display("Drawn Polygon")

@@ -77,6 +77,9 @@ class QgisPluginGeoParquet:
         self.worker_thread = None
         
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
+        
+        # Pass the QGIS interface to the dialog for map tools
+        dialog.iface = self.iface
 
         selected_name = QgsSettings().value("gpq_downloader/radio_selection", section=QgsSettings.Plugins)
         for button in [dialog.overture_radio, dialog.sourcecoop_radio, dialog.other_radio, dialog.custom_radio]:
