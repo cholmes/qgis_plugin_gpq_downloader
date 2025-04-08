@@ -25,7 +25,7 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.core import QgsSettings, QgsRectangle, QgsGeometry
 import os
 from .utils import ValidationWorker
-from .map_tools import RectangleMapTool, PolygonMapTool
+from .map_tools import PolygonMapTool
 
 
 class DataSourceDialog(QDialog):
@@ -42,6 +42,8 @@ class DataSourceDialog(QDialog):
         self.extent_button = None
         self.extent_display = None
         self.current_extent = None
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
         self.setWindowTitle("GeoParquet Data Source")
         self.setMinimumWidth(500)
         
@@ -561,29 +563,15 @@ class DataSourceDialog(QDialog):
         
         # Draw button
         self.draw_button = QToolButton()
-        self.draw_button.setText("Draw")
-        self.draw_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.draw_button.setText(" Draw")
         self.draw_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+              # Use the extents.svg icon from the icons folder
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(base_path, "icons", "extent-draw-polygon.svg")
+        self.draw_button.setIcon(QIcon(icon_path))
         
-        # Use the extent-draw-polygon.svg icon from the icons folder
-        draw_icon_path = os.path.join(base_path, "icons", "extent-draw-polygon.svg")
-        self.draw_button.setIcon(QIcon(draw_icon_path))
-        
-        # Create menu for the draw button
-        draw_menu = QMenu()
-        
-        # Add actions to menu
-        rectangle_action = QAction("Rectangle", self)
-        rectangle_action.triggered.connect(self.start_rectangle_draw)
-        
-        polygon_action = QAction("Polygon", self)
-        polygon_action.triggered.connect(self.start_polygon_draw)
-        
-        draw_menu.addAction(rectangle_action)
-        draw_menu.addAction(polygon_action)
-        
-        # Set the menu to the button
-        self.draw_button.setMenu(draw_menu)
+        # Connect button click directly to polygon drawing
+        self.draw_button.clicked.connect(self.start_polygon_draw)
         
         # Add buttons to layout
         button_layout.addWidget(self.extent_button)
@@ -610,12 +598,18 @@ class DataSourceDialog(QDialog):
     def use_canvas_extent(self):
         """Use the current map canvas extent as Area of Interest"""
         if self.iface and self.iface.mapCanvas():
+            # Clear any previously drawn geometry
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
             self.current_extent = self.iface.mapCanvas().extent()
             self.update_extent_display("Map Canvas")
     
     def use_active_layer_extent(self):
         """Use the active layer extent as Area of Interest"""
         if self.iface and self.iface.activeLayer():
+            # Clear any previously drawn geometry
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
             self.current_extent = self.iface.activeLayer().extent()
             layer_name = self.iface.activeLayer().name()
             self.update_extent_display(f"Layer: {layer_name}")
@@ -623,11 +617,16 @@ class DataSourceDialog(QDialog):
     def update_extent_display(self, source):
         """Update the extent display with the current extent information"""
         if self.current_extent:
+            # Show either drawn geometry WKT or extent WKT
+            wkt = ""
+            if source == "Drawn Polygon" and self.aoi_geometry:
+                wkt = self.aoi_geometry.asWkt()
+            else:
+                extent_geom = QgsGeometry.fromRect(self.current_extent)
+                wkt = extent_geom.asWkt()
+            
             extent_str = (f"Source: {source}\n"
-                         f"Xmin: {self.current_extent.xMinimum():.6f}, "
-                         f"Ymin: {self.current_extent.yMinimum():.6f}, "
-                         f"Xmax: {self.current_extent.xMaximum():.6f}, "
-                         f"Ymax: {self.current_extent.yMaximum():.6f}")
+                         f"WKT: {wkt}")
             self.extent_display.setText(extent_str)
         else:
             self.extent_display.clear()
@@ -665,24 +664,6 @@ class DataSourceDialog(QDialog):
             self.current_extent = self.iface.mapCanvas().extent()
             self.update_extent_display("Map Canvas")
 
-    def start_rectangle_draw(self):
-        """Start drawing a rectangle on the map canvas"""
-        if self.iface and self.iface.mapCanvas():
-            # Create and set the rectangle map tool
-            self.rectangle_tool = RectangleMapTool(self.iface.mapCanvas())
-            self.iface.mapCanvas().setMapTool(self.rectangle_tool)
-            
-            # Connect the signal
-            self.rectangle_tool.extentSelected.connect(self.on_rectangle_drawn)
-            
-            # Show instructions
-            self.iface.messageBar().pushMessage(
-                "Draw Rectangle", 
-                "Click and drag to draw a rectangle. Release to finish.", 
-                level=0, 
-                duration=5
-            )
-    
     def start_polygon_draw(self):
         """Start drawing a polygon on the map canvas"""
         if self.iface and self.iface.mapCanvas():
@@ -701,13 +682,47 @@ class DataSourceDialog(QDialog):
                 duration=5
             )
     
-    def on_rectangle_drawn(self, extent):
-        """Handle when a rectangle is drawn"""
-        self.current_extent = extent
-        self.update_extent_display("Drawn Rectangle")
-    
     def on_polygon_drawn(self, geometry):
         """Handle when a polygon is drawn"""
+        # Store the full geometry
+        self.aoi_geometry = QgsGeometry(geometry)
+        
+        # Get the current map CRS
+        map_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+        
+        # Store the CRS with the geometry for later reprojection if needed
+        self.aoi_geometry_crs = map_crs
+        
         # Convert polygon geometry to extent for display
         self.current_extent = geometry.boundingBox()
+        
+        # Update the display
         self.update_extent_display("Drawn Polygon")
+
+    def get_reprojected_geometry(self, target_crs):
+        """Return the geometry reprojected to the target CRS if needed"""
+        if not self.aoi_geometry:
+            return None
+            
+        # If target CRS is not specified, return the original geometry
+        if not target_crs:
+            return self.aoi_geometry
+            
+        # Check if we need to reproject
+        if self.aoi_geometry_crs.authid() != target_crs.authid():
+            from qgis.core import QgsCoordinateTransform, QgsProject
+            
+            # Create a coordinate transform
+            transform = QgsCoordinateTransform(
+                self.aoi_geometry_crs,
+                target_crs,
+                QgsProject.instance()
+            )
+            
+            # Clone the geometry and transform it
+            reprojected_geom = self.aoi_geometry.clone()
+            reprojected_geom.transform(transform)
+            return reprojected_geom
+        
+        # No reprojection needed
+        return self.aoi_geometry

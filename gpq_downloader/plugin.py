@@ -102,6 +102,18 @@ class QgisPluginGeoParquet:
         # Get the custom extent from the dialog if available, otherwise use map canvas extent
         extent = dialog.get_current_extent() or self.iface.mapCanvas().extent()
         
+        # Get the drawn geometry if available
+        aoi_geometry = getattr(dialog, 'aoi_geometry', None)
+        if aoi_geometry and hasattr(dialog, 'aoi_geometry_crs'):
+            # Ensure we're using the correct CRS for the geometry
+            from qgis.core import QgsCoordinateTransform, QgsProject
+            transform = QgsCoordinateTransform(
+                dialog.aoi_geometry_crs,
+                self.iface.mapCanvas().mapSettings().destinationCrs(),
+                QgsProject.instance()
+            )
+            aoi_geometry.transform(transform)
+        
         # First, collect all file locations from user
         download_queue = []
         for url in urls:
@@ -147,7 +159,7 @@ class QgisPluginGeoParquet:
                 return
         
         # Now process downloads one at a time
-        self.process_download_queue(download_queue, extent)
+        self.process_download_queue(download_queue, extent, aoi_geometry)
 
     def handle_validation_complete(
         self, success, message, validation_results, url, extent, dialog
@@ -451,10 +463,10 @@ class QgisPluginGeoParquet:
         progress_dialog.setMinimumDuration(0)
         return progress_dialog
 
-    def setup_worker(self, dataset_url, extent, output_file, validation_results):
+    def setup_worker(self, dataset_url, extent, output_file, validation_results, aoi_geometry=None):
         """Create and setup a worker thread with all connections"""
         self.worker = Worker(
-            dataset_url, extent, output_file, self.iface, validation_results
+            dataset_url, extent, output_file, self.iface, validation_results, aoi_geometry=aoi_geometry
         )
         self.worker_thread = QThread()
         self.worker.moveToThread(self.worker_thread)
@@ -471,7 +483,7 @@ class QgisPluginGeoParquet:
 
         return self.worker, self.worker_thread
 
-    def process_download_queue(self, download_queue, extent):
+    def process_download_queue(self, download_queue, extent, aoi_geometry=None):
         """Process downloads sequentially"""
         if not download_queue:
             return
@@ -522,6 +534,7 @@ class QgisPluginGeoParquet:
         
         # Create worker with layer name
         self.worker = Worker(url, extent, output_file, self.iface, validation_results, layer_name)
+        self.worker.aoi_geometry = aoi_geometry  # Pass the aoi_geometry to the worker
         self.worker.remaining_queue = remaining_queue  # Store remaining queue in worker
         self.worker_thread = QThread()
         
@@ -534,7 +547,7 @@ class QgisPluginGeoParquet:
         self.worker.load_layer.connect(self.load_layer)
         self.worker.info.connect(self.show_info)
         self.worker.file_size_warning.connect(self.handle_large_file_warning)
-        self.worker.finished.connect(lambda: self.handle_download_complete(remaining_queue, extent))
+        self.worker.finished.connect(lambda: self.handle_download_complete(remaining_queue, extent, aoi_geometry))
         self.worker.progress.connect(self.update_progress)
         self.progress_dialog.canceled.connect(self.cancel_download)
         
@@ -542,12 +555,12 @@ class QgisPluginGeoParquet:
         self.progress_dialog.show()
         self.worker_thread.start()
 
-    def handle_download_complete(self, remaining_queue, extent):
+    def handle_download_complete(self, remaining_queue, extent, aoi_geometry=None):
         """Handle completion of a download and start the next one if any"""
         self.cleanup_thread()
         if remaining_queue:
             # Start the next download
-            self.process_download_queue(remaining_queue, extent)
+            self.process_download_queue(remaining_queue, extent, aoi_geometry)
 
 
 def classFactory(iface):

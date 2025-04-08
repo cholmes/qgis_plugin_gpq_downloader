@@ -1,6 +1,6 @@
 import json
 
-from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject
+from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsGeometry
 from qgis.PyQt.QtCore import pyqtSignal, QObject
 import os
 import duckdb
@@ -40,17 +40,17 @@ class Worker(QObject):
     percent = pyqtSignal(int)
     file_size_warning = pyqtSignal(float)  # Signal for file size warnings (in MB)
 
-    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None):
+    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None):
         super().__init__()
         self.dataset_url = dataset_url
         self.extent = extent
         self.output_file = output_file
         self.iface = iface
-        #logger.log(f"Worker __init__ received validation_results: {validation_results}")
         self.validation_results = validation_results
         self.killed = False
-        self.layer_name = layer_name  # Ensure this is included if needed
-        self.size_warning_accepted = False  # Ensure this is False on initialization
+        self.layer_name = layer_name
+        self.size_warning_accepted = False
+        self.aoi_geometry = aoi_geometry
 
     def get_bbox_info_from_metadata(self, conn):
         """Read GeoParquet metadata to find bbox column info"""
@@ -102,7 +102,13 @@ class Worker(QObject):
             source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
             bbox = transform_bbox_to_4326(self.extent, source_crs)
 
-            # Log validation results dictionary at the beginning of run
+            # Log the dataset URL and aoi_geometry for debugging
+            logger.log(f"Processing dataset: {self.dataset_url}")
+            if self.aoi_geometry:
+                logger.log(f"Using AOI geometry: {self.aoi_geometry.asWkt()}")
+            else:
+                logger.log("No AOI geometry provided.")
+
             #logger.log(f"Full validation_results at start of run: {self.validation_results}")
 
             conn = duckdb.connect()
@@ -228,6 +234,27 @@ class Worker(QObject):
                                             {bbox.xMinimum()} {bbox.yMinimum()}))')
                     )
                     """
+
+                # Additional filtering with aoi_geometry if available
+                if self.aoi_geometry is not None:
+                    # Create a temporary clone for transformation to WGS 1984 (EPSG:4326)
+                    dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+                    source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+                    
+                    # Log the source and destination CRS for debugging
+                    logger.log(f"Source CRS: {source_crs.authid()}, Destination CRS: {dest_crs.authid()}")
+                    
+                    # Clone and transform only for the SQL query
+                    transformed_geom = QgsGeometry(self.aoi_geometry)
+                    transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
+                    transformed_geom.transform(transform)
+                    
+                    # Use the transformed geometry for the SQL query
+                    aoi_wkt = transformed_geom.asWkt()
+                    where_clause += f" AND ST_Intersects(\"{geometry_column}\", ST_GeomFromText('{aoi_wkt}'))"
+                    
+                    # Log the updated where_clause for debugging
+                    logger.log(f"Applying AOI geometry filter: {aoi_wkt}")
 
                 # Base query
                 base_query = f"""
