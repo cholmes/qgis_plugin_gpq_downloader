@@ -16,6 +16,55 @@ from qgis.PyQt.QtGui import QColor
 # Define colors for the rubber band
 RB_STROKE = QColor(0, 120, 215)  # Blue color
 RB_FILL = QColor(204, 235, 239, 100)  # Light blue with transparency
+HIGHLIGHT_STROKE = QColor(255, 165, 0)  # Orange color for highlighting
+HIGHLIGHT_FILL = QColor(255, 223, 186, 150)  # Light orange with transparency
+
+
+class AoiHighlighter:
+    """Class to highlight the selected AOI on the map canvas"""
+    
+    def __init__(self, canvas):
+        """Initialize the highlighter"""
+        self.canvas = canvas
+        self.rubber_band = None
+        
+    def highlight_aoi(self, geometry=None, extent=None):
+        """Display a highlighted AOI on the map canvas
+        
+        Args:
+            geometry (QgsGeometry): The geometry to highlight
+            extent (QgsRectangle): The extent to highlight if no geometry is provided
+        """
+        # Clean up any existing rubber band
+        self.clear()
+        
+        # Create a new rubber band
+        self.rubber_band = QgsRubberBand(self.canvas, QgsWkbTypes.PolygonGeometry)
+        self.rubber_band.setFillColor(HIGHLIGHT_FILL)
+        self.rubber_band.setStrokeColor(HIGHLIGHT_STROKE)
+        self.rubber_band.setWidth(2)
+        
+        if geometry:
+            # Use provided geometry
+            self.rubber_band.setToGeometry(geometry, None)
+        elif extent:
+            # Convert extent to polygon geometry
+            rect_geom = QgsGeometry.fromRect(extent)
+            self.rubber_band.setToGeometry(rect_geom, None)
+        else:
+            # No geometry or extent provided, don't show anything
+            self.clear()
+            return
+            
+        # Make sure the rubber band is visible
+        self.rubber_band.show()
+        
+    def clear(self):
+        """Clear the highlighted area"""
+        if self.rubber_band:
+            self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+            self.canvas.refresh()
+            self.rubber_band = None
 
 
 class PolygonMapTool(QgsMapTool):

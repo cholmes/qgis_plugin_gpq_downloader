@@ -25,7 +25,7 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.core import QgsSettings, QgsRectangle, QgsGeometry
 import os
 from .utils import ValidationWorker
-from .map_tools import PolygonMapTool
+from .map_tools import PolygonMapTool, AoiHighlighter
 
 
 class DataSourceDialog(QDialog):
@@ -44,6 +44,13 @@ class DataSourceDialog(QDialog):
         self.current_extent = None
         self.aoi_geometry = None
         self.aoi_geometry_crs = None
+        self.polygon_tool = None
+        
+        # Create the AOI highlighter
+        self.aoi_highlighter = None
+        if self.iface and self.iface.mapCanvas():
+            self.aoi_highlighter = AoiHighlighter(self.iface.mapCanvas())
+            
         self.setWindowTitle("GeoParquet Data Source")
         self.setMinimumWidth(500)
         
@@ -51,14 +58,15 @@ class DataSourceDialog(QDialog):
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
         self.setModal(False)
         
-        # Load last used extent if available
-        self.load_last_extent()
+        # Load last used extent if available but don't set it automatically
+        # self.load_last_extent()
         
-        # Connect to map canvas extent changes
-        if self.iface and self.iface.mapCanvas():
-            self.iface.mapCanvas().extentsChanged.connect(self.on_map_extent_changed)
-            # Set initial extent from map canvas
-            self.current_extent = self.iface.mapCanvas().extent()
+        # Don't set initial extent from map canvas
+        # if self.iface and self.iface.mapCanvas():
+        #     self.current_extent = self.iface.mapCanvas().extent()
+        #     # Initialize the highlighting with the current extent
+        #     if self.aoi_highlighter:
+        #         self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
 
         base_path = os.path.dirname(os.path.abspath(__file__))
         presets_path = os.path.join(base_path, "data", "presets.json")
@@ -289,6 +297,19 @@ class DataSourceDialog(QDialog):
         if not urls:
             QMessageBox.warning(self, "Validation Error", "Please select at least one dataset")
             return
+            
+        # Check if the user selected an Area of Interest
+        if not self.current_extent:
+            reply = QMessageBox.warning(
+                self,
+                "No Area of Interest Selected",
+                "No area of interest has been explicitly selected. The current map canvas extent will be used instead, which may result in a larger download than intended.\n\n"
+                "Do you want to continue using the current map canvas extent?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
 
         # For Overture datasets, we know they're valid so we can skip validation
         if self.overture_radio.isChecked():
@@ -371,6 +392,17 @@ class DataSourceDialog(QDialog):
     def closeEvent(self, event):
         """Handle dialog closing"""
         self.cleanup_validation()
+        
+        # Reset the map tool to default when closing
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+        
+        # Clear any AOI highlighting when dialog is closed
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+            self.aoi_highlighter = None
+            
         super().closeEvent(event)
 
     def get_urls(self):
@@ -533,9 +565,10 @@ class DataSourceDialog(QDialog):
         
         # Extent button
         self.extent_button = QToolButton()
-        self.extent_button.setText("Area of Interest")
+        self.extent_button.setText("Select Extent")
         self.extent_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.extent_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.extent_button.setToolTip("Click the dropdown arrow to select an existing extent")
         
         # Use the extents.svg icon from the icons folder
         base_path = os.path.dirname(os.path.abspath(__file__))
@@ -558,14 +591,12 @@ class DataSourceDialog(QDialog):
         # Set the menu to the button
         self.extent_button.setMenu(extent_menu)
         
-        # Connect button click to default action (use canvas extent)
-        self.extent_button.clicked.connect(self.use_canvas_extent)
-        
         # Draw button
         self.draw_button = QToolButton()
         self.draw_button.setText(" Draw")
         self.draw_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-              # Use the extents.svg icon from the icons folder
+        self.draw_button.setToolTip("Draw a custom polygon on the map")
+        # Use the extents.svg icon from the icons folder
         base_path = os.path.dirname(os.path.abspath(__file__))
         icon_path = os.path.join(base_path, "icons", "extent-draw-polygon.svg")
         self.draw_button.setIcon(QIcon(icon_path))
@@ -573,46 +604,82 @@ class DataSourceDialog(QDialog):
         # Connect button click directly to polygon drawing
         self.draw_button.clicked.connect(self.start_polygon_draw)
         
+        # Clear button
+        self.clear_button = QToolButton()
+        self.clear_button.setText(" Clear")
+        self.clear_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.clear_button.setToolTip("Clear the current area of interest")
+        # Use the clear icon if available or another suitable icon
+        icon_path = os.path.join(base_path, "icons", "extent-clear.svg")
+        if os.path.exists(icon_path):
+            self.clear_button.setIcon(QIcon(icon_path))
+        else:
+            # Fallback to a standard icon if the custom one isn't available
+            from qgis.PyQt.QtWidgets import QStyle
+            self.clear_button.setIcon(self.style().standardIcon(QStyle.SP_DialogCancelButton))
+        
+        # Connect clear button to clear function
+        self.clear_button.clicked.connect(self.clear_extent)
+        
         # Add buttons to layout
         button_layout.addWidget(self.extent_button)
         button_layout.addWidget(self.draw_button)
+        button_layout.addWidget(self.clear_button)
         button_layout.addStretch()
         extent_layout.addLayout(button_layout)
         
         # Add text display for extent
         self.extent_display = QTextEdit()
         self.extent_display.setReadOnly(True)
-        self.extent_display.setMaximumHeight(60)
-        self.extent_display.setPlaceholderText("No extent selected. Default is full dataset extent.")
+        self.extent_display.setMaximumHeight(40)
+        self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
         extent_layout.addWidget(self.extent_display)
         
         # Set the layout to the group
         self.extent_group.setLayout(extent_layout)
         
-        # Update the extent display with initial extent if available
-        if self.current_extent:
-            self.update_extent_display("Map Canvas")
+        # Don't update the extent display with initial extent
+        # if self.current_extent:
+        #     self.update_extent_display("Initial Map Canvas")
         
         return self.extent_group
     
     def use_canvas_extent(self):
         """Use the current map canvas extent as Area of Interest"""
         if self.iface and self.iface.mapCanvas():
+            # Reset the polygon tool if active
+            if self.polygon_tool:
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.polygon_tool = None
+                
             # Clear any previously drawn geometry
             self.aoi_geometry = None
             self.aoi_geometry_crs = None
             self.current_extent = self.iface.mapCanvas().extent()
-            self.update_extent_display("Map Canvas")
+            self.update_extent_display("Current Map Canvas")
+            
+            # Update the AOI highlighting
+            if self.aoi_highlighter:
+                self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
     
     def use_active_layer_extent(self):
         """Use the active layer extent as Area of Interest"""
         if self.iface and self.iface.activeLayer():
+            # Reset the polygon tool if active
+            if self.polygon_tool and self.iface.mapCanvas():
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.polygon_tool = None
+                
             # Clear any previously drawn geometry
             self.aoi_geometry = None
             self.aoi_geometry_crs = None
             self.current_extent = self.iface.activeLayer().extent()
             layer_name = self.iface.activeLayer().name()
             self.update_extent_display(f"Layer: {layer_name}")
+            
+            # Update the AOI highlighting
+            if self.aoi_highlighter:
+                self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
     
     def update_extent_display(self, source):
         """Update the extent display with the current extent information"""
@@ -630,7 +697,7 @@ class DataSourceDialog(QDialog):
             self.extent_display.setText(extent_str)
         else:
             self.extent_display.clear()
-            self.extent_display.setPlaceholderText("No extent selected. Default is full dataset extent.")
+            self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
 
     def get_current_extent(self):
         """Returns the current selected extent or None if not set"""
@@ -645,7 +712,30 @@ class DataSourceDialog(QDialog):
                 self.current_extent.toString(),
                 section=QgsSettings.Plugins,
             )
+        
+        # Reset the map tool to default when accepting dialog
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+        
+        # Clear any AOI highlighting when dialog is accepted
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+            
         super().accept()
+    
+    def reject(self):
+        """Override reject to clean up resources"""
+        # Reset the map tool to default when rejecting dialog
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+            
+        # Clear any AOI highlighting when dialog is rejected
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+            
+        super().reject()
 
     def load_last_extent(self):
         """Load the last used extent from QgsSettings if available"""
@@ -655,6 +745,10 @@ class DataSourceDialog(QDialog):
                 self.current_extent = QgsRectangle.fromString(last_extent_str)
                 if self.current_extent and self.current_extent.isNull() == False:
                     self.update_extent_display("Last Used Extent")
+                    
+                    # Update the AOI highlighting
+                    if self.aoi_highlighter:
+                        self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
             except Exception:
                 self.current_extent = None
 
@@ -663,16 +757,28 @@ class DataSourceDialog(QDialog):
         if self.iface and self.iface.mapCanvas():
             self.current_extent = self.iface.mapCanvas().extent()
             self.update_extent_display("Map Canvas")
+            
+            # Update the AOI highlighting (only if we're using the canvas extent)
+            if self.aoi_geometry is None and self.aoi_highlighter:
+                self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
 
     def start_polygon_draw(self):
         """Start drawing a polygon on the map canvas"""
         if self.iface and self.iface.mapCanvas():
+            # Clean up existing polygon tool if there is one
+            if self.polygon_tool:
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.polygon_tool = None
+                
             # Create and set the polygon map tool
             self.polygon_tool = PolygonMapTool(self.iface.mapCanvas())
             self.iface.mapCanvas().setMapTool(self.polygon_tool)
             
             # Connect the signal
             self.polygon_tool.polygonSelected.connect(self.on_polygon_drawn)
+            
+            # Connect the deactivated signal to clean up the tool when another tool is selected
+            self.polygon_tool.deactivated.connect(self.handle_polygon_tool_deactivated)
             
             # Show instructions
             self.iface.messageBar().pushMessage(
@@ -681,7 +787,11 @@ class DataSourceDialog(QDialog):
                 level=0, 
                 duration=5
             )
-    
+            
+    def handle_polygon_tool_deactivated(self):
+        """Handle the polygon tool being deactivated by another tool"""
+        self.polygon_tool = None
+
     def on_polygon_drawn(self, geometry):
         """Handle when a polygon is drawn"""
         # Store the full geometry
@@ -698,6 +808,17 @@ class DataSourceDialog(QDialog):
         
         # Update the display
         self.update_extent_display("Drawn Polygon")
+        
+        # Update the AOI highlighting
+        if self.aoi_highlighter:
+            self.aoi_highlighter.highlight_aoi(geometry=self.aoi_geometry)
+            
+        # Reset the map tool after drawing is complete (but keep the tool reference)
+        if self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            
+        # Set focus back to the dialog
+        self.activateWindow()
 
     def get_reprojected_geometry(self, target_crs):
         """Return the geometry reprojected to the target CRS if needed"""
@@ -726,3 +847,23 @@ class DataSourceDialog(QDialog):
         
         # No reprojection needed
         return self.aoi_geometry
+
+    def clear_extent(self):
+        """Clear the current area of interest"""
+        # Reset the polygon tool if active
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+            
+        # Clear any previously drawn geometry
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = None
+        
+        # Clear the extent display
+        self.extent_display.clear()
+        self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
+        
+        # Clear the AOI highlighting
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
