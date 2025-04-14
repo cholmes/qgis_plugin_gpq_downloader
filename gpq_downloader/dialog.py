@@ -730,8 +730,41 @@ class DataSourceDialog(QDialog):
             # Clear any previously drawn geometry
             self.aoi_geometry = None
             self.aoi_geometry_crs = None
-            self.current_extent = self.iface.activeLayer().extent()
-            layer_name = self.iface.activeLayer().name()
+            
+            # Get the active layer and its extent
+            active_layer = self.iface.activeLayer()
+            layer_extent = active_layer.extent()
+            
+            # Get the layer's CRS and the map canvas CRS
+            layer_crs = active_layer.crs()
+            map_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+            
+            # Check if the layer CRS is different from the map canvas CRS
+            if layer_crs.authid() != map_crs.authid():
+                # Create a coordinate transform from layer CRS to map canvas CRS
+                from qgis.core import QgsCoordinateTransform, QgsProject
+                transform = QgsCoordinateTransform(
+                    layer_crs,
+                    map_crs,
+                    QgsProject.instance()
+                )
+                
+                # Transform the extent to the map canvas CRS
+                layer_extent = transform.transformBoundingBox(layer_extent)
+                
+                # Store the transformed extent
+                self.current_extent = layer_extent
+                
+                # Also store the geometry with its CRS for later use
+                extent_geom = QgsGeometry.fromRect(layer_extent)
+                self.aoi_geometry = extent_geom
+                self.aoi_geometry_crs = map_crs
+            else:
+                # No transformation needed, use the layer extent directly
+                self.current_extent = layer_extent
+            
+            # Update the display with the layer name
+            layer_name = active_layer.name()
             self.update_extent_display(f"Layer: {layer_name}")
             
             # Update the AOI highlighting
@@ -742,7 +775,7 @@ class DataSourceDialog(QDialog):
             self.extent_button.setChecked(True)
             self.draw_button.setChecked(False)
             self.select_button.setChecked(False)
-    
+
     def update_extent_display(self, source):
         """Update the extent display with the current extent information"""
         if self.current_extent:
@@ -856,6 +889,9 @@ class DataSourceDialog(QDialog):
                     self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
                 except:
                     pass
+                
+                # Clear any selected features in the active layer
+                self.iface.activeLayer().removeSelection()
                 
             # Create and set the polygon map tool
             self.polygon_tool = PolygonMapTool(self.iface.mapCanvas())
@@ -1039,6 +1075,10 @@ class DataSourceDialog(QDialog):
         if not active_layer or active_layer.selectedFeatureCount() == 0:
             return
             
+        # Get the layer's CRS and the map canvas CRS
+        layer_crs = active_layer.crs()
+        map_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+        
         # Get the combined geometry of all selected features
         selected_features = active_layer.selectedFeatures()
         combined_geometry = None
@@ -1046,6 +1086,21 @@ class DataSourceDialog(QDialog):
         for feature in selected_features:
             geom = feature.geometry()
             if geom and not geom.isEmpty():
+                # Check if we need to transform the geometry
+                if layer_crs.authid() != map_crs.authid():
+                    # Create a coordinate transform from layer CRS to map canvas CRS
+                    from qgis.core import QgsCoordinateTransform, QgsProject
+                    transform = QgsCoordinateTransform(
+                        layer_crs,
+                        map_crs,
+                        QgsProject.instance()
+                    )
+                    
+                    # Create a copy of the geometry and transform it
+                    transformed_geom = QgsGeometry(geom)
+                    transformed_geom.transform(transform)
+                    geom = transformed_geom
+                
                 if combined_geometry is None:
                     # Use copy constructor instead of clone method
                     combined_geometry = QgsGeometry(geom)
@@ -1055,9 +1110,6 @@ class DataSourceDialog(QDialog):
         if combined_geometry:
             # Store the geometry
             self.aoi_geometry = combined_geometry
-            
-            # Get the current map CRS
-            map_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
             
             # Store the CRS with the geometry for later reprojection if needed
             self.aoi_geometry_crs = map_crs
