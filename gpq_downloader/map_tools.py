@@ -86,6 +86,10 @@ class PolygonMapTool(QgsMapTool):
         if event.button() == Qt.RightButton:
             if self.rubber_band is None or self.extent is None:
                 return
+            # Add the right-click point as the final vertex
+            self.rubber_band.addPoint(event.mapPoint())
+            # Update the geometry with the new point
+            self.extent = self.rubber_band.asGeometry()
             # Validate geometry before firing signal
             self.extent.removeDuplicateNodes()
             self.polygonSelected.emit(self.extent)

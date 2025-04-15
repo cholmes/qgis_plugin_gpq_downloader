@@ -20,7 +20,7 @@ from qgis.PyQt.QtWidgets import (
     QGroupBox,
     QTextEdit,
 )
-from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread
+from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread, QPoint
 from qgis.PyQt.QtGui import QIcon
 from qgis.core import QgsSettings, QgsRectangle, QgsGeometry
 import os
@@ -577,7 +577,7 @@ class DataSourceDialog(QDialog):
         
         # Extent button
         self.extent_button = QToolButton()
-        self.extent_button.setText("Select Extent")
+        self.extent_button.setText(" Extent")
         self.extent_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.extent_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.extent_button.setToolTip("Click the dropdown arrow to select an existing extent")
@@ -603,6 +603,9 @@ class DataSourceDialog(QDialog):
         
         # Set the menu to the button
         self.extent_button.setMenu(extent_menu)
+        
+        # Connect button click to show the menu
+        self.extent_button.clicked.connect(self.show_extent_menu)
         
         # Draw button
         self.draw_button = QToolButton()
@@ -1123,3 +1126,13 @@ class DataSourceDialog(QDialog):
             # Update the AOI highlighting
             if self.aoi_highlighter:
                 self.aoi_highlighter.highlight_aoi(geometry=self.aoi_geometry)
+
+    def show_extent_menu(self):
+        """Show the extent menu"""
+        # Get the menu from the extent button
+        menu = self.extent_button.menu()
+        if menu:
+            # Get the button's position in global coordinates
+            button_pos = self.extent_button.mapToGlobal(QPoint(0, 20))
+            # Show the menu below the button
+            menu.exec_(button_pos)
