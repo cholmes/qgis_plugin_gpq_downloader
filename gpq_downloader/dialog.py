@@ -52,6 +52,13 @@ class DataSourceDialog(QDialog):
         if self.iface and self.iface.mapCanvas():
             self.aoi_highlighter = AoiHighlighter(self.iface.mapCanvas())
             
+            # Connect to layer changes
+            from qgis.core import QgsProject
+            QgsProject.instance().layersAdded.connect(self.on_layers_changed)
+            QgsProject.instance().layersRemoved.connect(self.on_layers_changed)
+            QgsProject.instance().layerWasAdded.connect(self.on_layers_changed)
+            QgsProject.instance().layerWillBeRemoved.connect(self.on_layers_changed)
+            
         self.setWindowTitle("GeoParquet Data Source")
         self.setMinimumWidth(500)
         
@@ -391,18 +398,27 @@ class DataSourceDialog(QDialog):
             self.validation_thread = None
 
     def closeEvent(self, event):
-        """Handle dialog closing"""
-        self.cleanup_validation()
-        
-        # Reset the map tool to default when closing
+        """Handle dialog close event"""
+        # Clean up validation if running
+        if self.validation_thread and self.validation_thread.isRunning():
+            self.cancel_validation()
+            
+        # Disconnect from layer changes
+        if self.iface:
+            from qgis.core import QgsProject
+            QgsProject.instance().layersAdded.disconnect(self.on_layers_changed)
+            QgsProject.instance().layersRemoved.disconnect(self.on_layers_changed)
+            QgsProject.instance().layerWasAdded.disconnect(self.on_layers_changed)
+            QgsProject.instance().layerWillBeRemoved.disconnect(self.on_layers_changed)
+            
+        # Reset the map tool to default
         if self.polygon_tool and self.iface and self.iface.mapCanvas():
             self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
             self.polygon_tool = None
-        
-        # Clear any AOI highlighting when dialog is closed
+            
+        # Clear any AOI highlighting
         if self.aoi_highlighter:
             self.aoi_highlighter.clear()
-            self.aoi_highlighter = None
             
         # Disconnect from any active layer selection signals
         if self.iface and self.iface.activeLayer():
@@ -410,7 +426,7 @@ class DataSourceDialog(QDialog):
                 self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
             except:
                 pass
-            
+                
         # Restore the default map tool
         if self.iface:
             self.iface.actionPan().trigger()
@@ -571,6 +587,17 @@ class DataSourceDialog(QDialog):
         # Create group box
         self.extent_group = QGroupBox("Area of Interest")
         extent_layout = QVBoxLayout()
+        
+        # Add layer selection dropdown
+        layer_layout = QHBoxLayout()
+        layer_label = QLabel("Active Layer:")
+        self.layer_combo = QComboBox()
+        self.layer_combo.setToolTip("Select the active layer to use for extent and feature selection")
+        self.populate_layer_combo()
+        layer_layout.addWidget(layer_label)
+        layer_layout.addWidget(self.layer_combo)
+        layer_layout.addStretch()
+        extent_layout.addLayout(layer_layout)
         
         # Create tool button with dropdown menu
         button_layout = QHBoxLayout()
@@ -1136,3 +1163,64 @@ class DataSourceDialog(QDialog):
             button_pos = self.extent_button.mapToGlobal(QPoint(0, 20))
             # Show the menu below the button
             menu.exec_(button_pos)
+
+    def populate_layer_combo(self):
+        """Populate the layer combo box with available layers"""
+        if not self.iface:
+            return
+            
+        # Clear existing items
+        self.layer_combo.clear()
+        
+        # Get all layers from the project
+        layers = self.iface.mapCanvas().layers()
+        
+        # Add layers to combo box
+        for layer in layers:
+            self.layer_combo.addItem(layer.name(), layer)
+            
+        # Connect to layer changed signal
+        self.layer_combo.currentIndexChanged.connect(self.on_layer_changed)
+        
+        # Select current active layer if any
+        active_layer = self.iface.activeLayer()
+        if active_layer:
+            index = self.layer_combo.findData(active_layer)
+            if index >= 0:
+                self.layer_combo.setCurrentIndex(index)
+                
+    def on_layer_changed(self, index):
+        """Handle layer selection change"""
+        if not self.iface or index < 0:
+            return
+            
+        # Get selected layer
+        layer = self.layer_combo.itemData(index)
+        if layer:
+            # Store whether we were in selection mode
+            was_in_selection_mode = self.select_button.isChecked()
+            
+            # Clear selection from previous layer if any
+            if self.iface.activeLayer():
+                try:
+                    self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
+                except:
+                    pass
+                self.iface.activeLayer().removeSelection()
+            
+            # Set as active layer
+            self.iface.setActiveLayer(layer)
+            
+            # Uncheck all AOI buttons
+            self.extent_button.setChecked(False)
+            self.draw_button.setChecked(False)
+            self.select_button.setChecked(False)
+            
+            # If we were in selection mode, restart it for the new layer
+            if was_in_selection_mode:
+                self.start_feature_selection()
+
+    def on_layers_changed(self):
+        """Handle when layers are added or removed from the project"""
+        if hasattr(self, 'layer_combo'):
+            self.populate_layer_combo()
