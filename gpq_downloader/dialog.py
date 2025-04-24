@@ -59,6 +59,12 @@ class DataSourceDialog(QDialog):
             QgsProject.instance().layerWasAdded.connect(self.on_layers_changed)
             QgsProject.instance().layerWillBeRemoved.connect(self.on_layers_changed)
             
+            # Connect to layer order changes
+            if self.iface.layerTreeView():
+                self.iface.layerTreeView().model().rowsMoved.connect(self.on_layers_changed)
+                self.iface.layerTreeView().model().rowsInserted.connect(self.on_layers_changed)
+                self.iface.layerTreeView().model().rowsRemoved.connect(self.on_layers_changed)
+            
         self.setWindowTitle("GeoParquet Data Source")
         self.setMinimumWidth(500)
         
@@ -1207,26 +1213,43 @@ class DataSourceDialog(QDialog):
         if not self.iface:
             return
             
+        # Store the current selection
+        current_layer = None
+        if self.layer_combo.currentIndex() >= 0:
+            current_layer = self.layer_combo.itemData(self.layer_combo.currentIndex())
+            
         # Clear existing items
         self.layer_combo.clear()
         
-        # Get all layers from the project
-        layers = self.iface.mapCanvas().layers()
+        # Get all layers from the project in the correct order
+        from qgis.core import QgsProject
+        root = QgsProject.instance().layerTreeRoot()
         
-        # Add layers to combo box
+        # Get all layers in the order they appear in the layer tree
+        layers = []
+        for layer in root.findLayers():
+            if layer.layer() and layer.layer().type() == 0:  # Vector layer
+                layers.append(layer.layer())
+        
+        # Add layers to combo box in the same order as the layer tree
         for layer in layers:
             self.layer_combo.addItem(layer.name(), layer)
             
         # Connect to layer changed signal
         self.layer_combo.currentIndexChanged.connect(self.on_layer_changed)
         
-        # Select current active layer if any
-        active_layer = self.iface.activeLayer()
-        if active_layer:
-            index = self.layer_combo.findData(active_layer)
+        # Restore the previous selection or select the active layer
+        if current_layer and current_layer in layers:
+            index = self.layer_combo.findData(current_layer)
             if index >= 0:
                 self.layer_combo.setCurrentIndex(index)
-                
+        else:
+            active_layer = self.iface.activeLayer()
+            if active_layer and active_layer in layers:
+                index = self.layer_combo.findData(active_layer)
+                if index >= 0:
+                    self.layer_combo.setCurrentIndex(index)
+
     def on_layer_changed(self, index):
         """Handle layer selection change"""
         if not self.iface or index < 0:
