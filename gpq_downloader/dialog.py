@@ -812,7 +812,14 @@ class DataSourceDialog(QDialog):
             # Show either drawn geometry WKT or extent WKT
             wkt = ""
             if source == "Drawn Polygon" and self.aoi_geometry:
-                wkt = self.aoi_geometry.asWkt()
+                # Ensure we're getting a standard WKT format
+                from qgis.core import QgsWkbTypes
+                geom = QgsGeometry(self.aoi_geometry)
+                if geom.wkbType() == QgsWkbTypes.MultiSurface:
+                    geom = QgsGeometry.fromMultiPolygonXY(geom.asMultiPolygon())
+                elif geom.wkbType() == QgsWkbTypes.CurvePolygon:
+                    geom = QgsGeometry.fromPolygonXY(geom.asPolygon())
+                wkt = geom.asWkt()
             else:
                 extent_geom = QgsGeometry.fromRect(self.current_extent)
                 wkt = extent_geom.asWkt()
@@ -1001,10 +1008,25 @@ class DataSourceDialog(QDialog):
             # Create a copy of the geometry and transform it
             reprojected_geom = QgsGeometry(self.aoi_geometry)
             reprojected_geom.transform(transform)
+            
+            # Ensure the geometry is in a standard format
+            from qgis.core import QgsWkbTypes
+            if reprojected_geom.wkbType() == QgsWkbTypes.MultiSurface:
+                reprojected_geom = QgsGeometry.fromMultiPolygonXY(reprojected_geom.asMultiPolygon())
+            elif reprojected_geom.wkbType() == QgsWkbTypes.CurvePolygon:
+                reprojected_geom = QgsGeometry.fromPolygonXY(reprojected_geom.asPolygon())
+            
             return reprojected_geom
         
-        # No reprojection needed
-        return self.aoi_geometry
+        # No reprojection needed, but still ensure the geometry is in a standard format
+        from qgis.core import QgsWkbTypes
+        geom = QgsGeometry(self.aoi_geometry)
+        if geom.wkbType() == QgsWkbTypes.MultiSurface:
+            geom = QgsGeometry.fromMultiPolygonXY(geom.asMultiPolygon())
+        elif geom.wkbType() == QgsWkbTypes.CurvePolygon:
+            geom = QgsGeometry.fromPolygonXY(geom.asPolygon())
+        
+        return geom
 
     def clear_extent(self):
         """Clear the current area of interest"""
@@ -1026,16 +1048,23 @@ class DataSourceDialog(QDialog):
         if self.aoi_highlighter:
             self.aoi_highlighter.clear()
             
-        # Clear selected features in the active layer if any
-        if self.iface and self.iface.activeLayer():
-            # Disconnect from the selection changed signal first to avoid loops
-            try:
-                self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
-            except:
-                pass  # If it wasn't connected, just continue
-                
-            # Clear the selection
-            self.iface.activeLayer().removeSelection()
+        # Clear selected features in all layers
+        if self.iface:
+            # Get all layers from the project
+            from qgis.core import QgsProject
+            layers = QgsProject.instance().mapLayers().values()
+            
+            for layer in layers:
+                # Only process vector layers
+                if layer.type() == 0:  # Vector layer
+                    # Disconnect from the selection changed signal first to avoid loops
+                    try:
+                        layer.selectionChanged.disconnect(self.on_selection_changed)
+                    except:
+                        pass  # If it wasn't connected, just continue
+                        
+                    # Clear the selection
+                    layer.removeSelection()
             
             # Deactivate feature selection mode
             if self.iface.mapCanvas():
@@ -1138,6 +1167,15 @@ class DataSourceDialog(QDialog):
                     combined_geometry = combined_geometry.combine(geom)
         
         if combined_geometry:
+            # Convert MultiSurface to MultiPolygon if needed
+            from qgis.core import QgsWkbTypes
+            if combined_geometry.wkbType() == QgsWkbTypes.MultiSurface:
+                # Force convert to a standard format (MultiPolygon)
+                combined_geometry = QgsGeometry.fromMultiPolygonXY(combined_geometry.asMultiPolygon())
+            elif combined_geometry.wkbType() == QgsWkbTypes.CurvePolygon:
+                # Convert CurvePolygon to standard Polygon
+                combined_geometry = QgsGeometry.fromPolygonXY(combined_geometry.asPolygon())
+            
             # Store the geometry
             self.aoi_geometry = combined_geometry
             
