@@ -1259,7 +1259,9 @@ class DataSourceDialog(QDialog):
         layer = self.layer_combo.itemData(index)
         if layer:
             # Store whether we were in selection mode
-            was_in_selection_mode = self.select_button.isChecked()
+            was_in_selection_mode = False
+            if hasattr(self, 'select_button') and self.select_button is not None:
+                was_in_selection_mode = self.select_button.isChecked()
             
             # Clear selection from previous layer if any
             if self.iface.activeLayer():
@@ -1272,13 +1274,16 @@ class DataSourceDialog(QDialog):
             # Set as active layer
             self.iface.setActiveLayer(layer)
             
-            # Uncheck all AOI buttons
-            self.extent_button.setChecked(False)
-            self.draw_button.setChecked(False)
-            self.select_button.setChecked(False)
+            # Uncheck all AOI buttons if they exist and are not None
+            if hasattr(self, 'extent_button') and self.extent_button is not None:
+                self.extent_button.setChecked(False)
+            if hasattr(self, 'draw_button') and self.draw_button is not None:
+                self.draw_button.setChecked(False)
+            if hasattr(self, 'select_button') and self.select_button is not None:
+                self.select_button.setChecked(False)
             
             # If we were in selection mode, restart it for the new layer
-            if was_in_selection_mode:
+            if was_in_selection_mode and hasattr(self, 'select_button') and self.select_button is not None:
                 self.start_feature_selection()
 
     def on_layers_changed(self):
