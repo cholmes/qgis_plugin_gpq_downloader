@@ -803,6 +803,11 @@ class DataSourceDialog(QDialog):
             layer_name = active_layer.name()
             self.update_extent_display(f"Layer: {layer_name}")
             
+            # Ensure the AOI highlighter is properly initialized
+            if not self.aoi_highlighter and self.iface.mapCanvas():
+                from .map_tools import AoiHighlighter
+                self.aoi_highlighter = AoiHighlighter(self.iface.mapCanvas())
+                
             # Update the AOI highlighting
             if self.aoi_highlighter:
                 self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
@@ -1054,7 +1059,7 @@ class DataSourceDialog(QDialog):
         if self.aoi_highlighter:
             self.aoi_highlighter.clear()
             
-        # Clear selected features in all layers
+        # Clear selected features in all layers and disconnect signals
         if self.iface:
             # Get all layers from the project
             from qgis.core import QgsProject
@@ -1072,6 +1077,14 @@ class DataSourceDialog(QDialog):
                     # Clear the selection
                     layer.removeSelection()
             
+            # If there's an active layer, connect to its selection changed signal
+            active_layer = self.iface.activeLayer()
+            if active_layer and active_layer.type() == 0:  # Vector layer
+                try:
+                    active_layer.selectionChanged.disconnect(self.on_selection_changed)
+                except:
+                    pass  # Make sure it's not already connected
+                
             # Deactivate feature selection mode
             if self.iface.mapCanvas():
                 # Get the current map tool
@@ -1115,11 +1128,24 @@ class DataSourceDialog(QDialog):
                 self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
                 self.polygon_tool = None
                 
-            # Use QGIS's built-in selection tool
-            self.iface.actionSelectRectangle().trigger()
-            
+            # Clear any previous highlighter to start fresh
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+                
+            # Clear any previous selection
+            active_layer.removeSelection()
+                
+            # Disconnect any existing selection signal first to avoid multiple connections
+            try:
+                active_layer.selectionChanged.disconnect(self.on_selection_changed)
+            except:
+                pass
+                
             # Connect to the selection changed signal
             active_layer.selectionChanged.connect(self.on_selection_changed)
+            
+            # Use QGIS's built-in selection tool
+            self.iface.actionSelectRectangle().trigger()
             
             # Show instructions
             self.iface.messageBar().pushMessage(
@@ -1133,11 +1159,25 @@ class DataSourceDialog(QDialog):
             self.extent_button.setChecked(False)
             self.draw_button.setChecked(False)
             self.select_button.setChecked(True)
-            
+
     def on_selection_changed(self):
         """Handle when the selection in the active layer changes"""
         active_layer = self.iface.activeLayer()
-        if not active_layer or active_layer.selectedFeatureCount() == 0:
+        if not active_layer:
+            return
+            
+        # If no features are selected, clear the highlighting but keep selection mode active
+        if active_layer.selectedFeatureCount() == 0:
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
+            self.current_extent = None
+            
+            # Clear the extent display
+            if hasattr(self, 'extent_display') and self.extent_display is not None:
+                self.extent_display.clear()
+                self.extent_display.setPlaceholderText("No features selected. Select features to define the area of interest.")
             return
             
         # Get the layer's CRS and the map canvas CRS
@@ -1194,8 +1234,14 @@ class DataSourceDialog(QDialog):
             # Update the display
             self.update_extent_display("Selected Features")
             
-            # Update the AOI highlighting
+            # Ensure the AOI highlighter exists
+            if not self.aoi_highlighter and self.iface.mapCanvas():
+                from .map_tools import AoiHighlighter
+                self.aoi_highlighter = AoiHighlighter(self.iface.mapCanvas())
+                
+            # Update the AOI highlighting - first clear to avoid stacking highlighters
             if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
                 self.aoi_highlighter.highlight_aoi(geometry=self.aoi_geometry)
 
     def show_extent_menu(self):
@@ -1263,7 +1309,15 @@ class DataSourceDialog(QDialog):
             if hasattr(self, 'select_button') and self.select_button is not None:
                 was_in_selection_mode = self.select_button.isChecked()
             
-            # Clear selection from previous layer if any
+            # Clear the AOI highlighting to prevent "stuck" highlights
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+            
+            # Reset our tracking variables to ensure a clean state
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
+            
+            # Clear selection from previous layer if any and disconnect signals
             if self.iface.activeLayer():
                 try:
                     self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
@@ -1282,6 +1336,11 @@ class DataSourceDialog(QDialog):
             if hasattr(self, 'select_button') and self.select_button is not None:
                 self.select_button.setChecked(False)
             
+            # Update the extent display to show no selection
+            if hasattr(self, 'extent_display') and self.extent_display is not None:
+                self.extent_display.clear()
+                self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
+            
             # If we were in selection mode, restart it for the new layer
             if was_in_selection_mode and hasattr(self, 'select_button') and self.select_button is not None:
                 self.start_feature_selection()
@@ -1289,4 +1348,16 @@ class DataSourceDialog(QDialog):
     def on_layers_changed(self):
         """Handle when layers are added or removed from the project"""
         if hasattr(self, 'layer_combo'):
+            # Store current active layer
+            current_active = self.iface.activeLayer()
+            
+            # Update the combo box
             self.populate_layer_combo()
+            
+            # If we had an active layer before, try to restore it
+            if current_active:
+                index = self.layer_combo.findData(current_active)
+                if index >= 0:
+                    self.layer_combo.setCurrentIndex(index)
+                    # Ensure the layer is still active
+                    self.iface.setActiveLayer(current_active)

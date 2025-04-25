@@ -35,11 +35,14 @@ class AoiHighlighter:
             geometry (QgsGeometry): The geometry to highlight
             extent (QgsRectangle): The extent to highlight if no geometry is provided
         """
-        # Clean up any existing rubber band
-        self.clear()
+        # Clear any existing rubber band
+        if self.rubber_band:
+            self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+        else:
+            # Create a new rubber band if needed
+            self.rubber_band = QgsRubberBand(self.canvas, QgsWkbTypes.PolygonGeometry)
         
-        # Create a new rubber band
-        self.rubber_band = QgsRubberBand(self.canvas, QgsWkbTypes.PolygonGeometry)
+        # Configure the rubber band
         self.rubber_band.setFillColor(HIGHLIGHT_FILL)
         self.rubber_band.setStrokeColor(HIGHLIGHT_STROKE)
         self.rubber_band.setWidth(2)
@@ -52,7 +55,7 @@ class AoiHighlighter:
             rect_geom = QgsGeometry.fromRect(extent)
             self.rubber_band.setToGeometry(rect_geom, None)
         else:
-            # No geometry or extent provided, don't show anything
+            # No geometry or extent provided, just clear
             self.clear()
             return
             
@@ -63,8 +66,8 @@ class AoiHighlighter:
         """Clear the highlighted area"""
         if self.rubber_band:
             self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+            # Refresh the canvas to show the change
             self.canvas.refresh()
-            self.rubber_band = None
 
 
 class PolygonMapTool(QgsMapTool):

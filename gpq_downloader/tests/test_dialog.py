@@ -5,6 +5,39 @@ from qgis.PyQt.QtCore import Qt
 
 from gpq_downloader.dialog import DataSourceDialog
 
+@pytest.fixture
+def mock_iface():
+    """Create a mock iface with all required attributes"""
+    iface = MagicMock()
+    
+    # Mock mapCanvas
+    map_canvas = MagicMock()
+    iface.mapCanvas.return_value = map_canvas
+    
+    # Mock layerTreeView
+    layer_tree_view = MagicMock()
+    layer_tree_model = MagicMock()
+    layer_tree_view.model.return_value = layer_tree_model
+    iface.layerTreeView.return_value = layer_tree_view
+    
+    # Mock activeLayer
+    active_layer = MagicMock()
+    iface.activeLayer.return_value = active_layer
+    
+    # Mock messageBar
+    message_bar = MagicMock()
+    iface.messageBar.return_value = message_bar
+    
+    # Mock actionPan
+    pan_action = MagicMock()
+    iface.actionPan.return_value = pan_action
+    
+    # Mock actionSelectRectangle
+    select_action = MagicMock()
+    iface.actionSelectRectangle.return_value = select_action
+    
+    return iface
+
 def test_dialog_initialization(qgs_app, mock_iface):
     """Test dialog initialization"""
     dialog = DataSourceDialog(None, mock_iface)
