@@ -95,6 +95,21 @@ class Worker(QObject):
                     continue
         return None
 
+    def support_s3_style_urls(self, conn):
+        if "minio://" in self.dataset_url:
+            url = self.dataset_url[len("minio://"):]
+            first_slash = url.find("/")
+            if first_slash == -1:
+                return
+            
+            host = url[:first_slash]
+            path = "s3://" + url[first_slash+1:]
+            
+            conn.execute("SET s3_url_style='path';")
+            conn.execute(f"SET s3_endpoint='{host}';")
+            return path
+        return self.dataset_url
+
     def run(self):
         try:
             layer_info = f" for {self.layer_name}" if self.layer_name else ""
@@ -120,8 +135,10 @@ class Worker(QObject):
                 conn.execute("LOAD httpfs;")
                 conn.execute("LOAD spatial;")
 
+                url = self.support_s3_style_urls(conn)
+
                 # Get schema early as we need it for both column names and bbox check
-                schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
+                schema_query = f"DESCRIBE SELECT * FROM read_parquet('{url}')"
                 schema_result = conn.execute(schema_query).fetchall()
                 self.validation_results['schema'] = schema_result
                 
@@ -229,10 +246,12 @@ class Worker(QObject):
                     )
                     """
 
+                url = self.support_s3_style_urls(conn)
+                
                 # Base query
                 base_query = f"""
                 CREATE TABLE {table_name} AS (
-                    {select_query} FROM read_parquet('{self.dataset_url}')
+                    {select_query} FROM read_parquet('{url}')
                     {where_clause}
                 ) 
                 """
@@ -473,6 +492,21 @@ class ValidationWorker(QObject):
                     conn.execute("DROP TABLE IF EXISTS temp_json")
         return None
 
+    def support_s3_style_urls(self, conn):
+        if "minio://" in self.dataset_url:
+            url = self.dataset_url[len("minio://"):]
+            first_slash = url.find("/")
+            if first_slash == -1:
+                return
+            
+            host = url[:first_slash]
+            path = "s3://" + url[first_slash+1:]
+            
+            conn.execute("SET s3_url_style='path';")
+            conn.execute(f"SET s3_endpoint='{host}';")
+            return path
+        return self.dataset_url
+
     def run(self):
         # Initialize validation results with default values
         validation_results = {
@@ -499,7 +533,9 @@ class ValidationWorker(QObject):
                 return
 
             self.progress.emit("Checking data format...")
-            schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
+            url = self.support_s3_style_urls(conn)
+
+            schema_query = f"DESCRIBE SELECT * FROM read_parquet('{url}')"
             schema_result = conn.execute(schema_query).fetchall()
 
             # Update validation results with schema
