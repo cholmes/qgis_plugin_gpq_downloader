@@ -110,26 +110,38 @@ class QgisPluginGeoParquet:
         # Get the selected URLs from the dialog
         urls = dialog.get_urls()
         
-        # Get the custom extent from the dialog if available, otherwise use map canvas extent
-        extent = dialog.get_current_extent() or self.iface.mapCanvas().extent()
+        # Check if AOI is enabled
+        aoi_enabled = hasattr(dialog, 'use_aoi_checkbox') and dialog.use_aoi_checkbox.isChecked()
         
-        # Get the drawn geometry if available
-        aoi_geometry = getattr(dialog, 'aoi_geometry', None)
-        if aoi_geometry and hasattr(dialog, 'aoi_geometry_crs'):
-            # Skip transform for mock objects in tests
-            from unittest.mock import MagicMock
-            if isinstance(dialog.aoi_geometry_crs, MagicMock) or isinstance(aoi_geometry, MagicMock):
-                # In test environment, just use the geometry as is
-                pass
-            else:
-                # For real objects, ensure we're using the correct CRS for the geometry
-                from qgis.core import QgsCoordinateTransform, QgsProject
-                transform = QgsCoordinateTransform(
-                    dialog.aoi_geometry_crs,
-                    self.iface.mapCanvas().mapSettings().destinationCrs(),
-                    QgsProject.instance()
-                )
-                aoi_geometry.transform(transform)
+        # Always use an extent - if AOI is enabled, use the custom extent if available, 
+        # otherwise always use the map canvas extent (we never want to send NULL)
+        extent = None
+        if aoi_enabled:
+            # If AOI is enabled, use the custom extent if set, otherwise map canvas extent
+            extent = dialog.get_current_extent() or self.iface.mapCanvas().extent()
+        else:
+            # If AOI is disabled, always use the map canvas extent
+            extent = self.iface.mapCanvas().extent()
+        
+        # Get the drawn geometry if available and AOI is enabled
+        aoi_geometry = None
+        if aoi_enabled and hasattr(dialog, 'aoi_geometry') and dialog.aoi_geometry:
+            aoi_geometry = dialog.aoi_geometry
+            if hasattr(dialog, 'aoi_geometry_crs'):
+                # Skip transform for mock objects in tests
+                from unittest.mock import MagicMock
+                if isinstance(dialog.aoi_geometry_crs, MagicMock) or isinstance(aoi_geometry, MagicMock):
+                    # In test environment, just use the geometry as is
+                    pass
+                else:
+                    # For real objects, ensure we're using the correct CRS for the geometry
+                    from qgis.core import QgsCoordinateTransform, QgsProject
+                    transform = QgsCoordinateTransform(
+                        dialog.aoi_geometry_crs,
+                        self.iface.mapCanvas().mapSettings().destinationCrs(),
+                        QgsProject.instance()
+                    )
+                    aoi_geometry.transform(transform)
         
         # First, collect all file locations from user
         download_queue = []

@@ -49,8 +49,21 @@ class DataSourceDialog(QDialog):
         
         # Create the AOI highlighter
         self.aoi_highlighter = None
-        if self.iface and self.iface.mapCanvas():
+        
+        # Create dictionary to store all the checkboxes
+        self.overture_checkboxes = {}
+        self.base_subtype_checkboxes = {}
+        self.base_checkbox = None
+        
+        # Setup the UI
+        self.setup_ui()
+        
+        # Create AOI highlighter
+        if self.iface:
             self.aoi_highlighter = AoiHighlighter(self.iface.mapCanvas())
+            
+            # Connect to extent changes
+            #self.iface.mapCanvas().extentChanged.connect(self.on_map_extent_changed)
             
             # Connect to layer changes
             from qgis.core import QgsProject
@@ -58,13 +71,28 @@ class DataSourceDialog(QDialog):
             QgsProject.instance().layersRemoved.connect(self.on_layers_changed)
             QgsProject.instance().layerWasAdded.connect(self.on_layers_changed)
             QgsProject.instance().layerWillBeRemoved.connect(self.on_layers_changed)
-            
-            # Connect to layer order changes
-            if self.iface.layerTreeView():
-                self.iface.layerTreeView().model().rowsMoved.connect(self.on_layers_changed)
-                self.iface.layerTreeView().model().rowsInserted.connect(self.on_layers_changed)
-                self.iface.layerTreeView().model().rowsRemoved.connect(self.on_layers_changed)
-            
+        
+        # Load last used extent if available
+        self.load_last_extent()
+        
+        # Load checkbox states
+        self.load_checkbox_states()
+        
+        # Update the layer combo box
+        self.populate_layer_combo()
+        
+        # Load the AOI checkbox state after all UI is created
+        if hasattr(self, 'use_aoi_checkbox'):
+            checked = QgsSettings().value(
+                "gpq_downloader/use_aoi_checkbox",
+                True,
+                type=bool,
+                section=QgsSettings.Plugins,
+            )
+            self.use_aoi_checkbox.setChecked(checked)
+            self.toggle_aoi_controls(checked)
+
+    def setup_ui(self):
         self.setWindowTitle("GeoParquet Data Source")
         self.setMinimumWidth(500)
         
@@ -72,16 +100,6 @@ class DataSourceDialog(QDialog):
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
         self.setModal(False)
         
-        # Load last used extent if available but don't set it automatically
-        # self.load_last_extent()
-        
-        # Don't set initial extent from map canvas
-        # if self.iface and self.iface.mapCanvas():
-        #     self.current_extent = self.iface.mapCanvas().extent()
-        #     # Initialize the highlighting with the current extent
-        #     if self.aoi_highlighter:
-        #         self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
-
         base_path = os.path.dirname(os.path.abspath(__file__))
         presets_path = os.path.join(base_path, "data", "presets.json")
         with open(presets_path, "r") as f:
@@ -312,8 +330,8 @@ class DataSourceDialog(QDialog):
             QMessageBox.warning(self, "Validation Error", "Please select at least one dataset")
             return
             
-        # Check if the user selected an Area of Interest
-        if not self.current_extent:
+        # Check if the user selected an Area of Interest, only if the AOI checkbox is checked
+        if hasattr(self, 'use_aoi_checkbox') and self.use_aoi_checkbox.isChecked() and not self.current_extent:
             reply = QMessageBox.warning(
                 self,
                 "No Area of Interest Selected",
@@ -344,8 +362,13 @@ class DataSourceDialog(QDialog):
                 self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
                 self.progress_dialog.canceled.connect(self.cancel_validation)
 
-                # Use custom extent if set, otherwise use canvas extent
-                extent = self.current_extent if self.current_extent else self.iface.mapCanvas().extent()
+                # If AOI is enabled, use custom extent if set, otherwise use map canvas extent
+                # If AOI is disabled, always use map canvas extent
+                extent = None
+                if hasattr(self, 'use_aoi_checkbox') and self.use_aoi_checkbox.isChecked():
+                    extent = self.current_extent if self.current_extent else self.iface.mapCanvas().extent()
+                else:
+                    extent = self.iface.mapCanvas().extent()
                 
                 # Create validation worker
                 self.validation_worker = ValidationWorker(url, self.iface, extent)
@@ -558,6 +581,14 @@ class DataSourceDialog(QDialog):
                 checkbox.isChecked(),
                 section=QgsSettings.Plugins,
             )
+            
+        # Save the AOI checkbox state
+        if hasattr(self, 'use_aoi_checkbox'):
+            QgsSettings().setValue(
+                "gpq_downloader/use_aoi_checkbox",
+                self.use_aoi_checkbox.isChecked(),
+                section=QgsSettings.Plugins,
+            )
 
     def load_checkbox_states(self) -> None:
         # Load main checkboxes
@@ -590,9 +621,25 @@ class DataSourceDialog(QDialog):
 
     def setup_area_of_interest(self):
         """Create and setup the Area of Interest group with Extent button"""
-        # Create group box
-        self.extent_group = QGroupBox("Area of Interest")
+        # Create group box with a horizontal layout for the title
+        self.extent_group = QGroupBox()
         extent_layout = QVBoxLayout()
+        
+        # Create a horizontal layout for the title and checkbox
+        title_layout = QHBoxLayout()
+        title_label = QLabel("Area of Interest")
+        title_label.setStyleSheet("font-weight: bold;")
+        
+        # Add the checkbox next to the title, with no text
+        self.use_aoi_checkbox = QCheckBox()
+        self.use_aoi_checkbox.setChecked(True)
+        self.use_aoi_checkbox.setToolTip("Uncheck to disable area of interest filtering")
+        self.use_aoi_checkbox.toggled.connect(self.toggle_aoi_controls)
+        
+        title_layout.addWidget(title_label)
+        title_layout.addWidget(self.use_aoi_checkbox)
+        title_layout.addStretch()
+        extent_layout.addLayout(title_layout)
         
         # Add layer selection dropdown
         layer_layout = QHBoxLayout()
@@ -719,6 +766,20 @@ class DataSourceDialog(QDialog):
         
         return self.extent_group
     
+    def toggle_aoi_controls(self, enabled):
+        """Enable or disable the AOI controls based on the checkbox state"""
+        # Enable/disable all controls except the checkbox
+        self.layer_combo.setEnabled(enabled)
+        self.extent_button.setEnabled(enabled)
+        self.draw_button.setEnabled(enabled)
+        self.select_button.setEnabled(enabled)
+        self.clear_button.setEnabled(enabled)
+        self.extent_display.setEnabled(enabled)
+        
+        # If disabled, clear the current extent
+        if not enabled:
+            self.clear_extent()
+
     def use_canvas_extent(self):
         """Use the current map canvas extent as Area of Interest"""
         if self.iface and self.iface.mapCanvas():
@@ -848,13 +909,14 @@ class DataSourceDialog(QDialog):
     
     def accept(self):
         """Override accept to store the current extent"""
-        # Store the extent to be used by the plugin
-        if hasattr(self, 'current_extent') and self.current_extent:
-            QgsSettings().setValue(
-                "gpq_downloader/last_used_extent",
-                self.current_extent.toString(),
-                section=QgsSettings.Plugins,
-            )
+        # Store the extent to be used by the plugin only if AOI is enabled
+        if hasattr(self, 'use_aoi_checkbox') and self.use_aoi_checkbox.isChecked():
+            if hasattr(self, 'current_extent') and self.current_extent:
+                QgsSettings().setValue(
+                    "gpq_downloader/last_used_extent",
+                    self.current_extent.toString(),
+                    section=QgsSettings.Plugins,
+                )
         
         # Reset the map tool to default when accepting dialog
         if self.polygon_tool and self.iface and self.iface.mapCanvas():

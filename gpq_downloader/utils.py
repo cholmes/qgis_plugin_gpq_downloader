@@ -100,7 +100,11 @@ class Worker(QObject):
             layer_info = f" for {self.layer_name}" if self.layer_name else ""
             self.progress.emit(f"Connecting to database{layer_info}...")
             source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
-            bbox = transform_bbox_to_4326(self.extent, source_crs)
+            
+            # Only transform and use extent if it exists (AOI was enabled)
+            bbox = None
+            if self.extent:
+                bbox = transform_bbox_to_4326(self.extent, source_crs)
 
             # Log the dataset URL and aoi_geometry for debugging
             logger.log(f"Processing dataset: {self.dataset_url}")
@@ -216,24 +220,27 @@ class Worker(QObject):
                 #logger.log(f"Final bbox_column value: {bbox_column}")
                 #logger.log(f"Using geometry column: {geometry_column}")
 
-                if bbox_column is not None:
-                    #logger.log(f"Using bbox column for query: {bbox_column}")
-                    where_clause = f"""
-                    WHERE "{bbox_column}".xmin BETWEEN {bbox.xMinimum()} AND {bbox.xMaximum()}
-                    AND "{bbox_column}".ymin BETWEEN {bbox.yMinimum()} AND {bbox.yMaximum()}
-                    """
-                else:
-                    #logger.log("Using spatial filter instead of bbox")
-                    where_clause = f"""
-                    WHERE ST_Intersects(
-                        "{geometry_column}",
-                        ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
-                                            {bbox.xMaximum()} {bbox.yMinimum()},
-                                            {bbox.xMaximum()} {bbox.yMaximum()},
-                                            {bbox.xMinimum()} {bbox.yMaximum()},
-                                            {bbox.xMinimum()} {bbox.yMinimum()}))')
-                    )
-                    """
+                # Only build WHERE clause if we have an extent or AOI geometry
+                where_clause = ""
+                if bbox:
+                    if bbox_column is not None:
+                        #logger.log(f"Using bbox column for query: {bbox_column}")
+                        where_clause = f"""
+                        WHERE "{bbox_column}".xmin BETWEEN {bbox.xMinimum()} AND {bbox.xMaximum()}
+                        AND "{bbox_column}".ymin BETWEEN {bbox.yMinimum()} AND {bbox.yMaximum()}
+                        """
+                    else:
+                        #logger.log("Using spatial filter instead of bbox")
+                        where_clause = f"""
+                        WHERE ST_Intersects(
+                            "{geometry_column}",
+                            ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
+                                                {bbox.xMaximum()} {bbox.yMinimum()},
+                                                {bbox.xMaximum()} {bbox.yMaximum()},
+                                                {bbox.xMinimum()} {bbox.yMaximum()},
+                                                {bbox.xMinimum()} {bbox.yMinimum()}))')
+                        )
+                        """
 
                 # Additional filtering with aoi_geometry if available
                 if self.aoi_geometry is not None:
@@ -251,7 +258,10 @@ class Worker(QObject):
                     
                     # Use the transformed geometry for the SQL query
                     aoi_wkt = transformed_geom.asWkt()
-                    where_clause += f" AND ST_Intersects(\"{geometry_column}\", ST_GeomFromText('{aoi_wkt}'))"
+                    if where_clause:
+                        where_clause += f" AND ST_Intersects(\"{geometry_column}\", ST_GeomFromText('{aoi_wkt}'))"
+                    else:
+                        where_clause = f"WHERE ST_Intersects(\"{geometry_column}\", ST_GeomFromText('{aoi_wkt}'))"
                     
                     # Log the updated where_clause for debugging
                     logger.log(f"Applying AOI geometry filter: {aoi_wkt}")
@@ -443,7 +453,7 @@ class ValidationWorker(QObject):
         super().__init__()
         self.dataset_url = dataset_url
         self.iface = iface
-        self.extent = extent
+        self.extent = extent  # This may be None if AOI is disabled
         self.killed = False
 
         base_path = os.path.dirname(os.path.abspath(__file__))
