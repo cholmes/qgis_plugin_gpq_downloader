@@ -271,9 +271,9 @@ class DataSourceDialog(QDialog):
         if self.custom_radio.isChecked():
             for url in urls:
                 if not (url.startswith('http://') or url.startswith('https://') or 
-                       url.startswith('s3://') or url.startswith('file://') or url.startswith('hf://')):
+                       url.startswith('s3://') or url.startswith('minio://') or url.startswith('file://') or url.startswith('hf://')):
                     QMessageBox.warning(self, "Validation Error", 
-                        "URL must start with http://, https://, s3://, hf://, or file://")
+                        "URL must start with http://, https://, minio://, s3://, hf://, or file://")
                     return
 
                 # Create progress dialog for validation
