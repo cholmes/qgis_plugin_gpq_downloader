@@ -271,12 +271,16 @@ class Worker(QObject):
                     # Use the geometry column from validation results for the Hilbert sorting
                     copy_query = f"""
                     COPY (
-                        SELECT * FROM {table_name}
-                        ORDER BY ST_Hilbert(
-                            "{geometry_column}",
-                            (SELECT ST_Extent(ST_Extent_Agg(COLUMNS("{geometry_column}")))::BOX_2D FROM {table_name})
+                        WITH bbox AS (
+                            SELECT ST_Extent(ST_Extent_Agg("{geometry_column}"))::BOX_2D AS b
+                            FROM   {table_name}
                         )
-                    ) TO '{self.output_file}'"""
+                        SELECT   t.*
+                        FROM     {table_name} AS t
+                                CROSS JOIN bbox
+                        ORDER BY ST_Hilbert(t."{geometry_column}", bbox.b)
+                    ) TO '{self.output_file}' 
+                    """
 
                     if file_extension == "parquet":
                         format_options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 22);"
