@@ -151,9 +151,19 @@ class Worker(QObject):
                         #logger.log("No standard geometry column found, trying alternative detection")
                         for row in schema_result:
                             col_name = row[0].lower()
-                            if col_name == 'geom' or col_name == 'the_geom' or col_name == 'wkb_geometry':
-                                self.validation_results['geometry_column'] = row[0]  # Use original case
-                                #logger.log(f"Found likely geometry column by name: {row[0]}")
+                            col_name_orig = row[0]  # Keep original case
+                            col_type = row[1].upper()
+                            
+                            # Check for common geometry column names
+                            if col_name in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
+                                self.validation_results['geometry_column'] = col_name_orig
+                                #logger.log(f"Found likely geometry column by name: {col_name_orig}")
+                                geometry_found = True
+                                break
+                            # Also check for BLOB columns with geometry-like names
+                            elif 'BLOB' in col_type and col_name in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
+                                self.validation_results['geometry_column'] = col_name_orig
+                                logger.log(f"Found WKB BLOB geometry column: {col_name_orig}")
                                 geometry_found = True
                                 break
                 
@@ -179,6 +189,9 @@ class Worker(QObject):
                             columns.append(f"array_to_string({quoted_col_name}, ', ') AS {quoted_col_name}")
                         elif col_type.upper() == 'UTINYINT':
                             columns.append(f"CAST({quoted_col_name} AS INTEGER) AS {quoted_col_name}")
+                        elif 'BLOB' in col_type.upper() and col_name == geometry_column:
+                            # Convert WKB BLOB to geometry for spatial formats
+                            columns.append(f"ST_GeomFromWKB({quoted_col_name}) AS {quoted_col_name}")
                         else:
                             columns.append(quoted_col_name)
 
@@ -210,6 +223,13 @@ class Worker(QObject):
                 #logger.log(f"Final bbox_column value: {bbox_column}")
                 #logger.log(f"Using geometry column: {geometry_column}")
 
+                # Check if geometry column is a BLOB that needs conversion
+                geometry_col_type = None
+                for row in schema_result:
+                    if row[0] == geometry_column:
+                        geometry_col_type = row[1].upper()
+                        break
+                
                 if bbox_column is not None:
                     #logger.log(f"Using bbox column for query: {bbox_column}")
                     where_clause = f"""
@@ -218,9 +238,15 @@ class Worker(QObject):
                     """
                 else:
                     #logger.log("Using spatial filter instead of bbox")
+                    # If it's a BLOB column, we need to convert it to geometry
+                    if geometry_col_type and 'BLOB' in geometry_col_type:
+                        geometry_expr = f'ST_GeomFromWKB("{geometry_column}")'
+                    else:
+                        geometry_expr = f'"{geometry_column}"'
+                    
                     where_clause = f"""
                     WHERE ST_Intersects(
-                        "{geometry_column}",
+                        {geometry_expr},
                         ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
                                             {bbox.xMaximum()} {bbox.yMinimum()},
                                             {bbox.xMaximum()} {bbox.yMaximum()},
@@ -269,12 +295,27 @@ class Worker(QObject):
                             return
 
                     # Use the geometry column from validation results for the Hilbert sorting
+                    # Check if we need to handle WKB BLOB columns
+                    geometry_col_type = None
+                    for row in schema_result:
+                        if row[0] == geometry_column:
+                            geometry_col_type = row[1].upper()
+                            break
+                    
+                    # If it's a BLOB column, we need to convert it to geometry
+                    if geometry_col_type and 'BLOB' in geometry_col_type:
+                        geometry_expr = f'ST_GeomFromWKB("{geometry_column}")'
+                        extent_expr = f'ST_GeomFromWKB("{geometry_column}")'
+                    else:
+                        geometry_expr = f'"{geometry_column}"'
+                        extent_expr = f'COLUMNS("{geometry_column}")'
+                    
                     copy_query = f"""
                     COPY (
                         SELECT * FROM {table_name}
                         ORDER BY ST_Hilbert(
-                            "{geometry_column}",
-                            (SELECT ST_Extent(ST_Extent_Agg(COLUMNS("{geometry_column}")))::BOX_2D FROM {table_name})
+                            {geometry_expr},
+                            (SELECT ST_Extent(ST_Extent_Agg({extent_expr}))::BOX_2D FROM {table_name})
                         )
                     ) TO '{self.output_file}'"""
 
