@@ -105,7 +105,7 @@ class Worker(QObject):
             # Log validation results dictionary at the beginning of run
             #logger.log(f"Full validation_results at start of run: {self.validation_results}")
 
-            conn = duckdb.connect()
+            conn = None
             try:
                 # Install and load the spatial extension
                 self.progress.emit(f"Loading spatial extension{layer_info}...")
@@ -119,6 +119,14 @@ class Worker(QObject):
                 conn.execute("INSTALL spatial;")
                 conn.execute("LOAD httpfs;")
                 conn.execute("LOAD spatial;")
+                
+                # Verify spatial extension is loaded by testing a spatial function
+                try:
+                    conn.execute("SELECT ST_AsText(ST_GeomFromText('POINT(0 0)'))").fetchone()
+                except Exception as e:
+                    logger.log(f"Failed to verify spatial extension: {e}")
+                    # Force reload
+                    conn.execute("LOAD spatial;")
 
                 # Get schema early as we need it for both column names and bbox check
                 schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
@@ -190,8 +198,9 @@ class Worker(QObject):
                         elif col_type.upper() == 'UTINYINT':
                             columns.append(f"CAST({quoted_col_name} AS INTEGER) AS {quoted_col_name}")
                         elif 'BLOB' in col_type.upper() and col_name == geometry_column:
-                            # Convert WKB BLOB to geometry for spatial formats
-                            columns.append(f"ST_GeomFromWKB({quoted_col_name}) AS {quoted_col_name}")
+                            # For BLOB geometry columns, we'll handle conversion differently
+                            # to avoid spatial function validation issues
+                            columns.append(quoted_col_name)
                         else:
                             columns.append(quoted_col_name)
 
@@ -238,22 +247,23 @@ class Worker(QObject):
                     """
                 else:
                     #logger.log("Using spatial filter instead of bbox")
-                    # If it's a BLOB column, we need to convert it to geometry
+                    # If it's a BLOB column, we can't use spatial functions in the initial query
+                    # We'll apply the filter after converting the geometry
                     if geometry_col_type and 'BLOB' in geometry_col_type:
-                        geometry_expr = f'ST_GeomFromWKB("{geometry_column}")'
+                        where_clause = ""  # No spatial filter initially for BLOB columns
                     else:
+                        # For proper geometry columns, we can use spatial filter directly
                         geometry_expr = f'"{geometry_column}"'
-                    
-                    where_clause = f"""
-                    WHERE ST_Intersects(
-                        {geometry_expr},
-                        ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
-                                            {bbox.xMaximum()} {bbox.yMinimum()},
-                                            {bbox.xMaximum()} {bbox.yMaximum()},
-                                            {bbox.xMinimum()} {bbox.yMaximum()},
-                                            {bbox.xMinimum()} {bbox.yMinimum()}))')
-                    )
-                    """
+                        where_clause = f"""
+                        WHERE ST_Intersects(
+                            {geometry_expr},
+                            ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
+                                                {bbox.xMaximum()} {bbox.yMinimum()},
+                                                {bbox.xMaximum()} {bbox.yMaximum()},
+                                                {bbox.xMinimum()} {bbox.yMaximum()},
+                                                {bbox.xMinimum()} {bbox.yMinimum()}))')
+                        )
+                        """
 
                 # Base query
                 base_query = f"""
@@ -265,7 +275,50 @@ class Worker(QObject):
                 self.progress.emit(f"Downloading{layer_info} data...")
                 logger.log("Executing SQL query:")
                 logger.log(base_query)
+                
                 conn.execute(base_query)
+                
+                # If we have a BLOB geometry column, we need to convert it after table creation
+                # and apply spatial filter if needed
+                if (geometry_column and geometry_col_type and 'BLOB' in geometry_col_type):
+                    # Create a new table with converted geometry
+                    temp_table = f"{table_name}_converted"
+                    
+                    # Build column list for conversion
+                    convert_columns = []
+                    for col_name, col_type, _, _, _, _ in schema_result:
+                        quoted_col_name = f'"{col_name}"'
+                        if col_name == geometry_column:
+                            convert_columns.append(f"ST_GeomFromWKB({quoted_col_name}) AS {quoted_col_name}")
+                        else:
+                            convert_columns.append(quoted_col_name)
+                    
+                    # Add spatial filter if bbox is available and we didn't filter earlier
+                    spatial_filter = ""
+                    if bbox and not bbox_column:  # Only if we didn't filter with bbox column
+                        spatial_filter = f"""
+                        WHERE ST_Intersects(
+                            ST_GeomFromWKB("{geometry_column}"),
+                            ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
+                                                {bbox.xMaximum()} {bbox.yMinimum()},
+                                                {bbox.xMaximum()} {bbox.yMaximum()},
+                                                {bbox.xMinimum()} {bbox.yMaximum()},
+                                                {bbox.xMinimum()} {bbox.yMinimum()}))')
+                        )
+                        """
+                    
+                    convert_query = f"""
+                    CREATE TABLE {temp_table} AS
+                    SELECT {', '.join(convert_columns)}
+                    FROM {table_name}
+                    {spatial_filter}
+                    """
+                    
+                    conn.execute(convert_query)
+                    
+                    # Drop original and rename
+                    conn.execute(f"DROP TABLE {table_name}")
+                    conn.execute(f"ALTER TABLE {temp_table} RENAME TO {table_name}")
                 
                 # Add check for empty results
                 row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
@@ -295,29 +348,23 @@ class Worker(QObject):
                             return
 
                     # Use the geometry column from validation results for the Hilbert sorting
-                    # Check if we need to handle WKB BLOB columns
-                    geometry_col_type = None
-                    for row in schema_result:
-                        if row[0] == geometry_column:
-                            geometry_col_type = row[1].upper()
-                            break
-                    
-                    # If it's a BLOB column, we need to convert it to geometry
-                    if geometry_col_type and 'BLOB' in geometry_col_type:
-                        geometry_expr = f'ST_GeomFromWKB("{geometry_column}")'
-                        extent_expr = f'ST_GeomFromWKB("{geometry_column}")'
-                    else:
-                        geometry_expr = f'"{geometry_column}"'
-                        extent_expr = f'COLUMNS("{geometry_column}")'
+                    # At this point, if we converted BLOB to geometry, it's already a GEOMETRY type
+                    # So we don't need ST_GeomFromWKB anymore
+                    geometry_expr = f'"{geometry_column}"'
+                    extent_expr = f'"{geometry_column}"'
                     
                     copy_query = f"""
                     COPY (
-                        SELECT * FROM {table_name}
-                        ORDER BY ST_Hilbert(
-                            {geometry_expr},
-                            (SELECT ST_Extent(ST_Extent_Agg({extent_expr}))::BOX_2D FROM {table_name})
+                        WITH bbox AS (
+                            SELECT ST_Extent(ST_Extent_Agg({extent_expr}))::BOX_2D AS b
+                            FROM   {table_name}
                         )
-                    ) TO '{self.output_file}'"""
+                        SELECT   t.*
+                        FROM     {table_name} AS t
+                                CROSS JOIN bbox
+                        ORDER BY ST_Hilbert(t.{geometry_expr}, bbox.b)
+                    ) TO '{self.output_file}' 
+                    """
 
                     if file_extension == "parquet":
                         format_options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 22);"
@@ -358,12 +405,13 @@ class Worker(QObject):
                     else:
                         self.error.emit(error_str)
             finally:
-                if not self.output_file.lower().endswith('.duckdb'): # Clean up temporary table
-                    try:
-                        conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-                    except:
-                        pass
-                conn.close()
+                if conn:
+                    if not self.output_file.lower().endswith('.duckdb'): # Clean up temporary table
+                        try:
+                            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+                        except:
+                            pass
+                    conn.close()
 
         except Exception as e:
             if not self.killed:
