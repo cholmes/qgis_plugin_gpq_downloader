@@ -34,7 +34,7 @@ To use it move to an area where you'd like to download data and then select whic
 
 Downloads can sometimes take awhile, especially if the data provider hasn't optimized their GeoParquet files very well, or if you're downloading an area with a lot of data. Overture is one of the faster ones for now, others may take a minute or two. But it should most always be faster than trying to figure out exactly which files you need and downloading them manually.
 
-For now we only support downloading into the current viewport, but hope to [improve that](https://github.com/cholmes/qgis_plugin_gpq_downloader/issues/10). 
+For now we only support downloading into the current viewport, but hope to [improve that](https://github.com/cholmes/qgis_plugin_gpq_downloader/issues/10). Note also that right now only lat/long data is supported, but we also hope to [support it](https://github.com/cholmes/qgis_plugin_gpq_downloader/issues/102).
 
 If your QGIS doesn't have GeoParquet support you'll get a warning dialog after the data downloads completes. The GeoParquet will be there, but it won't automatically open on the map. We definitely recommend getting your QGIS working with GeoParquet, as the format is faster and handles nested attributes better. See [Installing GeoParquet Support in QGIS](https://github.com/cholmes/qgis_plugin_gpq_downloader/wiki/Installing-GeoParquet-Support-in-QGIS) for more details.
 
