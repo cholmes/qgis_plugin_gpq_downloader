@@ -12,6 +12,9 @@ license = {text = "GPL-3.0-or-later"}
 authors = [
     {name = "Chris Holmes", email = "cholmes@9eo.org"}
 ]
+dependencies = [
+    "duckdb>=1.1.0",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/cholmes/qgis_plugin_gpq_downloader"
@@ -50,7 +53,7 @@ dev = [
     "pytest-qt>=4.2.0",
     "pytest-mock>=3.11.1",
     "pytest-cov>=4.1.0",
-    "duckdb>=1.1.0",
+    "pyarrow>=10.0.0",
     "black>=23.3.0",
 ]
 
