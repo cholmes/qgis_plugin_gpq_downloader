@@ -14,11 +14,19 @@ from qgis.PyQt.QtWidgets import (
     QStackedWidget,
     QWidget,
     QCheckBox,
+    QToolButton,
+    QMenu,
+    QAction,
+    QGroupBox,
+    QTextEdit,
 )
-from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread
-from qgis.core import QgsSettings
+from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread, QPoint
+from qgis.PyQt.QtGui import QIcon
+from qgis.core import QgsSettings, QgsRectangle, QgsGeometry
 import os
 from .utils import ValidationWorker
+from .map_tools import PolygonMapTool, AoiHighlighter
+from qgis.core import QgsApplication
 
 
 class DataSourceDialog(QDialog):
@@ -31,9 +39,48 @@ class DataSourceDialog(QDialog):
         self.validation_worker = None
         self.progress_message = None
         self.requires_validation = True
+        self.extent_group = None
+        self.extent_button = None
+        self.extent_display = None
+        self.current_extent = None
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.polygon_tool = None
+        
+        # Create the AOI highlighter
+        self.aoi_highlighter = None
+        if self.iface and self.iface.mapCanvas():
+            self.aoi_highlighter = AoiHighlighter(self.iface.mapCanvas())
+            
+            # Connect to layer changes
+            from qgis.core import QgsProject
+            QgsProject.instance().layersAdded.connect(self.on_layers_changed)
+            QgsProject.instance().layersRemoved.connect(self.on_layers_changed)
+            QgsProject.instance().layerWasAdded.connect(self.on_layers_changed)
+            QgsProject.instance().layerWillBeRemoved.connect(self.on_layers_changed)
+            
+            # Connect to layer order changes
+            if self.iface.layerTreeView():
+                self.iface.layerTreeView().model().rowsMoved.connect(self.on_layers_changed)
+                self.iface.layerTreeView().model().rowsInserted.connect(self.on_layers_changed)
+                self.iface.layerTreeView().model().rowsRemoved.connect(self.on_layers_changed)
+            
         self.setWindowTitle("GeoParquet Data Source")
         self.setMinimumWidth(500)
         
+        # Make dialog non-modal and keep it on top
+        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
+        self.setModal(False)
+        
+        # Load last used extent if available but don't set it automatically
+        # self.load_last_extent()
+        
+        # Don't set initial extent from map canvas
+        # if self.iface and self.iface.mapCanvas():
+        #     self.current_extent = self.iface.mapCanvas().extent()
+        #     # Initialize the highlighting with the current extent
+        #     if self.aoi_highlighter:
+        #         self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
 
         base_path = os.path.dirname(os.path.abspath(__file__))
         presets_path = os.path.join(base_path, "data", "presets.json")
@@ -200,6 +247,9 @@ class DataSourceDialog(QDialog):
 
         layout.addWidget(self.stack)
 
+        # Add Area of Interest group
+        layout.addWidget(self.setup_area_of_interest())
+
         # Buttons
         button_layout = QHBoxLayout()
         self.ok_button = QPushButton("OK")
@@ -261,6 +311,19 @@ class DataSourceDialog(QDialog):
         if not urls:
             QMessageBox.warning(self, "Validation Error", "Please select at least one dataset")
             return
+            
+        # Check if the user selected an Area of Interest
+        if not self.current_extent:
+            reply = QMessageBox.warning(
+                self,
+                "No Area of Interest Selected",
+                "No area of interest has been explicitly selected. The current map canvas extent will be used instead, which may result in a larger download than intended.\n\n"
+                "Do you want to continue using the current map canvas extent?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
 
         # For Overture datasets, we know they're valid so we can skip validation
         if self.overture_radio.isChecked():
@@ -278,11 +341,14 @@ class DataSourceDialog(QDialog):
 
                 # Create progress dialog for validation
                 self.progress_dialog = QProgressDialog("Validating URL...", "Cancel", 0, 0, self)
-                self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+                self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
                 self.progress_dialog.canceled.connect(self.cancel_validation)
 
+                # Use custom extent if set, otherwise use canvas extent
+                extent = self.current_extent if self.current_extent else self.iface.mapCanvas().extent()
+                
                 # Create validation worker
-                self.validation_worker = ValidationWorker(url, self.iface, self.iface.mapCanvas().extent())
+                self.validation_worker = ValidationWorker(url, self.iface, extent)
                 self.validation_thread = QThread()
                 self.validation_worker.moveToThread(self.validation_thread)
 
@@ -298,7 +364,7 @@ class DataSourceDialog(QDialog):
 
                 # Start validation
                 self.validation_thread.start()
-                self.progress_dialog.exec()
+                self.progress_dialog.show()
                 return
 
         # For other preset sources, we can skip validation
@@ -338,8 +404,39 @@ class DataSourceDialog(QDialog):
             self.validation_thread = None
 
     def closeEvent(self, event):
-        """Handle dialog closing"""
-        self.cleanup_validation()
+        """Handle dialog close event"""
+        # Clean up validation if running
+        if self.validation_thread and self.validation_thread.isRunning():
+            self.cancel_validation()
+            
+        # Disconnect from layer changes
+        if self.iface:
+            from qgis.core import QgsProject
+            QgsProject.instance().layersAdded.disconnect(self.on_layers_changed)
+            QgsProject.instance().layersRemoved.disconnect(self.on_layers_changed)
+            QgsProject.instance().layerWasAdded.disconnect(self.on_layers_changed)
+            QgsProject.instance().layerWillBeRemoved.disconnect(self.on_layers_changed)
+            
+        # Reset the map tool to default
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+            
+        # Clear any AOI highlighting
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+            
+        # Disconnect from any active layer selection signals
+        if self.iface and self.iface.activeLayer():
+            try:
+                self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
+            except:
+                pass
+                
+        # Restore the default map tool
+        if self.iface:
+            self.iface.actionPan().trigger()
+            
         super().closeEvent(event)
 
     def get_urls(self):
@@ -490,3 +587,777 @@ class DataSourceDialog(QDialog):
         # This method should handle the validation results
         # Check how it's setting validation_results
         pass
+
+    def setup_area_of_interest(self):
+        """Create and setup the Area of Interest group with Extent button"""
+        # Create group box
+        self.extent_group = QGroupBox("Area of Interest")
+        extent_layout = QVBoxLayout()
+        
+        # Add layer selection dropdown
+        layer_layout = QHBoxLayout()
+        layer_label = QLabel("Active Layer:")
+        self.layer_combo = QComboBox()
+        self.layer_combo.setToolTip("Select the active layer to use for extent and feature selection")
+        self.populate_layer_combo()
+        layer_layout.addWidget(layer_label)
+        layer_layout.addWidget(self.layer_combo)
+        layer_layout.addStretch()
+        extent_layout.addLayout(layer_layout)
+        
+        # Create tool button with dropdown menu
+        button_layout = QHBoxLayout()
+        
+        # Extent button
+        self.extent_button = QToolButton()
+        self.extent_button.setText(" Extent")
+        self.extent_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.extent_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.extent_button.setToolTip("Click the dropdown arrow to select an existing extent")
+        self.extent_button.setCheckable(True)  # Make button checkable
+        
+        # Use the extents.svg icon from the icons folder
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(base_path, "icons", "extents.svg")
+        self.extent_button.setIcon(QIcon(icon_path))
+        
+        # Create menu for the extent button
+        extent_menu = QMenu()
+        
+        # Add actions to menu
+        canvas_action = QAction("Use current map canvas extent", self)
+        canvas_action.triggered.connect(self.use_canvas_extent)
+        
+        layer_action = QAction("Use extent of the active layer", self)
+        layer_action.triggered.connect(self.use_active_layer_extent)
+        
+        extent_menu.addAction(canvas_action)
+        extent_menu.addAction(layer_action)
+        
+        # Set the menu to the button
+        self.extent_button.setMenu(extent_menu)
+        
+        # Connect button click to show the menu
+        self.extent_button.clicked.connect(self.show_extent_menu)
+        
+        # Draw button
+        self.draw_button = QToolButton()
+        self.draw_button.setText(" Draw")
+        self.draw_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.draw_button.setToolTip("Draw a custom polygon on the map")
+        self.draw_button.setCheckable(True)  # Make button checkable
+        # Use the extents.svg icon from the icons folder
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(base_path, "icons", "extent-draw-polygon.svg")
+        self.draw_button.setIcon(QIcon(icon_path))
+        
+        # Connect button click directly to polygon drawing
+        self.draw_button.clicked.connect(self.start_polygon_draw)
+        
+        # Select Features button
+        self.select_button = QToolButton()
+        self.select_button.setText(" Select")
+        self.select_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.select_button.setToolTip("Select features from active layer to define area of interest")
+        self.select_button.setCheckable(True)  # Make button checkable
+        # Use the selection icon or fall back to standard icon
+        try:
+            # Try to use a QGIS selection icon if available
+            selection_icon = QgsApplication.getThemeIcon("/mActionSelectRectangle.svg")
+            if not selection_icon.isNull():
+                self.select_button.setIcon(selection_icon)
+            else:
+                # If QGIS theme icon not available, use standard QStyle icon
+                from qgis.PyQt.QtWidgets import QStyle
+                self.select_button.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
+        except:
+            # If there's any error, use a generic icon
+            from qgis.PyQt.QtWidgets import QStyle
+            self.select_button.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
+        
+        # Connect select button to selection tool
+        self.select_button.clicked.connect(self.start_feature_selection)
+        
+        # Clear button
+        self.clear_button = QToolButton()
+        self.clear_button.setText(" Clear")
+        self.clear_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.clear_button.setToolTip("Clear the current area of interest and selected features")
+        # Use the clear icon if available or another suitable icon
+        icon_path = os.path.join(base_path, "icons", "extent-clear.svg")
+        if os.path.exists(icon_path):
+            self.clear_button.setIcon(QIcon(icon_path))
+        else:
+            # Fallback to a standard icon if the custom one isn't available
+            from qgis.PyQt.QtWidgets import QStyle
+            self.clear_button.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
+        
+        # Connect clear button to clear function
+        self.clear_button.clicked.connect(self.clear_extent)
+        
+        # Add buttons to layout
+        button_layout.addWidget(self.extent_button)
+        button_layout.addWidget(self.draw_button)
+        button_layout.addWidget(self.select_button)
+        button_layout.addWidget(self.clear_button)
+        button_layout.addStretch()
+        extent_layout.addLayout(button_layout)
+        
+        # Add text display for extent
+        self.extent_display = QTextEdit()
+        self.extent_display.setReadOnly(True)
+        self.extent_display.setMaximumHeight(40)
+        self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
+        extent_layout.addWidget(self.extent_display)
+        
+        # Set the layout to the group
+        self.extent_group.setLayout(extent_layout)
+        
+        # Don't update the extent display with initial extent
+        # if self.current_extent:
+        #     self.update_extent_display("Initial Map Canvas")
+        
+        return self.extent_group
+    
+    def use_canvas_extent(self):
+        """Use the current map canvas extent as Area of Interest"""
+        if self.iface and self.iface.mapCanvas():
+            # Reset the polygon tool if active
+            if self.polygon_tool:
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.polygon_tool = None
+                
+            # Disconnect from any active layer selection signals
+            if self.iface.activeLayer():
+                try:
+                    self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
+                except:
+                    pass
+                
+            # Clear any previously drawn geometry
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
+            self.current_extent = self.iface.mapCanvas().extent()
+            self.update_extent_display("Current Map Canvas")
+            
+            # Update the AOI highlighting
+            if self.aoi_highlighter:
+                self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
+                
+            # Update button states
+            self.extent_button.setChecked(True)
+            self.draw_button.setChecked(False)
+            self.select_button.setChecked(False)
+    
+    def use_active_layer_extent(self):
+        """Use the active layer extent as Area of Interest"""
+        if self.iface and self.iface.activeLayer():
+            # Reset the polygon tool if active
+            if self.polygon_tool and self.iface.mapCanvas():
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.polygon_tool = None
+                
+            # Disconnect from any active layer selection signals
+            try:
+                self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
+            except:
+                pass
+                
+            # Clear any previously drawn geometry
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
+            
+            # Get the active layer and its extent
+            active_layer = self.iface.activeLayer()
+            layer_extent = active_layer.extent()
+            
+            # Get the layer's CRS and the map canvas CRS
+            layer_crs = active_layer.crs()
+            map_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+            
+            # Check if the layer CRS is different from the map canvas CRS
+            if layer_crs.authid() != map_crs.authid():
+                # Create a coordinate transform from layer CRS to map canvas CRS
+                from qgis.core import QgsCoordinateTransform, QgsProject
+                transform = QgsCoordinateTransform(
+                    layer_crs,
+                    map_crs,
+                    QgsProject.instance()
+                )
+                
+                # Transform the extent to the map canvas CRS
+                layer_extent = transform.transformBoundingBox(layer_extent)
+                
+                # Store the transformed extent
+                self.current_extent = layer_extent
+                
+                # Also store the geometry with its CRS for later use
+                extent_geom = QgsGeometry.fromRect(layer_extent)
+                self.aoi_geometry = extent_geom
+                self.aoi_geometry_crs = map_crs
+            else:
+                # No transformation needed, use the layer extent directly
+                self.current_extent = layer_extent
+            
+            # Update the display with the layer name
+            layer_name = active_layer.name()
+            self.update_extent_display(f"Layer: {layer_name}")
+            
+            # Ensure the AOI highlighter is properly initialized
+            if not self.aoi_highlighter and self.iface.mapCanvas():
+                from .map_tools import AoiHighlighter
+                self.aoi_highlighter = AoiHighlighter(self.iface.mapCanvas())
+                
+            # Update the AOI highlighting
+            if self.aoi_highlighter:
+                self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
+                
+            # Update button states
+            self.extent_button.setChecked(True)
+            self.draw_button.setChecked(False)
+            self.select_button.setChecked(False)
+
+    def update_extent_display(self, source):
+        """Update the extent display with the current extent information"""
+        if self.current_extent:
+            # Show either drawn geometry WKT or extent WKT
+            wkt = ""
+            if source == "Drawn Polygon" and self.aoi_geometry:
+                # Ensure we're getting a standard WKT format
+                from qgis.core import QgsWkbTypes
+                geom = QgsGeometry(self.aoi_geometry)
+                if geom.wkbType() == QgsWkbTypes.MultiSurface:
+                    geom = QgsGeometry.fromMultiPolygonXY(geom.asMultiPolygon())
+                elif geom.wkbType() == QgsWkbTypes.CurvePolygon:
+                    geom = QgsGeometry.fromPolygonXY(geom.asPolygon())
+                wkt = geom.asWkt()
+            else:
+                extent_geom = QgsGeometry.fromRect(self.current_extent)
+                wkt = extent_geom.asWkt()
+            
+            extent_str = (f"Source: {source}\n"
+                         f"WKT: {wkt}")
+            self.extent_display.setText(extent_str)
+        else:
+            self.extent_display.clear()
+            self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
+
+    def get_current_extent(self):
+        """Returns the current selected extent or None if not set"""
+        return self.current_extent
+    
+    def accept(self):
+        """Override accept to store the current extent"""
+        # Store the extent to be used by the plugin
+        if hasattr(self, 'current_extent') and self.current_extent:
+            QgsSettings().setValue(
+                "gpq_downloader/last_used_extent",
+                self.current_extent.toString(),
+                section=QgsSettings.Plugins,
+            )
+        
+        # Reset the map tool to default when accepting dialog
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+        
+        # Clear any AOI highlighting when dialog is accepted
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+            
+        # Disconnect from any active layer selection signals
+        if self.iface and self.iface.activeLayer():
+            try:
+                self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
+            except:
+                pass
+            
+        super().accept()
+    
+    def reject(self):
+        """Override reject to clean up resources"""
+        # Reset the map tool to default when rejecting dialog
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+            
+        # Clear any AOI highlighting when dialog is rejected
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+            
+        # Disconnect from any active layer selection signals
+        if self.iface and self.iface.activeLayer():
+            try:
+                self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
+            except:
+                pass
+                
+        # Restore the default map tool
+        if self.iface:
+            self.iface.actionPan().trigger()
+            
+        super().reject()
+
+    def load_last_extent(self):
+        """Load the last used extent from QgsSettings if available"""
+        last_extent_str = QgsSettings().value("gpq_downloader/last_used_extent", "", type=str)
+        if last_extent_str:
+            try:
+                self.current_extent = QgsRectangle.fromString(last_extent_str)
+                if self.current_extent and self.current_extent.isNull() == False:
+                    self.update_extent_display("Last Used Extent")
+                    
+                    # Update the AOI highlighting
+                    if self.aoi_highlighter:
+                        self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
+            except Exception:
+                self.current_extent = None
+
+    def on_map_extent_changed(self):
+        """Handle map canvas extent changes"""
+        if self.iface and self.iface.mapCanvas():
+            self.current_extent = self.iface.mapCanvas().extent()
+            self.update_extent_display("Map Canvas")
+            
+            # Update the AOI highlighting (only if we're using the canvas extent)
+            if self.aoi_geometry is None and self.aoi_highlighter:
+                self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
+
+    def start_polygon_draw(self):
+        """Start drawing a polygon on the map canvas"""
+        if self.iface and self.iface.mapCanvas():
+            # Clean up existing polygon tool if there is one
+            if self.polygon_tool:
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.polygon_tool = None
+                
+            # Disconnect from any active layer selection signals
+            if self.iface.activeLayer():
+                try:
+                    self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
+                except:
+                    pass
+                
+                # Clear any selected features in the active layer
+                self.iface.activeLayer().removeSelection()
+                
+            # Create and set the polygon map tool
+            self.polygon_tool = PolygonMapTool(self.iface.mapCanvas())
+            self.iface.mapCanvas().setMapTool(self.polygon_tool)
+            
+            # Connect the signal
+            self.polygon_tool.polygonSelected.connect(self.on_polygon_drawn)
+            
+            # Connect the deactivated signal to clean up the tool when another tool is selected
+            self.polygon_tool.deactivated.connect(self.handle_polygon_tool_deactivated)
+            
+            # Show instructions
+            self.iface.messageBar().pushMessage(
+                "Draw Polygon", 
+                "Click to add vertices. Right-click to finish.", 
+                level=0, 
+                duration=5
+            )
+            
+            # Update button states
+            self.extent_button.setChecked(False)
+            self.draw_button.setChecked(True)
+            self.select_button.setChecked(False)
+            
+    def handle_polygon_tool_deactivated(self):
+        """Handle the polygon tool being deactivated by another tool"""
+        self.polygon_tool = None
+
+    def on_polygon_drawn(self, geometry):
+        """Handle when a polygon is drawn"""
+        # Store the full geometry
+        self.aoi_geometry = QgsGeometry(geometry)
+        
+        # Get the current map CRS
+        map_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+        
+        # Store the CRS with the geometry for later reprojection if needed
+        self.aoi_geometry_crs = map_crs
+        
+        # Convert polygon geometry to extent for display
+        self.current_extent = geometry.boundingBox()
+        
+        # Update the display
+        self.update_extent_display("Drawn Polygon")
+        
+        # Update the AOI highlighting
+        if self.aoi_highlighter:
+            self.aoi_highlighter.highlight_aoi(geometry=self.aoi_geometry)
+            
+        # Reset the map tool after drawing is complete (but keep the tool reference)
+        if self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            
+        # Set focus back to the dialog
+        self.activateWindow()
+
+    def get_reprojected_geometry(self, target_crs):
+        """Return the geometry reprojected to the target CRS if needed"""
+        if not self.aoi_geometry:
+            return None
+            
+        # If target CRS is not specified, return the original geometry
+        if not target_crs:
+            return self.aoi_geometry
+            
+        # Check if we need to reproject
+        if self.aoi_geometry_crs.authid() != target_crs.authid():
+            from qgis.core import QgsCoordinateTransform, QgsProject
+            
+            # Create a coordinate transform
+            transform = QgsCoordinateTransform(
+                self.aoi_geometry_crs,
+                target_crs,
+                QgsProject.instance()
+            )
+            
+            # Create a copy of the geometry and transform it
+            reprojected_geom = QgsGeometry(self.aoi_geometry)
+            reprojected_geom.transform(transform)
+            
+            # Ensure the geometry is in a standard format
+            from qgis.core import QgsWkbTypes
+            if reprojected_geom.wkbType() == QgsWkbTypes.MultiSurface:
+                reprojected_geom = QgsGeometry.fromMultiPolygonXY(reprojected_geom.asMultiPolygon())
+            elif reprojected_geom.wkbType() == QgsWkbTypes.CurvePolygon:
+                reprojected_geom = QgsGeometry.fromPolygonXY(reprojected_geom.asPolygon())
+            
+            return reprojected_geom
+        
+        # No reprojection needed, but still ensure the geometry is in a standard format
+        from qgis.core import QgsWkbTypes
+        geom = QgsGeometry(self.aoi_geometry)
+        if geom.wkbType() == QgsWkbTypes.MultiSurface:
+            geom = QgsGeometry.fromMultiPolygonXY(geom.asMultiPolygon())
+        elif geom.wkbType() == QgsWkbTypes.CurvePolygon:
+            geom = QgsGeometry.fromPolygonXY(geom.asPolygon())
+        
+        return geom
+
+    def clear_extent(self):
+        """Clear the current area of interest"""
+        # Reset the polygon tool if active
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+            
+        # Clear any previously drawn geometry
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = None
+        
+        # Clear the extent display
+        self.extent_display.clear()
+        self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
+        
+        # Clear the AOI highlighting
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+            
+        # Clear selected features in all layers and disconnect signals
+        if self.iface:
+            # Get all layers from the project
+            from qgis.core import QgsProject
+            layers = QgsProject.instance().mapLayers().values()
+            
+            for layer in layers:
+                # Only process vector layers
+                if layer.type() == 0:  # Vector layer
+                    # Disconnect from the selection changed signal first to avoid loops
+                    try:
+                        layer.selectionChanged.disconnect(self.on_selection_changed)
+                    except:
+                        pass  # If it wasn't connected, just continue
+                        
+                    # Clear the selection
+                    layer.removeSelection()
+            
+            # If there's an active layer, connect to its selection changed signal
+            active_layer = self.iface.activeLayer()
+            if active_layer and active_layer.type() == 0:  # Vector layer
+                try:
+                    active_layer.selectionChanged.disconnect(self.on_selection_changed)
+                except:
+                    pass  # Make sure it's not already connected
+                
+            # Deactivate feature selection mode
+            if self.iface.mapCanvas():
+                # Get the current map tool
+                current_tool = self.iface.mapCanvas().mapTool()
+                
+                # Check if the current tool is a selection tool
+                if current_tool and hasattr(current_tool, 'name') and 'select' in current_tool.name().lower():
+                    # Switch back to the pan tool
+                    self.iface.actionPan().trigger()
+                
+                # Explicitly deactivate the select rectangle tool
+                self.iface.actionSelectRectangle().trigger()
+                
+                # Ensure we're using the pan tool
+                self.iface.actionPan().trigger()
+            
+            # Refresh the canvas
+            self.iface.mapCanvas().refresh()
+            
+        # Update button states - uncheck all buttons
+        self.extent_button.setChecked(False)
+        self.draw_button.setChecked(False)
+        self.select_button.setChecked(False)
+
+    def start_feature_selection(self):
+        """Start selecting features from the active layer"""
+        if self.iface and self.iface.mapCanvas():
+            # Check if there's an active layer first
+            active_layer = self.iface.activeLayer()
+            if not active_layer or not active_layer.isSpatial():
+                self.iface.messageBar().pushMessage(
+                    "Selection Error", 
+                    "Please select a vector layer first", 
+                    level=1,  # Warning level
+                    duration=5
+                )
+                return
+                
+            # Clean up existing polygon tool if there is one
+            if self.polygon_tool:
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.polygon_tool = None
+                
+            # Clear any previous highlighter to start fresh
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+                
+            # Clear any previous selection
+            active_layer.removeSelection()
+                
+            # Disconnect any existing selection signal first to avoid multiple connections
+            try:
+                active_layer.selectionChanged.disconnect(self.on_selection_changed)
+            except:
+                pass
+                
+            # Connect to the selection changed signal
+            active_layer.selectionChanged.connect(self.on_selection_changed)
+            
+            # Use QGIS's built-in selection tool
+            self.iface.actionSelectRectangle().trigger()
+            
+            # Show instructions
+            self.iface.messageBar().pushMessage(
+                "Select Features", 
+                "Use the selection tool to select features from the active layer. Selected features will define the area of interest.", 
+                level=0,  # Info level
+                duration=5
+            )
+            
+            # Update button states
+            self.extent_button.setChecked(False)
+            self.draw_button.setChecked(False)
+            self.select_button.setChecked(True)
+
+    def on_selection_changed(self):
+        """Handle when the selection in the active layer changes"""
+        active_layer = self.iface.activeLayer()
+        if not active_layer:
+            return
+            
+        # If no features are selected, clear the highlighting but keep selection mode active
+        if active_layer.selectedFeatureCount() == 0:
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
+            self.current_extent = None
+            
+            # Clear the extent display
+            if hasattr(self, 'extent_display') and self.extent_display is not None:
+                self.extent_display.clear()
+                self.extent_display.setPlaceholderText("No features selected. Select features to define the area of interest.")
+            return
+            
+        # Get the layer's CRS and the map canvas CRS
+        layer_crs = active_layer.crs()
+        map_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+        
+        # Get the combined geometry of all selected features
+        selected_features = active_layer.selectedFeatures()
+        combined_geometry = None
+        
+        for feature in selected_features:
+            geom = feature.geometry()
+            if geom and not geom.isEmpty():
+                # Check if we need to transform the geometry
+                if layer_crs.authid() != map_crs.authid():
+                    # Create a coordinate transform from layer CRS to map canvas CRS
+                    from qgis.core import QgsCoordinateTransform, QgsProject
+                    transform = QgsCoordinateTransform(
+                        layer_crs,
+                        map_crs,
+                        QgsProject.instance()
+                    )
+                    
+                    # Create a copy of the geometry and transform it
+                    transformed_geom = QgsGeometry(geom)
+                    transformed_geom.transform(transform)
+                    geom = transformed_geom
+                
+                if combined_geometry is None:
+                    # Use copy constructor instead of clone method
+                    combined_geometry = QgsGeometry(geom)
+                else:
+                    combined_geometry = combined_geometry.combine(geom)
+        
+        if combined_geometry:
+            # Convert MultiSurface to MultiPolygon if needed
+            from qgis.core import QgsWkbTypes
+            if combined_geometry.wkbType() == QgsWkbTypes.MultiSurface:
+                # Force convert to a standard format (MultiPolygon)
+                combined_geometry = QgsGeometry.fromMultiPolygonXY(combined_geometry.asMultiPolygon())
+            elif combined_geometry.wkbType() == QgsWkbTypes.CurvePolygon:
+                # Convert CurvePolygon to standard Polygon
+                combined_geometry = QgsGeometry.fromPolygonXY(combined_geometry.asPolygon())
+            
+            # Store the geometry
+            self.aoi_geometry = combined_geometry
+            
+            # Store the CRS with the geometry for later reprojection if needed
+            self.aoi_geometry_crs = map_crs
+            
+            # Convert combined geometry to extent
+            self.current_extent = combined_geometry.boundingBox()
+            
+            # Update the display
+            self.update_extent_display("Selected Features")
+            
+            # Ensure the AOI highlighter exists
+            if not self.aoi_highlighter and self.iface.mapCanvas():
+                from .map_tools import AoiHighlighter
+                self.aoi_highlighter = AoiHighlighter(self.iface.mapCanvas())
+                
+            # Update the AOI highlighting - first clear to avoid stacking highlighters
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+                self.aoi_highlighter.highlight_aoi(geometry=self.aoi_geometry)
+
+    def show_extent_menu(self):
+        """Show the extent menu"""
+        # Get the menu from the extent button
+        menu = self.extent_button.menu()
+        if menu:
+            # Get the button's position in global coordinates
+            button_pos = self.extent_button.mapToGlobal(QPoint(0, 20))
+            # Show the menu below the button
+            menu.exec_(button_pos)
+
+    def populate_layer_combo(self):
+        """Populate the layer combo box with available layers"""
+        if not self.iface:
+            return
+            
+        # Store the current selection
+        current_layer = None
+        if self.layer_combo.currentIndex() >= 0:
+            current_layer = self.layer_combo.itemData(self.layer_combo.currentIndex())
+            
+        # Clear existing items
+        self.layer_combo.clear()
+        
+        # Get all layers from the project in the correct order
+        from qgis.core import QgsProject
+        root = QgsProject.instance().layerTreeRoot()
+        
+        # Get all layers in the order they appear in the layer tree
+        layers = []
+        for layer in root.findLayers():
+            if layer.layer() and layer.layer().type() == 0:  # Vector layer
+                layers.append(layer.layer())
+        
+        # Add layers to combo box in the same order as the layer tree
+        for layer in layers:
+            self.layer_combo.addItem(layer.name(), layer)
+            
+        # Connect to layer changed signal
+        self.layer_combo.currentIndexChanged.connect(self.on_layer_changed)
+        
+        # Restore the previous selection or select the active layer
+        if current_layer and current_layer in layers:
+            index = self.layer_combo.findData(current_layer)
+            if index >= 0:
+                self.layer_combo.setCurrentIndex(index)
+        else:
+            active_layer = self.iface.activeLayer()
+            if active_layer and active_layer in layers:
+                index = self.layer_combo.findData(active_layer)
+                if index >= 0:
+                    self.layer_combo.setCurrentIndex(index)
+
+    def on_layer_changed(self, index):
+        """Handle layer selection change"""
+        if not self.iface or index < 0:
+            return
+            
+        # Get selected layer
+        layer = self.layer_combo.itemData(index)
+        if layer:
+            # Store whether we were in selection mode
+            was_in_selection_mode = False
+            if hasattr(self, 'select_button') and self.select_button is not None:
+                was_in_selection_mode = self.select_button.isChecked()
+            
+            # Clear the AOI highlighting to prevent "stuck" highlights
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+            
+            # Reset our tracking variables to ensure a clean state
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
+            
+            # Clear selection from previous layer if any and disconnect signals
+            if self.iface.activeLayer():
+                try:
+                    self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
+                except:
+                    pass
+                self.iface.activeLayer().removeSelection()
+            
+            # Set as active layer
+            self.iface.setActiveLayer(layer)
+            
+            # Uncheck all AOI buttons if they exist and are not None
+            if hasattr(self, 'extent_button') and self.extent_button is not None:
+                self.extent_button.setChecked(False)
+            if hasattr(self, 'draw_button') and self.draw_button is not None:
+                self.draw_button.setChecked(False)
+            if hasattr(self, 'select_button') and self.select_button is not None:
+                self.select_button.setChecked(False)
+            
+            # Update the extent display to show no selection
+            if hasattr(self, 'extent_display') and self.extent_display is not None:
+                self.extent_display.clear()
+                self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
+            
+            # If we were in selection mode, restart it for the new layer
+            if was_in_selection_mode and hasattr(self, 'select_button') and self.select_button is not None:
+                self.start_feature_selection()
+
+    def on_layers_changed(self):
+        """Handle when layers are added or removed from the project"""
+        if hasattr(self, 'layer_combo'):
+            # Store current active layer
+            current_active = self.iface.activeLayer()
+            
+            # Update the combo box
+            self.populate_layer_combo()
+            
+            # If we had an active layer before, try to restore it
+            if current_active:
+                index = self.layer_combo.findData(current_active)
+                if index >= 0:
+                    self.layer_combo.setCurrentIndex(index)
+                    # Ensure the layer is still active
+                    self.iface.setActiveLayer(current_active)
