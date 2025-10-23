@@ -396,6 +396,10 @@ class DataSourceDialog(QDialog):
             self.sourcecoop_link.setText(
                 '<a href="https://source.coop/repositories/vida/google-microsoft-osm-open-buildings/description">View dataset info</a>'
             )
+        elif selection == "Microsoft ML Road Detections":
+            self.sourcecoop_link.setText(
+                '<a href="https://source.coop/nlebovits/microsoft-ml-road-detections">View dataset info</a>'
+            )
         else:
             self.sourcecoop_link.setText("")
 
