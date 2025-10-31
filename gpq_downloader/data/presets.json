@@ -81,6 +81,12 @@
             "info_url": "https://source.coop/repositories/cholmes/nhd/description",
             "needs_validation": true,
             "display_name": "NHD Flowlines (experimental)"
+        },
+        "microsoft_ml_roads": {
+            "url": "s3://us-west-2.opendata.source.coop/nlebovits/microsoft-ml-road-detections/by_country/*/*.parquet",
+            "info_url": "https://source.coop/nlebovits/microsoft-ml-road-detections",
+            "needs_validation": false,
+            "display_name": "Microsoft ML Road Detections"
         }
     },
     "other": {
