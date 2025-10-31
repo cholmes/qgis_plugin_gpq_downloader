@@ -21,7 +21,7 @@ See [metadata.txt](gpq_downloader/metadata.txt) for more installation notes.
 
 ## Usage
 
-The plugin will install 1 button on the QGIS toolbar:
+The plugin will install 1 button on the "Plugin" QGIS toolbar, that you might have to enable through `View > Toolbars > Plugins`:
 
 ![1_UuUno32b4P_UNUqJZvSPoQ](https://github.com/user-attachments/assets/16003294-9a76-42cb-a740-b5bbd308e484)
 
