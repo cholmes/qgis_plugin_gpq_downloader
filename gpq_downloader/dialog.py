@@ -49,19 +49,19 @@ class DataSourceDialog(QDialog):
         # Create radio buttons
         self.overture_radio = QRadioButton("Overture Maps")
         self.sourcecoop_radio = QRadioButton("Source Cooperative")
-        self.other_radio = QRadioButton("Hugging Face")
+        self.osm_radio = QRadioButton("OpenStreetMap")
         self.custom_radio = QRadioButton("Custom URL")
 
         # Add radio buttons to horizontal layout
         radio_layout.addWidget(self.overture_radio)
         radio_layout.addWidget(self.sourcecoop_radio)
-        radio_layout.addWidget(self.other_radio)
+        radio_layout.addWidget(self.osm_radio)
         radio_layout.addWidget(self.custom_radio)
 
         # Connect to save state
         self.overture_radio.released.connect(self.save_radio_button_state)
         self.sourcecoop_radio.released.connect(self.save_radio_button_state)
-        self.other_radio.released.connect(self.save_radio_button_state)
+        self.osm_radio.released.connect(self.save_radio_button_state)
         self.custom_radio.released.connect(self.save_radio_button_state)
 
         # Add radio button layout to main layout
@@ -167,36 +167,39 @@ class DataSourceDialog(QDialog):
         self.sourcecoop_combo.currentTextChanged.connect(self.update_sourcecoop_link)
         sourcecoop_page.setLayout(sourcecoop_layout)
 
-        # Other sources page
-        other_page = QWidget()
-        other_layout = QVBoxLayout()
-        self.other_combo = QComboBox()
-        self.other_combo.addItems(
-            [
-                dataset["display_name"]
-                for dataset in self.PRESET_DATASETS["other"].values()
-            ]
+        # OpenStreetMap page
+        osm_page = QWidget()
+        osm_layout = QVBoxLayout()
+
+        # Create horizontal layout for checkboxes
+        osm_checkbox_layout = QHBoxLayout()
+
+        # Create checkboxes for OSM datasets
+        self.osm_checkboxes = {}
+        for key in self.PRESET_DATASETS['openstreetmap'].keys():
+            checkbox = QCheckBox(key.title())
+            self.osm_checkboxes[key] = checkbox
+            osm_checkbox_layout.addWidget(checkbox)
+
+        # Add the horizontal checkbox layout to main layout
+        osm_layout.addLayout(osm_checkbox_layout)
+
+        # Add link label for LayerCake info
+        self.osm_link = QLabel()
+        self.osm_link.setText(
+            'Data from <a href="https://openstreetmap.us/our-work/layercake/">LayerCake GeoParquet files</a>'
         )
-        other_layout.addWidget(self.other_combo)
+        self.osm_link.setOpenExternalLinks(True)
+        self.osm_link.setWordWrap(True)
+        osm_layout.addWidget(self.osm_link)
 
-        # Add link label for other sources
-        self.other_link = QLabel()
-        self.other_link.setOpenExternalLinks(True)
-        self.other_link.setWordWrap(True)
-        other_layout.addWidget(self.other_link)
-
-        # Connect combo box change to update link
-        self.other_combo.currentTextChanged.connect(self.update_other_link)
-        other_page.setLayout(other_layout)
-
-        # Add initial link update for other sources
-        self.update_other_link(self.other_combo.currentText())
+        osm_page.setLayout(osm_layout)
 
         # Add pages to stack
         self.stack.addWidget(custom_page)
         self.stack.addWidget(overture_page)
         self.stack.addWidget(sourcecoop_page)
-        self.stack.addWidget(other_page)
+        self.stack.addWidget(osm_page)
 
         layout.addWidget(self.stack)
 
@@ -214,7 +217,7 @@ class DataSourceDialog(QDialog):
         self.custom_radio.toggled.connect(lambda: self.stack.setCurrentIndex(0))
         self.overture_radio.toggled.connect(lambda: self.stack.setCurrentIndex(1))
         self.sourcecoop_radio.toggled.connect(lambda: self.stack.setCurrentIndex(2))
-        self.other_radio.toggled.connect(lambda: self.stack.setCurrentIndex(3))
+        self.osm_radio.toggled.connect(lambda: self.stack.setCurrentIndex(3))
         self.ok_button.clicked.connect(self.validate_and_accept)
         self.cancel_button.clicked.connect(self.reject)
 
@@ -229,6 +232,8 @@ class DataSourceDialog(QDialog):
             checkbox.toggled.connect(self.save_checkbox_states)
         for checkbox in self.base_subtype_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
+        for checkbox in self.osm_checkboxes.values():
+            checkbox.toggled.connect(self.save_checkbox_states)
 
         # Ensure to call save_checkbox_states when the dialog is accepted
         self.ok_button.clicked.connect(self.save_checkbox_states)
@@ -240,9 +245,9 @@ class DataSourceDialog(QDialog):
             button_name = self.overture_radio.text()
         elif self.sourcecoop_radio.isChecked():
             button_name = self.sourcecoop_radio.text()
-        elif self.other_radio.isChecked():
-            button_name = self.other_radio.text()
-        elif self.custom_radio.isChecked():
+        elif self.osm_radio.isChecked():
+            button_name = self.osm_radio.text()
+        else:
             button_name = self.custom_radio.text()
 
         QgsSettings().setValue(
@@ -262,8 +267,8 @@ class DataSourceDialog(QDialog):
             QMessageBox.warning(self, "Validation Error", "Please select at least one dataset")
             return
 
-        # For Overture datasets, we know they're valid so we can skip validation
-        if self.overture_radio.isChecked():
+        # For Overture and OSM datasets, we know they're valid so we can skip validation
+        if self.overture_radio.isChecked() or self.osm_radio.isChecked():
             self.accept()
             return
 
@@ -368,50 +373,28 @@ class DataSourceDialog(QDialog):
                     urls.append(dataset['url_template'].format(subtype=type_str))
         elif self.sourcecoop_radio.isChecked():
             selection = self.sourcecoop_combo.currentText()
-            dataset = next((dataset for dataset in self.PRESET_DATASETS['source_cooperative'].values() 
+            dataset = next((dataset for dataset in self.PRESET_DATASETS['source_cooperative'].values()
                            if dataset['display_name'] == selection), None)
             return [dataset['url']] if dataset else []
-        elif self.other_radio.isChecked():
-            selection = self.other_combo.currentText()
-            dataset = next((dataset for dataset in self.PRESET_DATASETS['other'].values() 
-                           if dataset['display_name'] == selection), None)
-            return [dataset['url']] if dataset else []
+        elif self.osm_radio.isChecked():
+            for layer, checkbox in self.osm_checkboxes.items():
+                if checkbox.isChecked():
+                    dataset = self.PRESET_DATASETS['openstreetmap'][layer]
+                    urls.append(dataset['url'])
         return urls
 
     def update_sourcecoop_link(self, selection):
         """Update the link based on the selected dataset"""
-        if selection == "Planet EU Field Boundaries (2022)":
+        # Find the dataset by display_name
+        dataset = next((dataset for dataset in self.PRESET_DATASETS['source_cooperative'].values()
+                       if dataset['display_name'] == selection), None)
+        if dataset and 'info_url' in dataset:
             self.sourcecoop_link.setText(
-                '<a href="https://source.coop/repositories/planet/eu-field-boundaries/description">View dataset info</a>'
-            )
-        elif selection == "USDA Crop Sequence Boundaries":
-            self.sourcecoop_link.setText(
-                '<a href="https://source.coop/fiboa/us-usda-cropland/description">View dataset info</a>'
-            )
-        elif selection == "California Crop Mapping":
-            self.sourcecoop_link.setText(
-                '<a href="https://source.coop/repositories/fiboa/us-ca-scm/description">View dataset info</a>'
-            )
-        elif selection == "VIDA Google/Microsoft/OSM Buildings":
-            self.sourcecoop_link.setText(
-                '<a href="https://source.coop/repositories/vida/google-microsoft-osm-open-buildings/description">View dataset info</a>'
-            )
-        elif selection == "Microsoft ML Road Detections":
-            self.sourcecoop_link.setText(
-                '<a href="https://source.coop/nlebovits/microsoft-ml-road-detections">View dataset info</a>'
+                f'<a href="{dataset["info_url"]}">View dataset info</a>'
             )
         else:
             self.sourcecoop_link.setText("")
 
-    def update_other_link(self, selection):
-        """Update the link based on the selected dataset"""
-        for dataset in self.PRESET_DATASETS["other"].values():
-            if dataset["display_name"] == selection:
-                self.other_link.setText(
-                    f'<a href="{dataset["info_url"]}">View dataset info</a>'
-                )
-                return
-        self.other_link.setText("")
 
     def show_bbox_warning(self):
         """Show bbox warning dialog in main thread"""
@@ -457,11 +440,19 @@ class DataSourceDialog(QDialog):
                 checkbox.isChecked(),
                 section=QgsSettings.Plugins,
             )
-        
+
         # Save base subtype checkboxes
         for key, checkbox in self.base_subtype_checkboxes.items():
             QgsSettings().setValue(
                 f"gpq_downloader/base_subtype_checkbox_{key}",
+                checkbox.isChecked(),
+                section=QgsSettings.Plugins,
+            )
+
+        # Save OSM checkboxes
+        for key, checkbox in self.osm_checkboxes.items():
+            QgsSettings().setValue(
+                f"gpq_downloader/osm_checkbox_{key}",
                 checkbox.isChecked(),
                 section=QgsSettings.Plugins,
             )
@@ -476,7 +467,7 @@ class DataSourceDialog(QDialog):
                 section=QgsSettings.Plugins,
             )
             checkbox.setChecked(checked)
-        
+
         # Load base subtype checkboxes
         for key, checkbox in self.base_subtype_checkboxes.items():
             checked = QgsSettings().value(
@@ -486,7 +477,17 @@ class DataSourceDialog(QDialog):
                 section=QgsSettings.Plugins,
             )
             checkbox.setChecked(checked)
-            
+
+        # Load OSM checkboxes
+        for key, checkbox in self.osm_checkboxes.items():
+            checked = QgsSettings().value(
+                f"gpq_downloader/osm_checkbox_{key}",
+                False,
+                type=bool,
+                section=QgsSettings.Plugins,
+            )
+            checkbox.setChecked(checked)
+
         # Update base subtype widget visibility based on base checkbox state
         self.base_subtype_widget.setVisible(self.base_checkbox.isChecked())
 

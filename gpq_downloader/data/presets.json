@@ -40,29 +40,35 @@
         }
     },
     "source_cooperative": {
-        "planet_eu_boundaries": {
-            "url": "https://data.source.coop/planet/eu-field-boundaries/field_boundaries.parquet",
-            "info_url": "https://source.coop/repositories/planet/eu-field-boundaries/description",
-            "needs_validation": false,
-            "display_name": "Planet EU Field Boundaries (2022)"
-        },
-        "usda_crop": {
-            "url": "https://data.source.coop/fiboa/us-usda-cropland/us_usda_cropland.parquet",
-            "info_url": "https://source.coop/fiboa/us-usda-cropland/description",
-            "needs_validation": false,
-            "display_name": "USDA Crop Sequence Boundaries"
-        },
-        "ca_crop": {
-            "url": "https://data.source.coop/fiboa/us-ca-scm/us_ca_scm.parquet",
-            "info_url": "https://source.coop/repositories/fiboa/us-ca-scm/description",
-            "needs_validation": false,
-            "display_name": "California Crop Mapping"
-        },
         "vida_buildings": {
             "url": "s3://us-west-2.opendata.source.coop/vida/google-microsoft-osm-open-buildings/geoparquet/by_country/*/*.parquet",
-            "info_url": "https://source.coop/repositories/vida/google-microsoft-osm-open-buildings/description",
+            "info_url": "https://source.coop/vida/google-microsoft-osm-open-buildings",
             "needs_validation": false,
             "display_name": "VIDA Google/Microsoft/OSM Buildings"
+        },
+        "microsoft_ml_roads": {
+            "url": "s3://us-west-2.opendata.source.coop/nlebovits/microsoft-ml-road-detections/by_country/*/*.parquet",
+            "info_url": "https://source.coop/nlebovits/microsoft-ml-road-detections",
+            "needs_validation": false,
+            "display_name": "Microsoft ML Road Detections"
+        },
+        "globalbuildingatlas": {
+            "url": "s3://us-west-2.opendata.source.coop/tge-labs/globalbuildingatlas-lod1/*.parquet",
+            "info_url": "https://source.coop/tge-labs/globalbuildingatlas-lod1",
+            "needs_validation": false,
+            "display_name": "GlobalBuildingAtlas"
+        },
+        "openbuildingmap": {
+            "url": "s3://us-west-2.opendata.source.coop/tge-labs/openbuildingmap/*.parquet",
+            "info_url": "https://source.coop/tge-labs/openbuildingmap",
+            "needs_validation": false,
+            "display_name": "OpenBuildingMap"
+        },
+        "fsq_places_fused": {
+            "url": "s3://us-west-2.opendata.source.coop/fused/fsq-os-places/2025-02-06/places/*.parquet",
+            "info_url": "https://source.coop/fused/fsq-os-places",
+            "needs_validation": false,
+            "display_name": "Foursquare Open Source Places - Fused-partitioned"
         },
         "us_structures": {
             "url": "s3://us-west-2.opendata.source.coop/wherobots/usa-structures/geoparquet/*.parquet",
@@ -70,31 +76,40 @@
             "needs_validation": false,
             "display_name": "US Structures from ORNL by Wherobots"
         },
-        "fsq_places_fused": {
-            "url": "s3://us-west-2.opendata.source.coop/fused/fsq-os-places/2025-01-10/places/*.parquet",
-            "info_url": "https://source.coop/repositories/fused/fsq-os-places/description",
+        "planet_eu_boundaries": {
+            "url": "https://data.source.coop/planet/eu-field-boundaries/field_boundaries.parquet",
+            "info_url": "https://source.coop/planet/eu-field-boundaries",
             "needs_validation": false,
-            "display_name": "Foursquare Open Source Places - Fused-partitioned"
+            "display_name": "Planet EU Field Boundaries (2022)"
+        },
+        "usda_crop": {
+            "url": "https://data.source.coop/fiboa/us-usda-cropland/us_usda_cropland.parquet",
+            "info_url": "https://source.coop/fiboa/us-usda-cropland",
+            "needs_validation": false,
+            "display_name": "USDA Crop Sequence Boundaries"
         },
         "nhd_flowlines": {
             "url": "https://data.source.coop/cholmes/nhd/NHDFlowline.parquet",
-            "info_url": "https://source.coop/repositories/cholmes/nhd/description",
+            "info_url": "https://source.coop/cholmes/nhd",
             "needs_validation": true,
             "display_name": "NHD Flowlines (experimental)"
-        },
-        "microsoft_ml_roads": {
-            "url": "s3://us-west-2.opendata.source.coop/nlebovits/microsoft-ml-road-detections/by_country/*/*.parquet",
-            "info_url": "https://source.coop/nlebovits/microsoft-ml-road-detections",
-            "needs_validation": false,
-            "display_name": "Microsoft ML Road Detections"
         }
     },
-    "other": {
-        "foursquare_places": {
-            "url": "hf://datasets/foursquare/fsq-os-places/release/dt=2025-02-06/places/parquet/*.parquet",
-            "info_url": "https://docs.foursquare.com/data-products/docs/places-overview",
-            "needs_validation": false,
-            "display_name": "Foursquare Places"
+    "openstreetmap": {
+        "buildings": {
+            "url": "https://data.openstreetmap.us/layercake/buildings.parquet",
+            "info_url": "https://data.openstreetmap.us/",
+            "needs_validation": false
+        },
+        "highways": {
+            "url": "https://data.openstreetmap.us/layercake/highways.parquet",
+            "info_url": "https://data.openstreetmap.us/",
+            "needs_validation": false
+        },
+        "settlements": {
+            "url": "https://data.openstreetmap.us/layercake/settlements.parquet",
+            "info_url": "https://data.openstreetmap.us/",
+            "needs_validation": false
         }
     }
 }

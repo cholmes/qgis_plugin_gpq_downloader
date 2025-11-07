@@ -2,7 +2,7 @@
 name=GeoParquet Downloader (Overture, Source Coop & Custom Cloud)
 qgisMinimumVersion=3.16
 qgisMaximumVersion=4.99.0
-version=0.8.4
+version=0.8.5
 supportsQt6=yes
 icon=icons/parquet-download.png
 description=Plugin for downloading GeoParquet data from cloud sources.
