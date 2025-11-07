@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpq_downloader"
-version = "0.8.4"
+version = "0.8.5"
 description = "QGIS plugin for downloading and processing GeoParquet files"
 readme = "README.md"
 requires-python = ">=3.7"

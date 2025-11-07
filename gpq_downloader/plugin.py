@@ -79,7 +79,7 @@ class QgisPluginGeoParquet:
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
 
         selected_name = QgsSettings().value("gpq_downloader/radio_selection", section=QgsSettings.Plugins)
-        for button in [dialog.overture_radio, dialog.sourcecoop_radio, dialog.other_radio, dialog.custom_radio]:
+        for button in [dialog.overture_radio, dialog.sourcecoop_radio, dialog.osm_radio, dialog.custom_radio]:
             if button.text() == selected_name:
                 button.setChecked(True)
         if not selected_name:
@@ -112,10 +112,10 @@ class QgisPluginGeoParquet:
                     dataset_name = dialog.sourcecoop_combo.currentText()
                     clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
                     filename = f"sourcecoop_{clean_name}_{current_date}.parquet"
-                elif dialog.other_radio.isChecked():
-                    dataset_name = dialog.other_combo.currentText()
-                    clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_')
-                    filename = f"other_{clean_name}_{current_date}.parquet"
+                elif dialog.osm_radio.isChecked():
+                    # Extract layer name from URL
+                    layer_name = url.split('/')[-1].replace('.parquet', '')
+                    filename = f"osm_{layer_name}_{current_date}.parquet"
                 else:
                     filename = f"custom_download_{current_date}.parquet"
 
