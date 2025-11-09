@@ -101,6 +101,11 @@
             "info_url": "https://data.openstreetmap.us/",
             "needs_validation": false
         },
+        "boundaries": {
+            "url": "https://data.openstreetmap.us/layercake/boundaries.parquet",
+            "info_url": "https://data.openstreetmap.us/",
+            "needs_validation": false
+        },
         "highways": {
             "url": "https://data.openstreetmap.us/layercake/highways.parquet",
             "info_url": "https://data.openstreetmap.us/",
