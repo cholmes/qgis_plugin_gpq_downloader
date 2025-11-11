@@ -10,12 +10,16 @@ The core idea is that GeoParquet can act more like a 'server', letting users dow
 
 ## Installation
 
-The easiest way to install the plugin file is to use the QGIS plugin manager. Just go to `Plugins > Manage and Install Plugins` and go to 
-the 'install' tab and search for 'GeoParquet Downloader'. Click on 'Install Plugin' and you should get it. Alternatively you can download the zip file from
+The easiest way to install the plugin file is to use the QGIS plugin manager. Just go to `Plugins > Manage and Install Plugins`, click 
+the 'install' tab and search for 'GeoParquet Downloader'. Click on 'Install Plugin' and it will install. Alternatively you can download the zip file from
 one of the [releases](https://github.com/cholmes/qgis_plugin_gpq_downloader/releases) and 'install from zip' in QGIS. For the plugin to work DuckDB
-needs to be installed. As of version 0.3 the plugin should try to automatically install DuckDB. 
+needs to be installed. As of version 0.3 the plugin should try to automatically install DuckDB, but it doesn't work reliably. If you installed but don't see the 
+icon below then it's likely because DuckDB isn't there.
 
-If the installation of DuckDB doesn't work, then on Windows you can use the [QDuckDB plugin](https://oslandia.gitlab.io/qgis/qduckdb/) which includes a precompiled binary. They also document how to install DuckDB on [Linux](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#linux) and [Mac OS/X](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#macos).
+If the installation of DuckDB doesn't work, then on Windows you can use the [QDuckDB plugin](https://oslandia.gitlab.io/qgis/qduckdb/) which includes a precompiled binary. 
+They also document how to install DuckDB on [Linux](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#linux) and 
+[Mac OS/X](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#macos). If you're on Mac we recommend trying 
+the [QGIS 4.0 mac build preview](https://github.com/opengisch/qgis-notarize/) which ships with DuckDB.
 
 See [metadata.txt](gpq_downloader/metadata.txt) for more installation notes.
 
