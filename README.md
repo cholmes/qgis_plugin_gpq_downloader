@@ -32,7 +32,8 @@ The plugin will install 1 button on the "Plugin" QGIS toolbar, that you might ha
 It opens a dialog box, that lets you select Overture and Source Cooperative, Hugging Face or 'custom' - where you 
 can enter the location of any GeoParquet or partition file online.
 
-<img width="548" alt="Screenshot 2025-02-28 at 3 55 05 PM" src="https://github.com/user-attachments/assets/b45a97b3-452b-4a5e-922e-6b919baaf505" />
+<img width="564" height="236" alt="Screenshot 2025-11-11 at 9 36 33 PM" src="https://github.com/user-attachments/assets/895f5ac4-58e9-42ba-b998-fedd5b21f15d" />
+
 
 To use it move to an area where you'd like to download data and then select which layer you'd like to download. From there you can choose the output format (GeoParquet, GeoPackage, DuckDB, GeoJSON or FlatGeobuf) and the location to download the data to.
 
