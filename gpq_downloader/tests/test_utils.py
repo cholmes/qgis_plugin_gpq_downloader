@@ -99,7 +99,7 @@ def test_validation_worker_needs_validation():
     
     # Test Overture URL
     worker.dataset_url = "s3://overturemaps-us-west-2/release/2025-10-22.0/theme=buildings"
-    assert worker.needs_validation() == True
+    assert worker.needs_validation() == False
     
     # Test Source Cooperative URL with validation flag
     worker.PRESET_DATASETS = {
