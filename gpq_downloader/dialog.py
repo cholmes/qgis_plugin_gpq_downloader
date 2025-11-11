@@ -355,9 +355,7 @@ class DataSourceDialog(QDialog):
         if self.custom_radio.isChecked():
             return [self.url_input.text().strip()]
         elif self.overture_radio.isChecked():
-            latest_yyyy_mm_dd_ver = requests.get('https://labs.overturemaps.org/data/releases.json').json()['latest']
-            get_release = lambda x: x.split('/release/')[-1].split('/theme=')[0]
-            swap_releases = lambda x: x.replace('/%s/' % get_release(x), '/%s/' % latest_yyyy_mm_dd_ver)
+            latest_release = requests.get('https://labs.overturemaps.org/data/releases.json').json()['latest']
 
             for theme, checkbox in self.overture_checkboxes.items():
                 if checkbox.isChecked():
@@ -372,11 +370,11 @@ class DataSourceDialog(QDialog):
                         # Handle multiple base subtypes
                         for subtype, subtype_checkbox in self.base_subtype_checkboxes.items():
                             if subtype_checkbox.isChecked():
-                                urls.append(swap_releases(dataset['url_template'].format(subtype=subtype)))
+                                urls.append(dataset['url_template'].format(subtype=subtype, release=latest_release))
                         continue  # Skip the normal URL append for base
                     else:
                         type_str = theme.rstrip('s')  # remove trailing 's' for singular form
-                    urls.append(swap_releases(dataset['url_template'].format(subtype=type_str)))
+                    urls.append(dataset['url_template'].format(subtype=type_str, release=latest_release))
         elif self.sourcecoop_radio.isChecked():
             selection = self.sourcecoop_combo.currentText()
             dataset = next((dataset for dataset in self.PRESET_DATASETS['source_cooperative'].values()
