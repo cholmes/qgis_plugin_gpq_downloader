@@ -150,10 +150,10 @@ class DataSourceDialog(QDialog):
         sourcecoop_layout = QVBoxLayout()
         self.sourcecoop_combo = QComboBox()
         self.sourcecoop_combo.addItems(
-            [
+            sorted([
                 dataset["display_name"]
                 for dataset in self.PRESET_DATASETS["source_cooperative"].values()
-            ]
+            ], key=str.lower)
         )
         sourcecoop_layout.addWidget(self.sourcecoop_combo)
 
