@@ -35,7 +35,6 @@ class DataSourceDialog(QDialog):
         self.requires_validation = True
         self.setWindowTitle("GeoParquet Data Source")
         self.setMinimumWidth(500)
-        
 
         base_path = os.path.dirname(os.path.abspath(__file__))
         presets_path = os.path.join(base_path, "data", "presets.json")
@@ -94,8 +93,8 @@ class DataSourceDialog(QDialog):
 
         # Create a widget to hold checkboxes
         self.overture_checkboxes = {}
-        for key in self.PRESET_DATASETS['overture'].keys():
-            if key != 'base':  # Handle base separately
+        for key in self.PRESET_DATASETS["overture"].keys():
+            if key not in ["base", "divisions"]:  # Handle base and divisions separately
                 checkbox = QCheckBox(key.title())
                 self.overture_checkboxes[key] = checkbox
                 checkbox_layout.addWidget(checkbox)
@@ -109,27 +108,29 @@ class DataSourceDialog(QDialog):
         base_layout.setContentsMargins(0, 10, 0, 0)  # Add some top margin
 
         self.base_checkbox = QCheckBox("Base")
-        self.overture_checkboxes['base'] = self.base_checkbox
+        self.overture_checkboxes["base"] = self.base_checkbox
         base_layout.addWidget(self.base_checkbox)
 
         # Add base subtype checkboxes
         self.base_subtype_widget = QWidget()
         base_subtype_layout = QHBoxLayout()  # Horizontal layout for subtypes
-        base_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Add left margin for indentation
+        base_subtype_layout.setContentsMargins(
+            20, 0, 0, 0
+        )  # Add left margin for indentation
 
         # Replace combo box with checkboxes
         self.base_subtype_checkboxes = {}
-        subtype_display_names = {
-            'infrastructure': 'Infrastructure',
-            'land': 'Land',
-            'land_cover': 'Land Cover',
-            'land_use': 'Land Use',
-            'water': 'Water',
-            'bathymetry': 'Bathymetry'
+        base_subtype_display_names = {
+            "infrastructure": "Infrastructure",
+            "land": "Land",
+            "land_cover": "Land Cover",
+            "land_use": "Land Use",
+            "water": "Water",
+            "bathymetry": "Bathymetry",
         }
 
-        for subtype in self.PRESET_DATASETS['overture']['base']['subtypes']:
-            checkbox = QCheckBox(subtype_display_names[subtype])
+        for subtype in self.PRESET_DATASETS["overture"]["base"]["subtypes"]:
+            checkbox = QCheckBox(base_subtype_display_names[subtype])
             self.base_subtype_checkboxes[subtype] = checkbox
             base_subtype_layout.addWidget(checkbox)
 
@@ -142,8 +143,52 @@ class DataSourceDialog(QDialog):
 
         # Connect base checkbox to show/hide subtype checkboxes and resize dialog
         self.base_checkbox.toggled.connect(self.base_subtype_widget.setVisible)
-        self.base_checkbox.toggled.connect(lambda checked: self.adjust_dialog_width(checked, 100))
-        
+        self.base_checkbox.toggled.connect(
+            lambda checked: self.adjust_dialog_width(checked, 100)
+        )
+
+        # Add divisions layer section
+        divisions_group = QWidget()
+        divisions_layout = QVBoxLayout()
+        divisions_layout.setContentsMargins(0, 10, 0, 0)  # Add some top margin
+
+        self.divisions_checkbox = QCheckBox("Divisions")
+        self.overture_checkboxes["divisions"] = self.divisions_checkbox
+        divisions_layout.addWidget(self.divisions_checkbox)
+
+        # Add divisions subtype checkboxes
+        self.divisions_subtype_widget = QWidget()
+        divisions_subtype_layout = QHBoxLayout()  # Horizontal layout for subtypes
+        divisions_subtype_layout.setContentsMargins(
+            20, 0, 0, 0
+        )  # Add left margin for indentation
+
+        self.divisions_subtype_checkboxes = {}
+        divisions_subtype_display_names = {
+            "division": "Division",
+            "division_area": "Division Area",
+            "division_boundary": "Division Boundary",
+        }
+
+        for subtype in self.PRESET_DATASETS["overture"]["divisions"]["subtypes"]:
+            checkbox = QCheckBox(divisions_subtype_display_names[subtype])
+            self.divisions_subtype_checkboxes[subtype] = checkbox
+            divisions_subtype_layout.addWidget(checkbox)
+
+        self.divisions_subtype_widget.setLayout(divisions_subtype_layout)
+        self.divisions_subtype_widget.hide()
+
+        divisions_layout.addWidget(self.divisions_subtype_widget)
+        divisions_group.setLayout(divisions_layout)
+        overture_layout.addWidget(divisions_group)
+
+        # Connect divisions checkbox to show/hide subtype checkboxes and resize dialog
+        self.divisions_checkbox.toggled.connect(
+            self.divisions_subtype_widget.setVisible
+        )
+        self.divisions_checkbox.toggled.connect(
+            lambda checked: self.adjust_dialog_width(checked, 100)
+        )
 
         overture_page.setLayout(overture_layout)
 
@@ -152,10 +197,13 @@ class DataSourceDialog(QDialog):
         sourcecoop_layout = QVBoxLayout()
         self.sourcecoop_combo = QComboBox()
         self.sourcecoop_combo.addItems(
-            sorted([
-                dataset["display_name"]
-                for dataset in self.PRESET_DATASETS["source_cooperative"].values()
-            ], key=str.lower)
+            sorted(
+                [
+                    dataset["display_name"]
+                    for dataset in self.PRESET_DATASETS["source_cooperative"].values()
+                ],
+                key=str.lower,
+            )
         )
         sourcecoop_layout.addWidget(self.sourcecoop_combo)
 
@@ -178,7 +226,7 @@ class DataSourceDialog(QDialog):
 
         # Create checkboxes for OSM datasets
         self.osm_checkboxes = {}
-        for key in self.PRESET_DATASETS['openstreetmap'].keys():
+        for key in self.PRESET_DATASETS["openstreetmap"].keys():
             checkbox = QCheckBox(key.title())
             self.osm_checkboxes[key] = checkbox
             osm_checkbox_layout.addWidget(checkbox)
@@ -234,6 +282,8 @@ class DataSourceDialog(QDialog):
             checkbox.toggled.connect(self.save_checkbox_states)
         for checkbox in self.base_subtype_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
+        for checkbox in self.divisions_subtype_checkboxes.values():
+            checkbox.toggled.connect(self.save_checkbox_states)
         for checkbox in self.osm_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
 
@@ -266,7 +316,9 @@ class DataSourceDialog(QDialog):
         """Validate the input and accept the dialog if valid"""
         urls = self.get_urls()
         if not urls:
-            QMessageBox.warning(self, "Validation Error", "Please select at least one dataset")
+            QMessageBox.warning(
+                self, "Validation Error", "Please select at least one dataset"
+            )
             return
 
         # For Overture and OSM datasets, we know they're valid so we can skip validation
@@ -277,31 +329,47 @@ class DataSourceDialog(QDialog):
         # For custom URLs, do validation
         if self.custom_radio.isChecked():
             for url in urls:
-                if not (url.startswith('http://') or url.startswith('https://') or 
-                       url.startswith('s3://') or url.startswith('file://') or url.startswith('hf://')):
-                    QMessageBox.warning(self, "Validation Error", 
-                        "URL must start with http://, https://, s3://, hf://, or file://")
+                if not (
+                    url.startswith("http://")
+                    or url.startswith("https://")
+                    or url.startswith("s3://")
+                    or url.startswith("file://")
+                    or url.startswith("hf://")
+                ):
+                    QMessageBox.warning(
+                        self,
+                        "Validation Error",
+                        "URL must start with http://, https://, s3://, hf://, or file://",
+                    )
                     return
 
                 # Create progress dialog for validation
-                self.progress_dialog = QProgressDialog("Validating URL...", "Cancel", 0, 0, self)
+                self.progress_dialog = QProgressDialog(
+                    "Validating URL...", "Cancel", 0, 0, self
+                )
                 self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
                 self.progress_dialog.canceled.connect(self.cancel_validation)
 
                 # Create validation worker
-                self.validation_worker = ValidationWorker(url, self.iface, self.iface.mapCanvas().extent())
+                self.validation_worker = ValidationWorker(
+                    url, self.iface, self.iface.mapCanvas().extent()
+                )
                 self.validation_thread = QThread()
                 self.validation_worker.moveToThread(self.validation_thread)
 
                 # Connect signals
                 self.validation_thread.started.connect(self.validation_worker.run)
-                self.validation_worker.progress.connect(self.progress_dialog.setLabelText)
+                self.validation_worker.progress.connect(
+                    self.progress_dialog.setLabelText
+                )
                 self.validation_worker.finished.connect(
                     lambda success, message, results: self.handle_validation_result(
                         success, message, results
                     )
                 )
-                self.validation_worker.needs_bbox_warning.connect(self.show_bbox_warning)
+                self.validation_worker.needs_bbox_warning.connect(
+                    self.show_bbox_warning
+                )
 
                 # Start validation
                 self.validation_thread.start()
@@ -314,7 +382,7 @@ class DataSourceDialog(QDialog):
     def handle_validation_result(self, success, message, validation_results):
         """Handle validation result in the dialog"""
         self.cleanup_validation()
-        
+
         if success:
             self.validation_complete.emit(True, message, validation_results)
             self.accept()
@@ -330,7 +398,7 @@ class DataSourceDialog(QDialog):
 
     def cleanup_validation(self):
         """Clean up validation resources"""
-        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+        if hasattr(self, "progress_dialog") and self.progress_dialog:
             self.progress_dialog.close()
             self.progress_dialog = None
 
@@ -355,50 +423,87 @@ class DataSourceDialog(QDialog):
         if self.custom_radio.isChecked():
             return [self.url_input.text().strip()]
         elif self.overture_radio.isChecked():
-            latest_release = requests.get('https://labs.overturemaps.org/data/releases.json').json()['latest']
+            latest_release = requests.get(
+                "https://labs.overturemaps.org/data/releases.json"
+            ).json()["latest"]
 
             for theme, checkbox in self.overture_checkboxes.items():
                 if checkbox.isChecked():
-                    dataset = self.PRESET_DATASETS['overture'][theme]
+                    dataset = self.PRESET_DATASETS["overture"][theme]
                     if theme == "transportation":
                         type_str = "segment"
                     elif theme == "divisions":
-                        type_str = "division_area"
+                        # Handle multiple divisions subtypes
+                        for (
+                            subtype,
+                            subtype_checkbox,
+                        ) in self.divisions_subtype_checkboxes.items():
+                            if subtype_checkbox.isChecked():
+                                urls.append(
+                                    dataset["url_template"].format(
+                                        subtype=subtype, release=latest_release
+                                    )
+                                )
+                        continue  # Skip the normal URL append for divisions
                     elif theme == "addresses":
                         type_str = "*"
                     elif theme == "base":
                         # Handle multiple base subtypes
-                        for subtype, subtype_checkbox in self.base_subtype_checkboxes.items():
+                        for (
+                            subtype,
+                            subtype_checkbox,
+                        ) in self.base_subtype_checkboxes.items():
                             if subtype_checkbox.isChecked():
-                                urls.append(dataset['url_template'].format(subtype=subtype, release=latest_release))
+                                urls.append(
+                                    dataset["url_template"].format(
+                                        subtype=subtype, release=latest_release
+                                    )
+                                )
                         continue  # Skip the normal URL append for base
                     else:
-                        type_str = theme.rstrip('s')  # remove trailing 's' for singular form
-                    urls.append(dataset['url_template'].format(subtype=type_str, release=latest_release))
+                        type_str = theme.rstrip(
+                            "s"
+                        )  # remove trailing 's' for singular form
+                    urls.append(
+                        dataset["url_template"].format(
+                            subtype=type_str, release=latest_release
+                        )
+                    )
         elif self.sourcecoop_radio.isChecked():
             selection = self.sourcecoop_combo.currentText()
-            dataset = next((dataset for dataset in self.PRESET_DATASETS['source_cooperative'].values()
-                           if dataset['display_name'] == selection), None)
-            return [dataset['url']] if dataset else []
+            dataset = next(
+                (
+                    dataset
+                    for dataset in self.PRESET_DATASETS["source_cooperative"].values()
+                    if dataset["display_name"] == selection
+                ),
+                None,
+            )
+            return [dataset["url"]] if dataset else []
         elif self.osm_radio.isChecked():
             for layer, checkbox in self.osm_checkboxes.items():
                 if checkbox.isChecked():
-                    dataset = self.PRESET_DATASETS['openstreetmap'][layer]
-                    urls.append(dataset['url'])
+                    dataset = self.PRESET_DATASETS["openstreetmap"][layer]
+                    urls.append(dataset["url"])
         return urls
 
     def update_sourcecoop_link(self, selection):
         """Update the link based on the selected dataset"""
         # Find the dataset by display_name
-        dataset = next((dataset for dataset in self.PRESET_DATASETS['source_cooperative'].values()
-                       if dataset['display_name'] == selection), None)
-        if dataset and 'info_url' in dataset:
+        dataset = next(
+            (
+                dataset
+                for dataset in self.PRESET_DATASETS["source_cooperative"].values()
+                if dataset["display_name"] == selection
+            ),
+            None,
+        )
+        if dataset and "info_url" in dataset:
             self.sourcecoop_link.setText(
                 f'<a href="{dataset["info_url"]}">View dataset info</a>'
             )
         else:
             self.sourcecoop_link.setText("")
-
 
     def show_bbox_warning(self):
         """Show bbox warning dialog in main thread"""
@@ -417,7 +522,12 @@ class DataSourceDialog(QDialog):
             QMessageBox.StandardButton.No,
         )
 
-        validation_results = {"has_bbox": False, "schema": None, "bbox_column": None, "geometry_column": "geometry"}
+        validation_results = {
+            "has_bbox": False,
+            "schema": None,
+            "bbox_column": None,
+            "geometry_column": "geometry",
+        }
         if reply == QMessageBox.StandardButton.No:
             self.validation_complete.emit(
                 False, "Download cancelled by user.", validation_results
@@ -453,6 +563,14 @@ class DataSourceDialog(QDialog):
                 section=QgsSettings.Plugins,
             )
 
+        # Save divisions subtype checkboxes
+        for key, checkbox in self.divisions_subtype_checkboxes.items():
+            QgsSettings().setValue(
+                f"gpq_downloader/divisions_subtype_checkbox_{key}",
+                checkbox.isChecked(),
+                section=QgsSettings.Plugins,
+            )
+
         # Save OSM checkboxes
         for key, checkbox in self.osm_checkboxes.items():
             QgsSettings().setValue(
@@ -482,6 +600,16 @@ class DataSourceDialog(QDialog):
             )
             checkbox.setChecked(checked)
 
+        # Load divisions subtype checkboxes
+        for key, checkbox in self.divisions_subtype_checkboxes.items():
+            checked = QgsSettings().value(
+                f"gpq_downloader/divisions_subtype_checkbox_{key}",
+                False,
+                type=bool,
+                section=QgsSettings.Plugins,
+            )
+            checkbox.setChecked(checked)
+
         # Load OSM checkboxes
         for key, checkbox in self.osm_checkboxes.items():
             checked = QgsSettings().value(
@@ -494,6 +622,9 @@ class DataSourceDialog(QDialog):
 
         # Update base subtype widget visibility based on base checkbox state
         self.base_subtype_widget.setVisible(self.base_checkbox.isChecked())
+
+        # Update divisions subtype widget visibility based on divisions checkbox state
+        self.divisions_subtype_widget.setVisible(self.divisions_checkbox.isChecked())
 
     def on_validation_finished(self, success, message, results):
         # This method should handle the validation results
