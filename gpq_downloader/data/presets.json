@@ -34,9 +34,14 @@
             ]
         },
         "divisions": {
-            "url_template": "s3://overturemaps-us-west-2/release/{release}/theme=divisions/type=division_area/*",
+            "url_template": "s3://overturemaps-us-west-2/release/{release}/theme=divisions/type={subtype}/*",
             "info_url": "https://docs.overturemaps.org/reference/administrative",
-            "needs_validation": false
+            "needs_validation": false,
+            "subtypes": [
+                "division",
+                "division_area",
+                "division_boundary"
+            ]
         }
     },
     "source_cooperative": {
