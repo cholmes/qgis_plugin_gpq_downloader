@@ -19,14 +19,15 @@ from qgis.PyQt.QtWidgets import (
     QAction,
     QGroupBox,
     QTextEdit,
+    QDoubleSpinBox,
+    QGridLayout,
 )
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread, QPoint
 from qgis.PyQt.QtGui import QIcon
-from qgis.core import QgsSettings, QgsRectangle, QgsGeometry
+from qgis.core import QgsSettings, QgsRectangle, QgsGeometry, QgsApplication, QgsMapLayerType
 import os
 from .utils import ValidationWorker
-from .map_tools import PolygonMapTool, AoiHighlighter
-from qgis.core import QgsApplication
+from .map_tools import PolygonMapTool, AoiHighlighter, RectangleMapTool
 
 
 class DataSourceDialog(QDialog):
@@ -46,6 +47,13 @@ class DataSourceDialog(QDialog):
         self.aoi_geometry = None
         self.aoi_geometry_crs = None
         self.polygon_tool = None
+        self.bbox_button = None
+        self.bbox_group = None
+        self.xmin_spin = None
+        self.ymin_spin = None
+        self.xmax_spin = None
+        self.ymax_spin = None
+        self.rectangle_tool = None
         
         # Create the AOI highlighter
         self.aoi_highlighter = None
@@ -425,12 +433,13 @@ class DataSourceDialog(QDialog):
         # Clear any AOI highlighting
         if self.aoi_highlighter:
             self.aoi_highlighter.clear()
-            
+
         # Disconnect from any active layer selection signals
-        if self.iface and self.iface.activeLayer():
+        layer = self.iface.activeLayer()
+        if layer and layer.type() == QgsMapLayerType.VectorLayer:
             try:
-                self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
-            except:
+                layer.selectionChanged.disconnect(self.on_selection_changed)
+            except Exception:
                 pass
                 
         # Restore the default map tool
@@ -674,7 +683,23 @@ class DataSourceDialog(QDialog):
             # If there's any error, use a generic icon
             from qgis.PyQt.QtWidgets import QStyle
             self.select_button.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
-        
+
+        # BBox button (NEW)
+        self.bbox_button = QToolButton()
+        self.bbox_button.setText(" BBox")
+        self.bbox_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.bbox_button.setToolTip("Draw a rectangle AOI or enter xmin/ymin/xmax/ymax manually")
+        self.bbox_button.setCheckable(True)
+
+        try:
+            bbox_icon = QgsApplication.getThemeIcon("/mActionSelectRectangle.svg")
+            if not bbox_icon.isNull():
+                self.bbox_button.setIcon(bbox_icon)
+        except Exception:
+            pass
+
+        self.bbox_button.clicked.connect(self.start_bbox_mode)
+
         # Connect select button to selection tool
         self.select_button.clicked.connect(self.start_feature_selection)
         
@@ -700,6 +725,7 @@ class DataSourceDialog(QDialog):
         button_layout.addWidget(self.draw_button)
         button_layout.addWidget(self.select_button)
         button_layout.addWidget(self.clear_button)
+        button_layout.addWidget(self.bbox_button)
         button_layout.addStretch()
         extent_layout.addLayout(button_layout)
         
@@ -709,7 +735,41 @@ class DataSourceDialog(QDialog):
         self.extent_display.setMaximumHeight(40)
         self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
         extent_layout.addWidget(self.extent_display)
-        
+
+        # Manual BBox panel (NEW)
+        self.bbox_group = QGroupBox("Bounding Box (Map CRS)")
+        bbox_layout = QGridLayout(self.bbox_group)
+
+        self.xmin_spin = QDoubleSpinBox()
+        self.ymin_spin = QDoubleSpinBox()
+        self.xmax_spin = QDoubleSpinBox()
+        self.ymax_spin = QDoubleSpinBox()
+
+        for spin in (self.xmin_spin, self.ymin_spin, self.xmax_spin, self.ymax_spin):
+            spin.setDecimals(6)
+            spin.setRange(-1e12, 1e12)
+
+        bbox_layout.addWidget(QLabel("xmin"), 0, 0)
+        bbox_layout.addWidget(self.xmin_spin, 0, 1)
+        bbox_layout.addWidget(QLabel("ymin"), 1, 0)
+        bbox_layout.addWidget(self.ymin_spin, 1, 1)
+        bbox_layout.addWidget(QLabel("xmax"), 0, 2)
+        bbox_layout.addWidget(self.xmax_spin, 0, 3)
+        bbox_layout.addWidget(QLabel("ymax"), 1, 2)
+        bbox_layout.addWidget(self.ymax_spin, 1, 3)
+
+        self.bbox_draw_btn = QPushButton("Draw on map")
+        self.bbox_apply_btn = QPushButton("Apply")
+
+        bbox_layout.addWidget(self.bbox_draw_btn, 2, 0, 1, 2)
+        bbox_layout.addWidget(self.bbox_apply_btn, 2, 3, 1, 1)
+
+        self.bbox_draw_btn.clicked.connect(self.start_bbox_draw)
+        self.bbox_apply_btn.clicked.connect(self.apply_manual_bbox)
+
+        self.bbox_group.setVisible(False)  # only show when BBox mode is selected
+        extent_layout.addWidget(self.bbox_group)
+
         # Set the layout to the group
         self.extent_group.setLayout(extent_layout)
         
@@ -726,12 +786,13 @@ class DataSourceDialog(QDialog):
             if self.polygon_tool:
                 self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
                 self.polygon_tool = None
-                
+
             # Disconnect from any active layer selection signals
-            if self.iface.activeLayer():
+            layer = self.iface.activeLayer()
+            if layer and layer.type() == QgsMapLayerType.VectorLayer:
                 try:
-                    self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
-                except:
+                    layer.selectionChanged.disconnect(self.on_selection_changed)
+                except Exception:
                     pass
                 
             # Clear any previously drawn geometry
@@ -751,17 +812,33 @@ class DataSourceDialog(QDialog):
     
     def use_active_layer_extent(self):
         """Use the active layer extent as Area of Interest"""
+        if self.bbox_group:
+            self.bbox_group.setVisible(False)
+
+        layer = self.iface.activeLayer() if self.iface else None
+        if not layer or layer.type() != QgsMapLayerType.VectorLayer:
+            QMessageBox.warning(
+                self,
+                "Vector layer required",
+                "Active Layer Extent requires an active vector layer.\n\n"
+                "Tip: Select a vector layer, or use Draw/BBox/current map viewpoint AOI instead."
+            )
+            self.extent_button.setChecked(False)
+            return
+
         if self.iface and self.iface.activeLayer():
             # Reset the polygon tool if active
             if self.polygon_tool and self.iface.mapCanvas():
                 self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
                 self.polygon_tool = None
-                
+
             # Disconnect from any active layer selection signals
-            try:
-                self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
-            except:
-                pass
+            layer = self.iface.activeLayer()
+            if layer and layer.type() == QgsMapLayerType.VectorLayer:
+                try:
+                    layer.selectionChanged.disconnect(self.on_selection_changed)
+                except Exception:
+                    pass
                 
             # Clear any previously drawn geometry
             self.aoi_geometry = None
@@ -864,12 +941,13 @@ class DataSourceDialog(QDialog):
         # Clear any AOI highlighting when dialog is accepted
         if self.aoi_highlighter:
             self.aoi_highlighter.clear()
-            
+
         # Disconnect from any active layer selection signals
-        if self.iface and self.iface.activeLayer():
+        layer = self.iface.activeLayer()
+        if layer and layer.type() == QgsMapLayerType.VectorLayer:
             try:
-                self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
-            except:
+                layer.selectionChanged.disconnect(self.on_selection_changed)
+            except Exception:
                 pass
             
         super().accept()
@@ -884,12 +962,13 @@ class DataSourceDialog(QDialog):
         # Clear any AOI highlighting when dialog is rejected
         if self.aoi_highlighter:
             self.aoi_highlighter.clear()
-            
+
         # Disconnect from any active layer selection signals
-        if self.iface and self.iface.activeLayer():
+        layer = self.iface.activeLayer()
+        if layer and layer.type() == QgsMapLayerType.VectorLayer:
             try:
-                self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
-            except:
+                layer.selectionChanged.disconnect(self.on_selection_changed)
+            except Exception:
                 pass
                 
         # Restore the default map tool
@@ -925,21 +1004,25 @@ class DataSourceDialog(QDialog):
 
     def start_polygon_draw(self):
         """Start drawing a polygon on the map canvas"""
+        if self.bbox_group:
+            self.bbox_group.setVisible(False)
+
         if self.iface and self.iface.mapCanvas():
             # Clean up existing polygon tool if there is one
             if self.polygon_tool:
                 self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
                 self.polygon_tool = None
-                
-            # Disconnect from any active layer selection signals
-            if self.iface.activeLayer():
+
+            # Disconnect from any active layer selection signals (vector layers only)
+            layer = self.iface.activeLayer()
+            if layer and layer.type() == QgsMapLayerType.VectorLayer:
                 try:
-                    self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
-                except:
+                    layer.selectionChanged.disconnect(self.on_selection_changed)
+                except Exception:
                     pass
-                
+
                 # Clear any selected features in the active layer
-                self.iface.activeLayer().removeSelection()
+                layer.removeSelection()
                 
             # Create and set the polygon map tool
             self.polygon_tool = PolygonMapTool(self.iface.mapCanvas())
@@ -950,7 +1033,10 @@ class DataSourceDialog(QDialog):
             
             # Connect the deactivated signal to clean up the tool when another tool is selected
             self.polygon_tool.deactivated.connect(self.handle_polygon_tool_deactivated)
-            
+
+            # Hide dialog while drawing so it doesn't block the canvas
+            self.hide()
+
             # Show instructions
             self.iface.messageBar().pushMessage(
                 "Draw Polygon", 
@@ -992,9 +1078,112 @@ class DataSourceDialog(QDialog):
         # Reset the map tool after drawing is complete (but keep the tool reference)
         if self.iface and self.iface.mapCanvas():
             self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
-            
-        # Set focus back to the dialog
+
+        # Show the dialog again now that drawing is finished
+        self.show()
+        self.raise_()
         self.activateWindow()
+
+    def start_bbox_draw(self):
+        """Start drawing a rectangular bounding box on the map canvas."""
+        if not (self.iface and self.iface.mapCanvas()):
+            return
+
+        # Clean up other tools
+        if self.polygon_tool:
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+
+        if getattr(self, "rectangle_tool", None):
+            self.iface.mapCanvas().unsetMapTool(self.rectangle_tool)
+            self.rectangle_tool = None
+
+        # Create and set rectangle tool
+        self.rectangle_tool = RectangleMapTool(self.iface.mapCanvas())
+        self.iface.mapCanvas().setMapTool(self.rectangle_tool)
+
+        # Connect signals
+        self.rectangle_tool.rectangleSelected.connect(self.on_bbox_drawn)
+        self.rectangle_tool.deactivated.connect(self.handle_bbox_tool_deactivated)
+
+        # Hide dialog while drawing (same UX as polygon)
+        self.hide()
+
+        self.iface.messageBar().pushMessage(
+            "Draw BBox",
+            "Click and drag to draw a rectangle.",
+            level=0,
+            duration=5
+        )
+
+    def on_bbox_drawn(self, rect):
+        """Handle when a bbox rectangle is drawn."""
+        self.current_extent = rect
+        self.aoi_geometry = QgsGeometry.fromRect(rect)
+        self.aoi_geometry_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+
+        # Update manual inputs to match drawn bbox
+        if self.xmin_spin and self.ymin_spin and self.xmax_spin and self.ymax_spin:
+            self.xmin_spin.setValue(rect.xMinimum())
+            self.ymin_spin.setValue(rect.yMinimum())
+            self.xmax_spin.setValue(rect.xMaximum())
+            self.ymax_spin.setValue(rect.yMaximum())
+
+        self.update_extent_display("BBox (drawn)")
+
+        if self.aoi_highlighter:
+            self.aoi_highlighter.highlight_aoi(geometry=self.aoi_geometry)
+
+        if self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.rectangle_tool)
+
+        # Show dialog again
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def handle_bbox_tool_deactivated(self):
+        """Bring dialog back if bbox drawing is canceled/deactivated."""
+        self.rectangle_tool = None
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def apply_manual_bbox(self):
+        """Apply xmin/ymin/xmax/ymax to set AOI bbox."""
+        xmin = self.xmin_spin.value()
+        ymin = self.ymin_spin.value()
+        xmax = self.xmax_spin.value()
+        ymax = self.ymax_spin.value()
+
+        if xmax <= xmin or ymax <= ymin:
+            self.iface.messageBar().pushMessage(
+                "Invalid BBox",
+                "xmax must be > xmin and ymax must be > ymin.",
+                level=2,
+                duration=5
+            )
+            return
+
+        rect = QgsRectangle(xmin, ymin, xmax, ymax)
+        self.current_extent = rect
+        self.aoi_geometry = QgsGeometry.fromRect(rect)
+        self.aoi_geometry_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+
+        self.update_extent_display("BBox (manual)")
+
+        if self.aoi_highlighter:
+            self.aoi_highlighter.highlight_aoi(geometry=self.aoi_geometry)
+
+    def start_bbox_mode(self):
+        """Enable BBox mode and show the manual bbox panel."""
+        if self.bbox_group:
+            self.bbox_group.setVisible(True)
+
+        self.extent_button.setChecked(False)
+        self.draw_button.setChecked(False)
+        self.select_button.setChecked(False)
+        self.bbox_button.setChecked(True)
 
     def get_reprojected_geometry(self, target_crs):
         """Return the geometry reprojected to the target CRS if needed"""
@@ -1041,6 +1230,9 @@ class DataSourceDialog(QDialog):
 
     def clear_extent(self):
         """Clear the current area of interest"""
+        if self.bbox_group:
+            self.bbox_group.setVisible(False)
+
         # Reset the polygon tool if active
         if self.polygon_tool and self.iface and self.iface.mapCanvas():
             self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
@@ -1111,6 +1303,22 @@ class DataSourceDialog(QDialog):
 
     def start_feature_selection(self):
         """Start selecting features from the active layer"""
+        if self.bbox_group:
+            self.bbox_group.setVisible(False)
+
+        layer = self.iface.activeLayer() if self.iface else None
+        if not layer or layer.type() != QgsMapLayerType.VectorLayer:
+            QMessageBox.warning(
+                self,
+                "Vector layer required",
+                "Select Features requires an active vector layer.\n\n"
+                "Tip: Click a vector layer in the Layers panel (or create a temporary AOI layer), "
+                "or use Draw/BBox/current map viewpoint AOI instead."
+            )
+            # Reset UI state so it doesn't look active
+            self.select_button.setChecked(False)
+            return
+
         if self.iface and self.iface.mapCanvas():
             # Check if there's an active layer first
             active_layer = self.iface.activeLayer()
@@ -1280,8 +1488,12 @@ class DataSourceDialog(QDialog):
         # Add layers to combo box in the same order as the layer tree
         for layer in layers:
             self.layer_combo.addItem(layer.name(), layer)
-            
+
         # Connect to layer changed signal
+        try:
+            self.layer_combo.currentIndexChanged.disconnect(self.on_layer_changed)
+        except Exception:
+            pass
         self.layer_combo.currentIndexChanged.connect(self.on_layer_changed)
         
         # Restore the previous selection or select the active layer
@@ -1316,14 +1528,15 @@ class DataSourceDialog(QDialog):
             # Reset our tracking variables to ensure a clean state
             self.aoi_geometry = None
             self.aoi_geometry_crs = None
-            
+
             # Clear selection from previous layer if any and disconnect signals
-            if self.iface.activeLayer():
+            prev_layer = self.iface.activeLayer()
+            if prev_layer and prev_layer.type() == QgsMapLayerType.VectorLayer:
                 try:
-                    self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
-                except:
+                    prev_layer.selectionChanged.disconnect(self.on_selection_changed)
+                except Exception:
                     pass
-                self.iface.activeLayer().removeSelection()
+                prev_layer.removeSelection()
             
             # Set as active layer
             self.iface.setActiveLayer(layer)

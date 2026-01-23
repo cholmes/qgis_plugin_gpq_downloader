@@ -301,8 +301,7 @@ class Worker(QObject):
                         SELECT * FROM {table_name}
                         ORDER BY ST_Hilbert(
                             "{geometry_column}",
-                            (SELECT ST_Extent(ST_Extent_Agg(COLUMNS("{geometry_column}")))::BOX_2D FROM {table_name})
-                        )
+                            (SELECT ST_Extent(ST_Extent_Agg("{geometry_column}"))::BOX_2D FROM {table_name})
                     ) TO '{self.output_file}'"""
 
                     if file_extension == "parquet":
