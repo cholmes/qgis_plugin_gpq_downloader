@@ -93,7 +93,13 @@ class DataSourceDialog(QDialog):
 
         # Create a widget to hold checkboxes
         self.overture_checkboxes = {}
+
+        # Keys handled via custom Buildings UI (sub-options + merge)
+        hidden_overture_keys = {"buildings", "building_parts", "buildings_all"}
+
         for key in self.PRESET_DATASETS["overture"].keys():
+            if key in hidden_overture_keys:
+                continue
             if key not in ["base", "divisions"]:  # Handle base and divisions separately
                 checkbox = QCheckBox(key.title())
                 self.overture_checkboxes[key] = checkbox
@@ -101,6 +107,46 @@ class DataSourceDialog(QDialog):
 
         # Add the horizontal checkbox layout to main layout
         overture_layout.addLayout(checkbox_layout)
+
+        # --- Buildings (custom) ---
+        self.cb_buildings = QCheckBox("Buildings")
+        overture_layout.addWidget(self.cb_buildings)
+
+        self.buildings_sub_widget = QWidget()
+        buildings_sub_layout = QVBoxLayout(self.buildings_sub_widget)
+
+        self.cb_building = QCheckBox("Buildings (building)")
+        self.cb_building_parts = QCheckBox("Building parts (building_part)")
+        self.cb_buildings_merge = QCheckBox("Merge outputs (single layer)")
+
+        # Defaults: both selected + merged output
+        self.cb_building.setChecked(True)
+        self.cb_building_parts.setChecked(True)
+        self.cb_buildings_merge.setChecked(True)
+
+        buildings_sub_layout.addWidget(self.cb_building)
+        buildings_sub_layout.addWidget(self.cb_building_parts)
+        buildings_sub_layout.addWidget(self.cb_buildings_merge)
+
+        self.buildings_sub_widget.setVisible(False)
+        overture_layout.addWidget(self.buildings_sub_widget)
+
+        def _on_buildings_toggled(checked: bool):
+            self.buildings_sub_widget.setVisible(checked)
+            if checked and not (self.cb_building.isChecked() or self.cb_building_parts.isChecked()):
+                self.cb_building.setChecked(True)
+                self.cb_building_parts.setChecked(True)
+
+        def _update_merge_enabled():
+            both = self.cb_building.isChecked() and self.cb_building_parts.isChecked()
+            self.cb_buildings_merge.setEnabled(both)
+            if not both:
+                self.cb_buildings_merge.setChecked(False)
+
+        self.cb_buildings.toggled.connect(_on_buildings_toggled)
+        self.cb_building.toggled.connect(_update_merge_enabled)
+        self.cb_building_parts.toggled.connect(_update_merge_enabled)
+        _update_merge_enabled()
 
         # Add base layer section
         base_group = QWidget()
@@ -287,6 +333,12 @@ class DataSourceDialog(QDialog):
         for checkbox in self.osm_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
 
+        # Connect Buildings custom UI checkboxes to save state
+        self.cb_buildings.toggled.connect(self.save_checkbox_states)
+        self.cb_building.toggled.connect(self.save_checkbox_states)
+        self.cb_building_parts.toggled.connect(self.save_checkbox_states)
+        self.cb_buildings_merge.toggled.connect(self.save_checkbox_states)
+
         # Ensure to call save_checkbox_states when the dialog is accepted
         self.ok_button.clicked.connect(self.save_checkbox_states)
 
@@ -426,6 +478,24 @@ class DataSourceDialog(QDialog):
             latest_release = requests.get(
                 "https://labs.overturemaps.org/data/releases.json"
             ).json()["latest"]
+
+            # Handle Buildings separately
+            if self.cb_buildings.isChecked():
+                want_building = self.cb_building.isChecked()
+                want_parts = self.cb_building_parts.isChecked()
+                want_merge = self.cb_buildings_merge.isChecked()
+
+                if want_building and want_parts and want_merge:
+                    dataset = self.PRESET_DATASETS["overture"]["buildings_all"]
+                    urls.append(dataset["url_template"].format(release=latest_release))
+                else:
+                    if want_building:
+                        dataset = self.PRESET_DATASETS["overture"]["buildings"]
+                        urls.append(dataset["url_template"].format(release=latest_release))
+                    if want_parts:
+                        dataset = self.PRESET_DATASETS["overture"]["building_parts"]
+                        urls.append(dataset["url_template"].format(release=latest_release))
+
 
             for theme, checkbox in self.overture_checkboxes.items():
                 if checkbox.isChecked():
@@ -578,6 +648,29 @@ class DataSourceDialog(QDialog):
                 checkbox.isChecked(),
                 section=QgsSettings.Plugins,
             )
+        
+        # Save Buildings custom UI
+        QgsSettings().setValue(
+            "gpq_downloader/buildings_enabled",
+            self.cb_buildings.isChecked(),
+            section=QgsSettings.Plugins,
+        )
+        QgsSettings().setValue(
+            "gpq_downloader/buildings_sub_building",
+            self.cb_building.isChecked(),
+            section=QgsSettings.Plugins,
+        )
+        QgsSettings().setValue(
+            "gpq_downloader/buildings_sub_parts",
+            self.cb_building_parts.isChecked(),
+            section=QgsSettings.Plugins,
+        )
+        QgsSettings().setValue(
+            "gpq_downloader/buildings_merge_outputs",
+            self.cb_buildings_merge.isChecked(),
+            section=QgsSettings.Plugins,
+        )
+
 
     def load_checkbox_states(self) -> None:
         # Load main checkboxes
@@ -619,6 +712,41 @@ class DataSourceDialog(QDialog):
                 section=QgsSettings.Plugins,
             )
             checkbox.setChecked(checked)
+        
+        # Load Buildings custom UI
+        self.cb_buildings.setChecked(
+            QgsSettings().value(
+                "gpq_downloader/buildings_enabled",
+                False,
+                type=bool,
+                section=QgsSettings.Plugins,
+            )
+        )
+        self.cb_building.setChecked(
+            QgsSettings().value(
+                "gpq_downloader/buildings_sub_building",
+                True,
+                type=bool,
+                section=QgsSettings.Plugins,
+            )
+        )
+        self.cb_building_parts.setChecked(
+            QgsSettings().value(
+                "gpq_downloader/buildings_sub_parts",
+                True,
+                type=bool,
+                section=QgsSettings.Plugins,
+            )
+        )
+        self.cb_buildings_merge.setChecked(
+            QgsSettings().value(
+                "gpq_downloader/buildings_merge_outputs",
+                True,
+                type=bool,
+                section=QgsSettings.Plugins,
+            )
+        )
+
 
         # Update base subtype widget visibility based on base checkbox state
         self.base_subtype_widget.setVisible(self.base_checkbox.isChecked())

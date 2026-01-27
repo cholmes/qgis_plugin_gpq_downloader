@@ -5,6 +5,16 @@
             "info_url": "https://docs.overturemaps.org/reference/buildings",
             "needs_validation": false
         },
+        "building_parts": {
+            "url_template": "s3://overturemaps-us-west-2/release/{release}/theme=buildings/type=building_part/*",
+            "info_url": "https://docs.overturemaps.org/reference/buildings",
+            "needs_validation": false
+        },
+        "buildings_all": {
+            "url_template": "s3://overturemaps-us-west-2/release/{release}/theme=buildings/type=building*/*",
+            "info_url": "https://docs.overturemaps.org/reference/buildings",
+            "needs_validation": false
+        },
         "places": {
             "url_template": "s3://overturemaps-us-west-2/release/{release}/theme=places/type=place/*",
             "info_url": "https://docs.overturemaps.org/reference/places",
