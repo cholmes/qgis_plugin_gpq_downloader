@@ -22,7 +22,7 @@ from qgis.PyQt.QtWidgets import (
     QDoubleSpinBox,
     QGridLayout,
 )
-from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread, QPoint
+from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread, QPoint, QObject, QEvent
 from qgis.PyQt.QtGui import QIcon
 from qgis.core import QgsSettings, QgsRectangle, QgsGeometry, QgsApplication, QgsMapLayerType
 import os
@@ -54,7 +54,9 @@ class DataSourceDialog(QDialog):
         self.xmax_spin = None
         self.ymax_spin = None
         self.rectangle_tool = None
-        
+        self._in_feature_select_mode = False
+        self._canvas_key_filter = None
+
         # Create the AOI highlighter
         self.aoi_highlighter = None
         if self.iface and self.iface.mapCanvas():
@@ -291,6 +293,92 @@ class DataSourceDialog(QDialog):
         # Ensure to call save_checkbox_states when the dialog is accepted
         self.ok_button.clicked.connect(self.save_checkbox_states)
 
+    class _CanvasKeyFilter(QObject):
+        def __init__(self, dialog):
+            super().__init__()
+            self.dialog = dialog
+
+        def eventFilter(self, obj, event):
+            if not getattr(self.dialog, "_in_feature_select_mode", False):
+                return False
+
+            if event.type() == QEvent.KeyPress:
+                if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                    self.dialog.finish_feature_selection()
+                    return True
+                if event.key() == Qt.Key_Escape:
+                    self.dialog.cancel_feature_selection()
+                    return True
+
+            return False
+
+    def _install_canvas_key_filter(self):
+        if not (self.iface and self.iface.mapCanvas()):
+            return
+        if self._canvas_key_filter is None:
+            self._canvas_key_filter = self._CanvasKeyFilter(self)
+        self.iface.mapCanvas().installEventFilter(self._canvas_key_filter)
+
+    def _remove_canvas_key_filter(self):
+        if self.iface and self.iface.mapCanvas() and self._canvas_key_filter is not None:
+            self.iface.mapCanvas().removeEventFilter(self._canvas_key_filter)
+
+    def finish_feature_selection(self):
+        self._in_feature_select_mode = False
+        self._remove_canvas_key_filter()
+
+        if self.iface:
+            self.iface.actionPan().trigger()
+
+        # Stop updating AOI after we're "done"
+        layer = self.iface.activeLayer() if self.iface else None
+        if layer and layer.type() == QgsMapLayerType.VectorLayer:
+            try:
+                layer.selectionChanged.disconnect(self.on_selection_changed)
+            except Exception:
+                pass
+
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+        if self.select_button:
+            self.select_button.setChecked(False)
+
+    def cancel_feature_selection(self):
+        self._in_feature_select_mode = False
+        self._remove_canvas_key_filter()
+
+        layer = self.iface.activeLayer() if self.iface else None
+        if layer and layer.type() == QgsMapLayerType.VectorLayer:
+            try:
+                layer.selectionChanged.disconnect(self.on_selection_changed)
+            except Exception:
+                pass
+            layer.removeSelection()
+
+        # Clear AOI display/highlight (optional but matches "cancel")
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = None
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+        if self.extent_display:
+            self.extent_display.clear()
+            self.extent_display.setPlaceholderText(
+                "No features selected. Select features to define the area of interest."
+            )
+
+        if self.iface:
+            self.iface.actionPan().trigger()
+
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+        if self.select_button:
+            self.select_button.setChecked(False)
+
     def save_radio_button_state(self) -> None:
         if self.custom_radio.isChecked():
             button_name = self.custom_radio.text()
@@ -413,6 +501,9 @@ class DataSourceDialog(QDialog):
 
     def closeEvent(self, event):
         """Handle dialog close event"""
+        self._in_feature_select_mode = False
+        self._remove_canvas_key_filter()
+
         # Clean up validation if running
         if self.validation_thread and self.validation_thread.isRunning():
             self.cancel_validation()
@@ -724,8 +815,8 @@ class DataSourceDialog(QDialog):
         button_layout.addWidget(self.extent_button)
         button_layout.addWidget(self.draw_button)
         button_layout.addWidget(self.select_button)
-        button_layout.addWidget(self.clear_button)
         button_layout.addWidget(self.bbox_button)
+        button_layout.addWidget(self.clear_button)
         button_layout.addStretch()
         extent_layout.addLayout(button_layout)
         
@@ -1230,6 +1321,9 @@ class DataSourceDialog(QDialog):
 
     def clear_extent(self):
         """Clear the current area of interest"""
+        self._in_feature_select_mode = False
+        self._remove_canvas_key_filter()
+
         if self.bbox_group:
             self.bbox_group.setVisible(False)
 
@@ -1354,13 +1448,15 @@ class DataSourceDialog(QDialog):
             
             # Use QGIS's built-in selection tool
             self.iface.actionSelectRectangle().trigger()
-            
-            # Show instructions
+
+            self._in_feature_select_mode = True
+            self._install_canvas_key_filter()
+            self.hide()
+
             self.iface.messageBar().pushMessage(
-                "Select Features", 
-                "Use the selection tool to select features from the active layer. Selected features will define the area of interest.", 
-                level=0,  # Info level
-                duration=5
+                "Select one or more features (Shift=add). Press Enter when done (Esc to cancel).",
+                level=0,
+                duration=8
             )
             
             # Update button states
