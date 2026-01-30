@@ -542,14 +542,40 @@ class QgisPluginGeoParquet:
         self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
         self.progress_dialog.setMinimumDuration(0)
         
+        self.progress_dialog.show()
+        self.iface.mainWindow().repaint()
+
+        # Issue 102 : CRS Detection and Extent Alignment
+        from . import crs_utils 
+        # Step 1: Detect CRS from Metadata via OGR 
+        source_crs = crs_utils.get_source_crs_from_metadata(url)
+        crs_found = source_crs.authid() if source_crs.isValid() else "Unknown CRS (Defaulting to 4326)"
+        
+        # Step 2: Update the dialog to show the user the detected CRS
+        self.progress_dialog.setLabelText(f"Source CRS detected: {crs_found}. Aligning extent...")
+        self.iface.mainWindow().repaint()
+
+        # Step 3: Align the extent to the source CRS 
+        query_extent = crs_utils.align_extent_to_source_crs(extent, source_crs)
+        
+        # Step 4: Update the dialog to indicate extent alignment is complete
+        self.progress_dialog.setLabelText(f"Finished aligning extent. Starting download...")
+
+
+
         # Create worker with layer name
-        self.worker = Worker(url, extent, output_file, self.iface, validation_results, layer_name)
+        # change extent to query_extent for custom CRS-aligned extents
+        self.worker = Worker(url, query_extent, output_file, self.iface, validation_results, layer_name)
+        
         self.worker.aoi_geometry = aoi_geometry  # Pass the aoi_geometry to the worker
+        
         self.worker.remaining_queue = remaining_queue  # Store remaining queue in worker
         self.worker_thread = QThread()
         
         # Move worker to thread
         self.worker.moveToThread(self.worker_thread)
+       
+       
         
         # Connect signals
         self.worker_thread.started.connect(self.worker.run)
