@@ -49,6 +49,11 @@ def test_plugin_run_with_download(mock_dialog, mock_save_dialog, mock_settings, 
     dialog_instance.exec.return_value = QDialog.Accepted
     dialog_instance.get_urls.return_value = ["https://example.com/test.parquet?theme=buildings"]
     dialog_instance.overture_radio.isChecked.return_value = True
+    
+    # Add explicit mocks for aoi properties to avoid the coordinate transformation issue
+    dialog_instance.aoi_geometry = None
+    dialog_instance.aoi_geometry_crs = None
+    
     mock_dialog.return_value = dialog_instance
     
     # Setup mock save dialog

@@ -1,6 +1,6 @@
 import json
 
-from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject
+from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsGeometry
 from qgis.PyQt.QtCore import pyqtSignal, QObject
 import os
 import duckdb
@@ -40,7 +40,7 @@ class Worker(QObject):
     percent = pyqtSignal(int)
     file_size_warning = pyqtSignal(float)  # Signal for file size warnings (in MB)
 
-    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, source_crs=None):
+    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None, source_crs=None):
         super().__init__()
         self.dataset_url = dataset_url
         self.extent = extent
@@ -50,8 +50,11 @@ class Worker(QObject):
         self.killed = False
         self.layer_name = layer_name
         self.size_warning_accepted = False
+       
+        self.aoi_geometry = aoi_geometry
+        
         # Store source CRS for output metadata
-        self.source_crs = source_crs 
+        self.source_crs = source_crs
 
     def get_bbox_info_from_metadata(self, conn):
         """Read GeoParquet metadata to find bbox column info"""
@@ -102,7 +105,13 @@ class Worker(QObject):
             self.progress.emit(f"Connecting to database{layer_info}...")
             bbox = self.extent
 
-            # Log validation results dictionary at the beginning of run
+            # Log the dataset URL and aoi_geometry for debugging
+            logger.log(f"Processing dataset: {self.dataset_url}")
+            if self.aoi_geometry:
+                logger.log(f"Using AOI geometry: {self.aoi_geometry.asWkt()}")
+            else:
+                logger.log("No AOI geometry provided.")
+
             #logger.log(f"Full validation_results at start of run: {self.validation_results}")
 
             conn = None
@@ -119,7 +128,7 @@ class Worker(QObject):
                 conn.execute("INSTALL spatial;")
                 conn.execute("LOAD httpfs;")
                 conn.execute("LOAD spatial;")
-                
+
                 # Verify spatial extension is loaded by testing a spatial function
                 try:
                     conn.execute("SELECT ST_AsText(ST_GeomFromText('POINT(0 0)'))").fetchone()
@@ -168,7 +177,7 @@ class Worker(QObject):
                             col_name = row[0].lower()
                             col_name_orig = row[0]  # Keep original case
                             col_type = row[1].upper()
-                            
+
                             # Check for common geometry column names
                             if col_name in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
                                 self.validation_results['geometry_column'] = col_name_orig
@@ -245,7 +254,7 @@ class Worker(QObject):
                     if row[0] == geometry_column:
                         geometry_col_type = row[1].upper()
                         break
-                
+
                 if bbox_column is not None:
                     #logger.log(f"Using bbox column for query: {bbox_column}")
                     where_clause = f"""
@@ -272,6 +281,27 @@ class Worker(QObject):
                         )
                         """
 
+                # Additional filtering with aoi_geometry if available
+                if self.aoi_geometry is not None:
+                    # Create a temporary clone for transformation to WGS 1984 (EPSG:4326)
+                    dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+                    source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+
+                    # Log the source and destination CRS for debugging
+                    logger.log(f"Source CRS: {source_crs.authid()}, Destination CRS: {dest_crs.authid()}")
+
+                    # Clone and transform only for the SQL query
+                    transformed_geom = QgsGeometry(self.aoi_geometry)
+                    transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
+                    transformed_geom.transform(transform)
+
+                    # Use the transformed geometry for the SQL query
+                    aoi_wkt = transformed_geom.asWkt()
+                    where_clause += f" AND ST_Intersects(\"{geometry_column}\", ST_GeomFromText('{aoi_wkt}'))"
+
+                    # Log the updated where_clause for debugging
+                    logger.log(f"Applying AOI geometry filter: {aoi_wkt}")
+
                 # Base query
                 base_query = f"""
                 CREATE TABLE {table_name} AS (
@@ -282,7 +312,7 @@ class Worker(QObject):
                 self.progress.emit(f"Downloading{layer_info} data...")
                 logger.log("Executing SQL query:")
                 logger.log(base_query)
-                
+
                 conn.execute(base_query)
                 
                 # If we have a BLOB geometry column, we need to convert it after table creation
@@ -290,7 +320,7 @@ class Worker(QObject):
                 if (geometry_column and geometry_col_type and 'BLOB' in geometry_col_type):
                     # Create a new table with converted geometry
                     temp_table = f"{table_name}_converted"
-                    
+
                     # Build column list for conversion
                     convert_columns = []
                     for col_name, col_type, _, _, _, _ in schema_result:
@@ -299,7 +329,7 @@ class Worker(QObject):
                             convert_columns.append(f"ST_GeomFromWKB({quoted_col_name}) AS {quoted_col_name}")
                         else:
                             convert_columns.append(quoted_col_name)
-                    
+
                     # Add spatial filter if bbox is available and we didn't filter earlier
                     spatial_filter = ""
                     if bbox and not bbox_column:  # Only if we didn't filter with bbox column
@@ -313,20 +343,20 @@ class Worker(QObject):
                                                 {bbox.xMinimum()} {bbox.yMinimum()}))')
                         )
                         """
-                    
+
                     convert_query = f"""
                     CREATE TABLE {temp_table} AS
                     SELECT {', '.join(convert_columns)}
                     FROM {table_name}
                     {spatial_filter}
                     """
-                    
+
                     conn.execute(convert_query)
-                    
+
                     # Drop original and rename
                     conn.execute(f"DROP TABLE {table_name}")
                     conn.execute(f"ALTER TABLE {temp_table} RENAME TO {table_name}")
-                
+
                 # Add check for empty results
                 row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
                 if row_count == 0:
@@ -359,7 +389,7 @@ class Worker(QObject):
                     # So we don't need ST_GeomFromWKB anymore
                     geometry_expr = f'"{geometry_column}"'
                     extent_expr = f'"{geometry_column}"'
-                    
+
                     copy_query = f"""
                     COPY (
                         WITH bbox AS (
