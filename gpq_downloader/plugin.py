@@ -522,7 +522,7 @@ class QgisPluginGeoParquet:
         self.iface.mainWindow().repaint()
 
         # Step 3: Align the extent to the source CRS 
-        query_extent = crs_utils.align_extent_to_source_crs(extent, source_crs)
+        query_extent = crs_utils.extent_to_source_crs(extent, source_crs)
         
         # Step 4: Update the dialog to indicate extent alignment is complete
         self.progress_dialog.setLabelText(f"Finished aligning extent. Starting download...")
