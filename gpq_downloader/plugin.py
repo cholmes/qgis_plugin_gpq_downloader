@@ -75,68 +75,28 @@ class QgisPluginGeoParquet:
         # Reset any existing worker
         self.worker = None
         self.worker_thread = None
-        
+
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
+        dialog.iface = self.iface  # (optional; you already pass iface)
 
-        # Pass the QGIS interface to the dialog for map tools
-        dialog.iface = self.iface
+        # Restore last radio selection
+        selected_name = QgsSettings().value(
+            "gpq_downloader/radio_selection",
+            section=QgsSettings.Plugins
+        )
 
-        selected_name = QgsSettings().value("gpq_downloader/radio_selection", section=QgsSettings.Plugins)
         for button in [dialog.overture_radio, dialog.sourcecoop_radio, dialog.osm_radio, dialog.custom_radio]:
             if button.text() == selected_name:
                 button.setChecked(True)
+
         if not selected_name:
             dialog.overture_radio.setChecked(True)
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Get the selected URLs from the dialog
-            urls = dialog.get_urls()
-            extent = self.iface.mapCanvas().extent()
-            
-            # First, collect all file locations from user
-            download_queue = []
-            for url in urls:
-                # Get current date for filename
-                current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-                
-                # Generate filename based on the URL and source type
-                if dialog.overture_radio.isChecked():
-                    # Extract theme from URL
-                    theme = url.split('theme=')[1].split('/')[0]
-                    if 'type=' in url:
-                        type_str = url.split('type=')[1].split('/')[0]
-                        if theme == 'base':
-                            filename = f"overture_base_{type_str}_{current_date}.parquet"
-                        else:
-                            filename = f"overture_{theme}_{current_date}.parquet"
-                    else:
-                        filename = f"overture_{theme}_{current_date}.parquet"
-                elif dialog.sourcecoop_radio.isChecked():
-                    dataset_name = dialog.sourcecoop_combo.currentText()
-                    clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
-                    filename = f"sourcecoop_{clean_name}_{current_date}.parquet"
-                elif dialog.osm_radio.isChecked():
-                    # Extract layer name from URL
-                    layer_name = url.split('/')[-1].replace('.parquet', '')
-                    filename = f"osm_{layer_name}_{current_date}.parquet"
-                else:
-                    filename = f"custom_download_{current_date}.parquet"
-        # Connect to the dialog's accepted signal to handle the result
+
+        # Handle OK
         dialog.accepted.connect(lambda: self.handle_dialog_accepted(dialog))
 
-        # Detect if we're running in a test environment
-        # If running in pytest, dialog.exec() will be mocked and the tests expect it to be called
-        import inspect
-        in_test = any('pytest' in frame[1] for frame in inspect.stack())
-
-        if in_test:
-            # For testing: Run the dialog modally using exec()
-            result = dialog.exec()
-            if result == QDialog.Accepted:
-                self.handle_dialog_accepted(dialog)
-        else:
-            # For normal use: Show the dialog non-modally
-            dialog.show()
+        # Show non-modally (only once)
+        dialog.show()
 
     def handle_dialog_accepted(self, dialog):
         """Handle the dialog being accepted"""
