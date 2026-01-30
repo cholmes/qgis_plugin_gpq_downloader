@@ -8,27 +8,27 @@ import duckdb
 from . import logger
 
 
-def transform_bbox_to_4326(extent, source_crs):
-    """
-    Transform a bounding box to EPSG:4326 (WGS84)
+# def transform_bbox_to_4326(extent, source_crs):
+#     """
+#     Transform a bounding box to EPSG:4326 (WGS84)
 
-    Args:
-        extent (QgsRectangle): The input extent to transform
-        source_crs (QgsCoordinateReferenceSystem): The source CRS of the extent
+#     Args:
+#         extent (QgsRectangle): The input extent to transform
+#         source_crs (QgsCoordinateReferenceSystem): The source CRS of the extent
 
-    Returns:
-        QgsRectangle: The transformed extent in EPSG:4326, or None if inputs are invalid
-    """
-    if extent is None or source_crs is None:
-        return None
+#     Returns:
+#         QgsRectangle: The transformed extent in EPSG:4326, or None if inputs are invalid
+#     """
+#     if extent is None or source_crs is None:
+#         return None
         
-    dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+#     dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
 
-    if source_crs != dest_crs:
-        transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
-        extent = transform.transformBoundingBox(extent)
+#     if source_crs != dest_crs:
+#         transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
+#         extent = transform.transformBoundingBox(extent)
     
-    return extent
+#     return extent
 
 
 class Worker(QObject):
@@ -40,17 +40,18 @@ class Worker(QObject):
     percent = pyqtSignal(int)
     file_size_warning = pyqtSignal(float)  # Signal for file size warnings (in MB)
 
-    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None):
+    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, source_crs=None):
         super().__init__()
         self.dataset_url = dataset_url
         self.extent = extent
         self.output_file = output_file
         self.iface = iface
-        #logger.log(f"Worker __init__ received validation_results: {validation_results}")
         self.validation_results = validation_results
         self.killed = False
-        self.layer_name = layer_name  # Ensure this is included if needed
-        self.size_warning_accepted = False  # Ensure this is False on initialization
+        self.layer_name = layer_name
+        self.size_warning_accepted = False
+        # Store source CRS for output metadata
+        self.source_crs = source_crs 
 
     def get_bbox_info_from_metadata(self, conn):
         """Read GeoParquet metadata to find bbox column info"""
@@ -99,8 +100,7 @@ class Worker(QObject):
         try:
             layer_info = f" for {self.layer_name}" if self.layer_name else ""
             self.progress.emit(f"Connecting to database{layer_info}...")
-            source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
-            bbox = transform_bbox_to_4326(self.extent, source_crs)
+            bbox = self.extent
 
             # Log validation results dictionary at the beginning of run
             #logger.log(f"Full validation_results at start of run: {self.validation_results}")
@@ -373,14 +373,16 @@ class Worker(QObject):
                     ) TO '{self.output_file}' 
                     """
 
+                    output_srs = self.source_crs.authid() if self.source_crs else "EPSG:4326"
+
                     if file_extension == "parquet":
                         format_options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 22);"
                     elif self.output_file.endswith(".gpkg"):
-                        format_options = "(FORMAT GDAL, DRIVER 'GPKG');"
+                        format_options = f"(FORMAT GDAL, DRIVER 'GPKG', SRS '{output_srs}');"
                     elif self.output_file.endswith(".fgb"):
-                        format_options = "(FORMAT GDAL, DRIVER 'FlatGeobuf', SRS 'EPSG:4326');"
+                        format_options = f"(FORMAT GDAL, DRIVER 'FlatGeobuf', SRS '{output_srs}');"
                     elif self.output_file.endswith(".geojson"):
-                        format_options = "(FORMAT GDAL, DRIVER 'GeoJSON', SRS 'EPSG:4326');"
+                        format_options = f"(FORMAT GDAL, DRIVER 'GeoJSON', SRS '{output_srs}');"
                     else:
                         self.error.emit("Unsupported file format.")
                     
@@ -660,3 +662,5 @@ class ValidationWorker(QObject):
 
         # All other datasets need validation
         return True
+
+
