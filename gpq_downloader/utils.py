@@ -1,6 +1,6 @@
 import json
 
-from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject
+from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsGeometry
 from qgis.PyQt.QtCore import pyqtSignal, QObject
 import os
 import duckdb
@@ -8,27 +8,27 @@ import duckdb
 from . import logger
 
 
-def transform_bbox_to_4326(extent, source_crs):
-    """
-    Transform a bounding box to EPSG:4326 (WGS84)
+# def transform_bbox_to_4326(extent, source_crs):
+#     """
+#     Transform a bounding box to EPSG:4326 (WGS84)
 
-    Args:
-        extent (QgsRectangle): The input extent to transform
-        source_crs (QgsCoordinateReferenceSystem): The source CRS of the extent
+#     Args:
+#         extent (QgsRectangle): The input extent to transform
+#         source_crs (QgsCoordinateReferenceSystem): The source CRS of the extent
 
-    Returns:
-        QgsRectangle: The transformed extent in EPSG:4326, or None if inputs are invalid
-    """
-    if extent is None or source_crs is None:
-        return None
+#     Returns:
+#         QgsRectangle: The transformed extent in EPSG:4326, or None if inputs are invalid
+#     """
+#     if extent is None or source_crs is None:
+#         return None
         
-    dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+#     dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
 
-    if source_crs != dest_crs:
-        transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
-        extent = transform.transformBoundingBox(extent)
+#     if source_crs != dest_crs:
+#         transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
+#         extent = transform.transformBoundingBox(extent)
     
-    return extent
+#     return extent
 
 
 class Worker(QObject):
@@ -40,17 +40,21 @@ class Worker(QObject):
     percent = pyqtSignal(int)
     file_size_warning = pyqtSignal(float)  # Signal for file size warnings (in MB)
 
-    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None):
+    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None, source_crs=None):
         super().__init__()
         self.dataset_url = dataset_url
         self.extent = extent
         self.output_file = output_file
         self.iface = iface
-        #logger.log(f"Worker __init__ received validation_results: {validation_results}")
         self.validation_results = validation_results
         self.killed = False
-        self.layer_name = layer_name  # Ensure this is included if needed
-        self.size_warning_accepted = False  # Ensure this is False on initialization
+        self.layer_name = layer_name
+        self.size_warning_accepted = False
+       
+        self.aoi_geometry = aoi_geometry
+        
+        # Store source CRS for output metadata
+        self.source_crs = source_crs
 
     def get_bbox_info_from_metadata(self, conn):
         """Read GeoParquet metadata to find bbox column info"""
@@ -99,10 +103,15 @@ class Worker(QObject):
         try:
             layer_info = f" for {self.layer_name}" if self.layer_name else ""
             self.progress.emit(f"Connecting to database{layer_info}...")
-            source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
-            bbox = transform_bbox_to_4326(self.extent, source_crs)
+            bbox = self.extent
 
-            # Log validation results dictionary at the beginning of run
+            # Log the dataset URL and aoi_geometry for debugging
+            logger.log(f"Processing dataset: {self.dataset_url}")
+            if self.aoi_geometry:
+                logger.log(f"Using AOI geometry: {self.aoi_geometry.asWkt()}")
+            else:
+                logger.log("No AOI geometry provided.")
+
             #logger.log(f"Full validation_results at start of run: {self.validation_results}")
 
             conn = None
@@ -119,7 +128,7 @@ class Worker(QObject):
                 conn.execute("INSTALL spatial;")
                 conn.execute("LOAD httpfs;")
                 conn.execute("LOAD spatial;")
-                
+
                 # Verify spatial extension is loaded by testing a spatial function
                 try:
                     conn.execute("SELECT ST_AsText(ST_GeomFromText('POINT(0 0)'))").fetchone()
@@ -129,7 +138,14 @@ class Worker(QObject):
                     conn.execute("LOAD spatial;")
 
                 # Get schema early as we need it for both column names and bbox check
-                schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
+                use_union_by_name = "*" in self.dataset_url
+                read_parquet_sql = (
+                    f"read_parquet('{self.dataset_url}', union_by_name=true)"
+                    if use_union_by_name
+                    else f"read_parquet('{self.dataset_url}')"
+                )
+
+                schema_query = f"DESCRIBE SELECT * FROM {read_parquet_sql}"
                 schema_result = conn.execute(schema_query).fetchall()
                 self.validation_results['schema'] = schema_result
                 
@@ -161,7 +177,7 @@ class Worker(QObject):
                             col_name = row[0].lower()
                             col_name_orig = row[0]  # Keep original case
                             col_type = row[1].upper()
-                            
+
                             # Check for common geometry column names
                             if col_name in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
                                 self.validation_results['geometry_column'] = col_name_orig
@@ -238,7 +254,7 @@ class Worker(QObject):
                     if row[0] == geometry_column:
                         geometry_col_type = row[1].upper()
                         break
-                
+
                 if bbox_column is not None:
                     #logger.log(f"Using bbox column for query: {bbox_column}")
                     where_clause = f"""
@@ -265,17 +281,38 @@ class Worker(QObject):
                         )
                         """
 
+                # Additional filtering with aoi_geometry if available
+                if self.aoi_geometry is not None:
+                    # Create a temporary clone for transformation to WGS 1984 (EPSG:4326)
+                    dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+                    source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+
+                    # Log the source and destination CRS for debugging
+                    logger.log(f"Source CRS: {source_crs.authid()}, Destination CRS: {dest_crs.authid()}")
+
+                    # Clone and transform only for the SQL query
+                    transformed_geom = QgsGeometry(self.aoi_geometry)
+                    transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
+                    transformed_geom.transform(transform)
+
+                    # Use the transformed geometry for the SQL query
+                    aoi_wkt = transformed_geom.asWkt()
+                    where_clause += f" AND ST_Intersects(\"{geometry_column}\", ST_GeomFromText('{aoi_wkt}'))"
+
+                    # Log the updated where_clause for debugging
+                    logger.log(f"Applying AOI geometry filter: {aoi_wkt}")
+
                 # Base query
                 base_query = f"""
                 CREATE TABLE {table_name} AS (
-                    {select_query} FROM read_parquet('{self.dataset_url}')
+                    {select_query} FROM {read_parquet_sql}
                     {where_clause}
                 ) 
                 """
                 self.progress.emit(f"Downloading{layer_info} data...")
                 logger.log("Executing SQL query:")
                 logger.log(base_query)
-                
+
                 conn.execute(base_query)
                 
                 # If we have a BLOB geometry column, we need to convert it after table creation
@@ -283,7 +320,7 @@ class Worker(QObject):
                 if (geometry_column and geometry_col_type and 'BLOB' in geometry_col_type):
                     # Create a new table with converted geometry
                     temp_table = f"{table_name}_converted"
-                    
+
                     # Build column list for conversion
                     convert_columns = []
                     for col_name, col_type, _, _, _, _ in schema_result:
@@ -292,7 +329,7 @@ class Worker(QObject):
                             convert_columns.append(f"ST_GeomFromWKB({quoted_col_name}) AS {quoted_col_name}")
                         else:
                             convert_columns.append(quoted_col_name)
-                    
+
                     # Add spatial filter if bbox is available and we didn't filter earlier
                     spatial_filter = ""
                     if bbox and not bbox_column:  # Only if we didn't filter with bbox column
@@ -306,20 +343,20 @@ class Worker(QObject):
                                                 {bbox.xMinimum()} {bbox.yMinimum()}))')
                         )
                         """
-                    
+
                     convert_query = f"""
                     CREATE TABLE {temp_table} AS
                     SELECT {', '.join(convert_columns)}
                     FROM {table_name}
                     {spatial_filter}
                     """
-                    
+
                     conn.execute(convert_query)
-                    
+
                     # Drop original and rename
                     conn.execute(f"DROP TABLE {table_name}")
                     conn.execute(f"ALTER TABLE {temp_table} RENAME TO {table_name}")
-                
+
                 # Add check for empty results
                 row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
                 if row_count == 0:
@@ -352,7 +389,7 @@ class Worker(QObject):
                     # So we don't need ST_GeomFromWKB anymore
                     geometry_expr = f'"{geometry_column}"'
                     extent_expr = f'"{geometry_column}"'
-                    
+
                     copy_query = f"""
                     COPY (
                         WITH bbox AS (
@@ -366,14 +403,16 @@ class Worker(QObject):
                     ) TO '{self.output_file}' 
                     """
 
+                    output_srs = self.source_crs.authid() if self.source_crs else "EPSG:4326"
+
                     if file_extension == "parquet":
                         format_options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 22);"
                     elif self.output_file.endswith(".gpkg"):
-                        format_options = "(FORMAT GDAL, DRIVER 'GPKG');"
+                        format_options = f"(FORMAT GDAL, DRIVER 'GPKG', SRS '{output_srs}');"
                     elif self.output_file.endswith(".fgb"):
-                        format_options = "(FORMAT GDAL, DRIVER 'FlatGeobuf', SRS 'EPSG:4326');"
+                        format_options = f"(FORMAT GDAL, DRIVER 'FlatGeobuf', SRS '{output_srs}');"
                     elif self.output_file.endswith(".geojson"):
-                        format_options = "(FORMAT GDAL, DRIVER 'GeoJSON', SRS 'EPSG:4326');"
+                        format_options = f"(FORMAT GDAL, DRIVER 'GeoJSON', SRS '{output_srs}');"
                     else:
                         self.error.emit("Unsupported file format.")
                     
@@ -588,7 +627,15 @@ class ValidationWorker(QObject):
                 return
 
             self.progress.emit("Checking data format...")
-            schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
+
+            use_union_by_name = "*" in self.dataset_url
+            read_parquet_sql = (
+                f"read_parquet('{self.dataset_url}', union_by_name=true)"
+                if use_union_by_name
+                else f"read_parquet('{self.dataset_url}')"
+            )
+
+            schema_query = f"DESCRIBE SELECT * FROM {read_parquet_sql}"
             schema_result = conn.execute(schema_query).fetchall()
 
             # Update validation results with schema
@@ -645,3 +692,5 @@ class ValidationWorker(QObject):
 
         # All other datasets need validation
         return True
+
+
