@@ -131,4 +131,53 @@ class PolygonMapTool(QgsMapTool):
     def deactivate(self):
         QgsMapTool.deactivate(self)
         # Emit deactivated signal
-        self.deactivated.emit() 
+        self.deactivated.emit()
+
+class RectangleMapTool(QgsMapTool):
+    """Map tool for drawing a rectangular bounding box"""
+    rectangleSelected = pyqtSignal(QgsRectangle)
+
+    def __init__(self, canvas):
+        super().__init__(canvas)
+        self.canvas = canvas
+        self.start_point = None
+
+        self.rubber_band = QgsRubberBand(canvas, QgsWkbTypes.PolygonGeometry)
+        self.rubber_band.setFillColor(RB_FILL)
+        self.rubber_band.setStrokeColor(RB_STROKE)
+        self.rubber_band.setWidth(1)
+
+    def canvasPressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return
+        self.start_point = event.mapPoint()
+        self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+
+    def canvasMoveEvent(self, event):
+        if not self.start_point:
+            return
+
+        end_point = event.mapPoint()
+        rect = QgsRectangle(self.start_point, end_point)
+
+        geom = QgsGeometry.fromRect(rect)
+        self.rubber_band.setToGeometry(geom, None)
+
+    def canvasReleaseEvent(self, event):
+        if not self.start_point or event.button() != Qt.LeftButton:
+            return
+
+        end_point = event.mapPoint()
+        rect = QgsRectangle(self.start_point, end_point)
+
+        self.start_point = None
+        self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+
+        # Emit the rectangle
+        self.rectangleSelected.emit(rect)
+
+    def deactivate(self):
+        QgsMapTool.deactivate(self)
+        self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+        self.start_point = None
+        self.deactivated.emit()

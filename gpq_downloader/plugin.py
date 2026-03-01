@@ -77,33 +77,20 @@ class QgisPluginGeoParquet:
         self.worker_thread = None
         
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
-        
-        # Pass the QGIS interface to the dialog for map tools
-        dialog.iface = self.iface
 
+        # Restore last radio selection
         selected_name = QgsSettings().value("gpq_downloader/radio_selection", section=QgsSettings.Plugins)
         for button in [dialog.overture_radio, dialog.sourcecoop_radio, dialog.other_radio, dialog.custom_radio]:
             if button.text() == selected_name:
                 button.setChecked(True)
         if not selected_name:
             dialog.overture_radio.setChecked(True)
-        
-        # Connect to the dialog's accepted signal to handle the result
+
+        # Handle OK
         dialog.accepted.connect(lambda: self.handle_dialog_accepted(dialog))
-        
-        # Detect if we're running in a test environment
-        # If running in pytest, dialog.exec() will be mocked and the tests expect it to be called
-        import inspect
-        in_test = any('pytest' in frame[1] for frame in inspect.stack())
-        
-        if in_test:
-            # For testing: Run the dialog modally using exec()
-            result = dialog.exec()
-            if result == QDialog.Accepted:
-                self.handle_dialog_accepted(dialog)
-        else:
-            # For normal use: Show the dialog non-modally
-            dialog.show()
+
+        # Show non-modally
+        dialog.show()
 
     def handle_dialog_accepted(self, dialog):
         """Handle the dialog being accepted"""
