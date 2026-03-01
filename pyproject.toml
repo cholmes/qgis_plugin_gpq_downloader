@@ -4,13 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpq_downloader"
-version = "0.8.0"
+version = "0.8.5"
 description = "QGIS plugin for downloading and processing GeoParquet files"
 readme = "README.md"
 requires-python = ">=3.7"
-license = {text = "GPL-3.0-or-later"}
+license = {text = "GPL-2.0-or-later"}
 authors = [
     {name = "Chris Holmes", email = "cholmes@9eo.org"}
+]
+dependencies = [
+    "duckdb>=1.1.0",
 ]
 
 [project.urls]
@@ -50,7 +53,7 @@ dev = [
     "pytest-qt>=4.2.0",
     "pytest-mock>=3.11.1",
     "pytest-cov>=4.1.0",
-    "duckdb>=1.1.0",
+    "pyarrow>=10.0.0",
     "black>=23.3.0",
 ]
 
