@@ -134,7 +134,7 @@ class DataSourceDialog(QDialog):
         overture_page = QWidget()
         overture_layout = QVBoxLayout()
 
-        # Create horizontal layout for main checkboxes
+        # Create horizontal layout for main checkboxes (first row)
         checkbox_layout = QHBoxLayout()
 
         # Create a widget to hold checkboxes
@@ -145,26 +145,58 @@ class DataSourceDialog(QDialog):
                 self.overture_checkboxes[key] = checkbox
                 checkbox_layout.addWidget(checkbox)
 
+        # Add Divisions to the first row (before Base which has subtypes)
+        self.divisions_checkbox = QCheckBox("Divisions")
+        self.overture_checkboxes["divisions"] = self.divisions_checkbox
+        checkbox_layout.addWidget(self.divisions_checkbox)
+
         # Add the horizontal checkbox layout to main layout
         overture_layout.addLayout(checkbox_layout)
 
-        # Add base layer section
-        base_group = QWidget()
-        base_layout = QVBoxLayout()
-        base_layout.setContentsMargins(0, 10, 0, 0)  # Add some top margin
+        # Divisions subtype checkboxes (right after first row, shown when Divisions is checked)
+        self.divisions_subtype_widget = QWidget()
+        divisions_subtype_layout = QHBoxLayout()
+        divisions_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Indent subtypes
+
+        self.divisions_subtype_checkboxes = {}
+        divisions_subtype_display_names = {
+            "division": "Division",
+            "division_area": "Division Area",
+            "division_boundary": "Division Boundary",
+        }
+
+        for subtype in self.PRESET_DATASETS["overture"]["divisions"]["subtypes"]:
+            checkbox = QCheckBox(divisions_subtype_display_names[subtype])
+            self.divisions_subtype_checkboxes[subtype] = checkbox
+            divisions_subtype_layout.addWidget(checkbox)
+
+        self.divisions_subtype_widget.setLayout(divisions_subtype_layout)
+        self.divisions_subtype_widget.hide()
+        overture_layout.addWidget(self.divisions_subtype_widget)
+
+        # Connect divisions checkbox to show/hide subtype checkboxes
+        self.divisions_checkbox.toggled.connect(
+            self.divisions_subtype_widget.setVisible
+        )
+        self.divisions_checkbox.toggled.connect(
+            lambda checked: self.adjust_dialog_width(checked, 100)
+        )
+
+        # Second row: Base checkbox
+        second_row = QHBoxLayout()
+        second_row.setContentsMargins(0, 5, 0, 0)
 
         self.base_checkbox = QCheckBox("Base")
         self.overture_checkboxes["base"] = self.base_checkbox
-        base_layout.addWidget(self.base_checkbox)
+        second_row.addWidget(self.base_checkbox)
+        second_row.addStretch()
+        overture_layout.addLayout(second_row)
 
-        # Add base subtype checkboxes
+        # Base subtype checkboxes (shown when Base is checked)
         self.base_subtype_widget = QWidget()
-        base_subtype_layout = QHBoxLayout()  # Horizontal layout for subtypes
-        base_subtype_layout.setContentsMargins(
-            20, 0, 0, 0
-        )  # Add left margin for indentation
+        base_subtype_layout = QHBoxLayout()
+        base_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Indent subtypes
 
-        # Replace combo box with checkboxes
         self.base_subtype_checkboxes = {}
         base_subtype_display_names = {
             "infrastructure": "Infrastructure",
@@ -182,57 +214,11 @@ class DataSourceDialog(QDialog):
 
         self.base_subtype_widget.setLayout(base_subtype_layout)
         self.base_subtype_widget.hide()
+        overture_layout.addWidget(self.base_subtype_widget)
 
-        base_layout.addWidget(self.base_subtype_widget)
-        base_group.setLayout(base_layout)
-        overture_layout.addWidget(base_group)
-
-        # Connect base checkbox to show/hide subtype checkboxes and resize dialog
+        # Connect base checkbox to show/hide subtype checkboxes
         self.base_checkbox.toggled.connect(self.base_subtype_widget.setVisible)
         self.base_checkbox.toggled.connect(
-            lambda checked: self.adjust_dialog_width(checked, 100)
-        )
-
-        # Add divisions layer section
-        divisions_group = QWidget()
-        divisions_layout = QVBoxLayout()
-        divisions_layout.setContentsMargins(0, 10, 0, 0)  # Add some top margin
-
-        self.divisions_checkbox = QCheckBox("Divisions")
-        self.overture_checkboxes["divisions"] = self.divisions_checkbox
-        divisions_layout.addWidget(self.divisions_checkbox)
-
-        # Add divisions subtype checkboxes
-        self.divisions_subtype_widget = QWidget()
-        divisions_subtype_layout = QHBoxLayout()  # Horizontal layout for subtypes
-        divisions_subtype_layout.setContentsMargins(
-            20, 0, 0, 0
-        )  # Add left margin for indentation
-
-        self.divisions_subtype_checkboxes = {}
-        divisions_subtype_display_names = {
-            "division": "Division",
-            "division_area": "Division Area",
-            "division_boundary": "Division Boundary",
-        }
-
-        for subtype in self.PRESET_DATASETS["overture"]["divisions"]["subtypes"]:
-            checkbox = QCheckBox(divisions_subtype_display_names[subtype])
-            self.divisions_subtype_checkboxes[subtype] = checkbox
-            divisions_subtype_layout.addWidget(checkbox)
-
-        self.divisions_subtype_widget.setLayout(divisions_subtype_layout)
-        self.divisions_subtype_widget.hide()
-
-        divisions_layout.addWidget(self.divisions_subtype_widget)
-        divisions_group.setLayout(divisions_layout)
-        overture_layout.addWidget(divisions_group)
-
-        # Connect divisions checkbox to show/hide subtype checkboxes and resize dialog
-        self.divisions_checkbox.toggled.connect(
-            self.divisions_subtype_widget.setVisible
-        )
-        self.divisions_checkbox.toggled.connect(
             lambda checked: self.adjust_dialog_width(checked, 100)
         )
 
@@ -773,6 +759,13 @@ class DataSourceDialog(QDialog):
                 section=QgsSettings.Plugins,
             )
 
+        # Save AOI checkbox state
+        QgsSettings().setValue(
+            "gpq_downloader/aoi_enabled",
+            self.extent_group.isChecked(),
+            section=QgsSettings.Plugins,
+        )
+
     def load_checkbox_states(self) -> None:
         # Load main checkboxes
         for key, checkbox in self.overture_checkboxes.items():
@@ -819,6 +812,15 @@ class DataSourceDialog(QDialog):
 
         # Update divisions subtype widget visibility based on divisions checkbox state
         self.divisions_subtype_widget.setVisible(self.divisions_checkbox.isChecked())
+
+        # Load AOI checkbox state
+        aoi_enabled = QgsSettings().value(
+            "gpq_downloader/aoi_enabled",
+            False,
+            type=bool,
+            section=QgsSettings.Plugins,
+        )
+        self.extent_group.setChecked(aoi_enabled)
 
     def on_validation_finished(self, success, message, results):
         # This method should handle the validation results
