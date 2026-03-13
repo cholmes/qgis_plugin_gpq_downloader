@@ -465,11 +465,12 @@ class DataSourceDialog(QDialog):
             return
             
         # Check if the user selected an Area of Interest
-        if not self.current_extent:
+        # Only warn if AOI checkbox is checked but no extent is selected
+        if self.extent_group.isChecked() and not self.current_extent:
             reply = QMessageBox.warning(
                 self,
                 "No Area of Interest Selected",
-                "No area of interest has been explicitly selected. The current map canvas extent will be used instead, which may result in a larger download than intended.\n\n"
+                "You enabled 'Area of Interest' but haven't selected one. The current map canvas extent will be used instead.\n\n"
                 "Do you want to continue using the current map canvas extent?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -826,8 +827,16 @@ class DataSourceDialog(QDialog):
 
     def setup_area_of_interest(self):
         """Create and setup the Area of Interest group with Extent button"""
-        # Create group box
+        # Create a container widget to hold the group box and extent display
+        self.aoi_container = QWidget()
+        container_layout = QVBoxLayout()
+        container_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create checkable group box - unchecked by default means use current view
         self.extent_group = QGroupBox("Area of Interest")
+        self.extent_group.setCheckable(True)
+        self.extent_group.setChecked(False)
+        self.extent_group.toggled.connect(self.on_aoi_checkbox_toggled)
         extent_layout = QVBoxLayout()
         
         # Add layer selection dropdown
@@ -989,21 +998,39 @@ class DataSourceDialog(QDialog):
         self.bbox_group.setVisible(False)
         extent_layout.addWidget(self.bbox_group)
 
-        # Add text display for extent
+        # Set the layout to the group
+        self.extent_group.setLayout(extent_layout)
+
+        # Add the group to the container
+        container_layout.addWidget(self.extent_group)
+
+        # Add text display for extent OUTSIDE the QGroupBox so it won't be grayed out
         self.extent_display = QTextEdit()
         self.extent_display.setReadOnly(True)
         self.extent_display.setMaximumHeight(40)
-        self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
-        extent_layout.addWidget(self.extent_display)
-        
-        # Set the layout to the group
-        self.extent_group.setLayout(extent_layout)
-        
-        # Don't update the extent display with initial extent
-        # if self.current_extent:
-        #     self.update_extent_display("Initial Map Canvas")
-        
-        return self.extent_group
+        self.extent_display.setPlaceholderText(
+            "Using current map view. Check the box above to define a custom area of interest."
+        )
+        container_layout.addWidget(self.extent_display)
+
+        self.aoi_container.setLayout(container_layout)
+        return self.aoi_container
+
+    def on_aoi_checkbox_toggled(self, checked):
+        """Handle the Area of Interest checkbox being toggled"""
+        if checked:
+            # Clear any previous state and show instructions
+            self.extent_display.clear()
+            self.extent_display.setPlaceholderText(
+                "No area of interest selected. Use the buttons above to select one."
+            )
+        else:
+            # Clear AOI and show current view message
+            self.clear_extent()
+            self.extent_display.clear()
+            self.extent_display.setPlaceholderText(
+                "Using current map view. Check the box above to define a custom area of interest."
+            )
 
     def start_bbox_mode(self):
         """Show the manual bbox entry panel"""
