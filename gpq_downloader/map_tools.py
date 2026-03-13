@@ -66,6 +66,10 @@ class AoiHighlighter:
         """Clear the highlighted area"""
         if self.rubber_band:
             self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+            self.rubber_band.hide()
+            # Remove rubber band from scene and delete it
+            self.canvas.scene().removeItem(self.rubber_band)
+            self.rubber_band = None
             # Refresh the canvas to show the change
             self.canvas.refresh()
 

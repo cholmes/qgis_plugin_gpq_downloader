@@ -834,8 +834,8 @@ class DataSourceDialog(QDialog):
         # Extent button
         self.extent_button = QToolButton()
         self.extent_button.setText(" Extent")
-        self.extent_button.setPopupMode(QToolButton.MenuButtonPopup)
-        self.extent_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.extent_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.extent_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.extent_button.setToolTip("Click the dropdown arrow to select an existing extent")
         self.extent_button.setCheckable(True)  # Make button checkable
         
@@ -866,7 +866,7 @@ class DataSourceDialog(QDialog):
         # Draw button
         self.draw_button = QToolButton()
         self.draw_button.setText(" Draw")
-        self.draw_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.draw_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.draw_button.setToolTip("Draw a custom polygon on the map")
         self.draw_button.setCheckable(True)  # Make button checkable
         # Use the extents.svg icon from the icons folder
@@ -880,7 +880,7 @@ class DataSourceDialog(QDialog):
         # Select Features button
         self.select_button = QToolButton()
         self.select_button.setText(" Select")
-        self.select_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.select_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.select_button.setToolTip("Select features from active layer to define area of interest")
         self.select_button.setCheckable(True)  # Make button checkable
         # Use the selection icon or fall back to standard icon
@@ -904,7 +904,7 @@ class DataSourceDialog(QDialog):
         # BBox button
         self.bbox_button = QToolButton()
         self.bbox_button.setText(" BBox")
-        self.bbox_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.bbox_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.bbox_button.setToolTip("Enter a bounding box manually or draw one on the map")
         self.bbox_button.setCheckable(True)
         bbox_icon = QgsApplication.getThemeIcon("/mActionAddBasicRectangle.svg")
@@ -915,7 +915,7 @@ class DataSourceDialog(QDialog):
         # Clear button
         self.clear_button = QToolButton()
         self.clear_button.setText(" Clear")
-        self.clear_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.clear_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.clear_button.setToolTip("Clear the current area of interest and selected features")
         # Use the clear icon if available or another suitable icon
         icon_path = os.path.join(base_path, "icons", "extent-clear.svg")
@@ -994,6 +994,15 @@ class DataSourceDialog(QDialog):
 
     def start_bbox_mode(self):
         """Show the manual bbox entry panel"""
+        # Clear any previous AOI first
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = None
+        self.extent_display.clear()
+        self.extent_display.setPlaceholderText("Enter bounding box coordinates or draw on map...")
+
         if self.bbox_group:
             self.bbox_group.setVisible(True)
 
@@ -1098,12 +1107,16 @@ class DataSourceDialog(QDialog):
                 except:
                     pass
                 
+            # Clear any previous AOI visualization first
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+
             # Clear any previously drawn geometry
             self.aoi_geometry = None
             self.aoi_geometry_crs = None
             self.current_extent = self.iface.mapCanvas().extent()
             self.update_extent_display("Current Map Canvas")
-            
+
             # Update the AOI highlighting
             if self.aoi_highlighter:
                 self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
@@ -1141,10 +1154,15 @@ class DataSourceDialog(QDialog):
                 self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
             except:
                 pass
-                
+
+            # Clear any previous AOI visualization first
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+
             # Clear any previously drawn geometry
             self.aoi_geometry = None
             self.aoi_geometry_crs = None
+            self.current_extent = None
             
             # Get the active layer and its extent
             active_layer = self.iface.activeLayer()
@@ -1308,6 +1326,15 @@ class DataSourceDialog(QDialog):
 
     def start_polygon_draw(self):
         """Start drawing a polygon on the map canvas"""
+        # Clear any previous AOI first
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = None
+        self.extent_display.clear()
+        self.extent_display.setPlaceholderText("Draw a polygon on the map...")
+
         if self.bbox_group:
             self.bbox_group.setVisible(False)
 
@@ -1510,6 +1537,15 @@ class DataSourceDialog(QDialog):
 
     def start_feature_selection(self):
         """Start selecting features from the active layer"""
+        # Clear any previous AOI first (before validation)
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = None
+        self.extent_display.clear()
+        self.extent_display.setPlaceholderText("No features selected. Select features to define the area of interest.")
+
         if self.bbox_group:
             self.bbox_group.setVisible(False)
 
@@ -1532,11 +1568,7 @@ class DataSourceDialog(QDialog):
                 self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
                 self.polygon_tool = None
 
-            # Clear any previous highlighter to start fresh
-            if self.aoi_highlighter:
-                self.aoi_highlighter.clear()
-
-            # Clear any previous selection
+            # Clear any previous selection on the layer
             layer.removeSelection()
 
             # Disconnect any existing selection signal first to avoid multiple connections
