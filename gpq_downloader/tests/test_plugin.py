@@ -22,56 +22,58 @@ def test_plugin_run_with_active_download(qgs_app, mock_iface):
         assert "Download in Progress" in mock_warning.call_args[0][1]
 
 @patch('gpq_downloader.plugin.DataSourceDialog')
-def test_plugin_run_dialog_rejected(mock_dialog, qgs_app, mock_iface):
-    """Test run method when dialog is rejected"""
+def test_plugin_run_dialog_shown(mock_dialog, qgs_app, mock_iface):
+    """Test run method shows dialog non-modally"""
     plugin = QgisPluginGeoParquet(mock_iface)
-    
+
     # Setup mock dialog
     dialog_instance = MagicMock()
-    dialog_instance.exec.return_value = QDialog.Rejected
     mock_dialog.return_value = dialog_instance
-    
+
     plugin.run()
-    
-    dialog_instance.exec.assert_called_once()
+
+    # Dialog should be shown non-modally (not exec)
+    dialog_instance.show.assert_called_once()
     assert plugin.worker is None
     assert plugin.worker_thread is None
 
 @patch('gpq_downloader.plugin.QgsSettings')
 @patch('gpq_downloader.plugin.QFileDialog.getSaveFileName')
 @patch('gpq_downloader.plugin.DataSourceDialog')
-def test_plugin_run_with_download(mock_dialog, mock_save_dialog, mock_settings, qgs_app, mock_iface, tmp_path):
-    """Test run method with successful download setup"""
+def test_plugin_handle_dialog_accepted(mock_dialog, mock_save_dialog, mock_settings, qgs_app, mock_iface, tmp_path):
+    """Test handle_dialog_accepted with successful download setup"""
     plugin = QgisPluginGeoParquet(mock_iface)
-    
+
     # Setup mock dialog
     dialog_instance = MagicMock()
-    dialog_instance.exec.return_value = QDialog.Accepted
     dialog_instance.get_urls.return_value = ["https://example.com/test.parquet?theme=buildings"]
     dialog_instance.overture_radio.isChecked.return_value = True
-    
+    dialog_instance.get_current_extent.return_value = None
+    dialog_instance.extent_group.isChecked.return_value = False
+
     # Add explicit mocks for aoi properties to avoid the coordinate transformation issue
     dialog_instance.aoi_geometry = None
     dialog_instance.aoi_geometry_crs = None
-    
+
     mock_dialog.return_value = dialog_instance
-    
+
     # Setup mock save dialog
     output_file = str(tmp_path / "test.parquet")
     mock_save_dialog.return_value = (output_file, "GeoParquet (*.parquet)")
-    
+
     # Setup mock settings
     mock_settings_instance = MagicMock()
     mock_settings.return_value = mock_settings_instance
-    
+
     # Mock datetime to avoid timestamp issues
     with patch('gpq_downloader.plugin.datetime') as mock_datetime:
         mock_datetime.datetime.now.return_value.strftime.return_value = "20230101_120000"
-        
+
         # Mock the process_download_queue method to avoid actual processing
         with patch.object(plugin, 'process_download_queue'):
-            plugin.run()
-    
+            # Call handle_dialog_accepted directly instead of through run()
+            plugin.handle_dialog_accepted(dialog_instance)
+
     mock_save_dialog.assert_called_once()
 
 def test_plugin_handle_error(qgs_app, mock_iface):

@@ -67,4 +67,94 @@ def test_dialog_settings_saved(mock_settings, qgs_app, mock_iface):
     """Test that settings are saved"""
     dialog = DataSourceDialog(None, mock_iface)
     dialog.save_checkbox_states()
-    mock_settings.assert_called() 
+    mock_settings.assert_called()
+
+
+def test_dialog_aoi_checkbox_default_unchecked(qgs_app, mock_iface):
+    """Test that AOI checkbox is unchecked by default"""
+    dialog = DataSourceDialog(None, mock_iface)
+    assert not dialog.extent_group.isChecked()
+
+
+def test_dialog_aoi_checkbox_toggle(qgs_app, mock_iface):
+    """Test AOI checkbox toggle functionality"""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    # Initially unchecked
+    assert not dialog.extent_group.isChecked()
+
+    # Check it
+    dialog.extent_group.setChecked(True)
+    assert dialog.extent_group.isChecked()
+
+    # Uncheck it
+    dialog.extent_group.setChecked(False)
+    assert not dialog.extent_group.isChecked()
+
+
+@patch('gpq_downloader.dialog.QgsSettings')
+def test_dialog_aoi_checkbox_state_saved(mock_settings, qgs_app, mock_iface):
+    """Test that AOI checkbox state is saved"""
+    mock_settings_instance = MagicMock()
+    mock_settings.return_value = mock_settings_instance
+
+    dialog = DataSourceDialog(None, mock_iface)
+    dialog.extent_group.setChecked(True)
+    dialog.save_checkbox_states()
+
+    # Check that setValue was called with the AOI setting
+    calls = mock_settings_instance.setValue.call_args_list
+    aoi_call = [c for c in calls if 'aoi_enabled' in str(c)]
+    assert len(aoi_call) > 0
+
+
+def test_dialog_divisions_checkbox_in_first_row(qgs_app, mock_iface):
+    """Test that Divisions checkbox exists and is functional"""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    # Divisions checkbox should exist
+    assert hasattr(dialog, 'divisions_checkbox')
+    assert dialog.divisions_checkbox is not None
+
+    # Should be in overture_checkboxes
+    assert 'divisions' in dialog.overture_checkboxes
+
+    # Toggle should work
+    dialog.divisions_checkbox.setChecked(True)
+    assert dialog.divisions_checkbox.isChecked()
+
+
+def test_dialog_divisions_subtypes_visibility(qgs_app, mock_iface):
+    """Test that Divisions subtypes appear when checkbox is checked"""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    # Initially hidden
+    assert not dialog.divisions_subtype_widget.isVisible()
+
+    # Check divisions checkbox
+    dialog.divisions_checkbox.setChecked(True)
+
+    # Subtypes should now be visible
+    assert dialog.divisions_subtype_widget.isVisible()
+
+    # Uncheck should hide
+    dialog.divisions_checkbox.setChecked(False)
+    assert not dialog.divisions_subtype_widget.isVisible()
+
+
+def test_dialog_base_subtypes_visibility(qgs_app, mock_iface):
+    """Test that Base subtypes appear when checkbox is checked"""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    # Initially hidden
+    assert not dialog.base_subtype_widget.isVisible()
+
+    # Check base checkbox
+    dialog.base_checkbox.setChecked(True)
+
+    # Subtypes should now be visible
+    assert dialog.base_subtype_widget.isVisible()
+
+    # Uncheck should hide
+    dialog.base_checkbox.setChecked(False)
+    assert not dialog.base_subtype_widget.isVisible()
