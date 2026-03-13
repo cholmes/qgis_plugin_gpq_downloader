@@ -57,6 +57,7 @@ class DataSourceDialog(QDialog):
         self.ymax_spin = None
         self.rectangle_tool = None
         self._in_feature_select_mode = False
+        self._in_polygon_draw_mode = False
         self._canvas_key_filter = None
 
         # Create the AOI highlighter
@@ -344,15 +345,27 @@ class DataSourceDialog(QDialog):
             self.dialog = dialog
 
         def eventFilter(self, obj, event):
-            if not getattr(self.dialog, "_in_feature_select_mode", False):
+            if event.type() != QEvent.KeyPress:
                 return False
-            if event.type() == QEvent.KeyPress:
-                if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+
+            in_select_mode = getattr(self.dialog, "_in_feature_select_mode", False)
+            in_draw_mode = getattr(self.dialog, "_in_polygon_draw_mode", False)
+
+            if not in_select_mode and not in_draw_mode:
+                return False
+
+            if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+                if in_select_mode:
                     self.dialog.finish_feature_selection()
-                    return True
-                elif event.key() == Qt.Key_Escape:
+                elif in_draw_mode:
+                    self.dialog.finish_polygon_draw()
+                return True
+            elif event.key() == Qt.Key_Escape:
+                if in_select_mode:
                     self.dialog.cancel_feature_selection()
-                    return True
+                elif in_draw_mode:
+                    self.dialog.cancel_polygon_draw()
+                return True
             return False
 
     def _install_canvas_key_filter(self):
@@ -1125,7 +1138,8 @@ class DataSourceDialog(QDialog):
             self.extent_button.setChecked(True)
             self.draw_button.setChecked(False)
             self.select_button.setChecked(False)
-    
+            self.bbox_button.setChecked(False)
+
     def use_active_layer_extent(self):
         """Use the active layer extent as Area of Interest"""
         if self.bbox_group:
@@ -1213,6 +1227,7 @@ class DataSourceDialog(QDialog):
             self.extent_button.setChecked(True)
             self.draw_button.setChecked(False)
             self.select_button.setChecked(False)
+            self.bbox_button.setChecked(False)
 
     def update_extent_display(self, source):
         """Update the extent display with the current extent information"""
@@ -1365,24 +1380,31 @@ class DataSourceDialog(QDialog):
             # Connect the deactivated signal to clean up the tool when another tool is selected
             self.polygon_tool.deactivated.connect(self.handle_polygon_tool_deactivated)
 
+            # Enter polygon draw mode and install key filter
+            self._in_polygon_draw_mode = True
+            self._install_canvas_key_filter()
+
             # Hide dialog while drawing
             self.hide()
 
             # Show instructions
             self.iface.messageBar().pushMessage(
                 "Draw Polygon",
-                "Click to add vertices. Right-click to finish.",
+                "Click to add vertices. Press Enter or right-click to finish (Esc to cancel).",
                 level=0,
-                duration=5
+                duration=10
             )
 
             # Update button states
             self.extent_button.setChecked(False)
             self.draw_button.setChecked(True)
             self.select_button.setChecked(False)
-            
+            self.bbox_button.setChecked(False)
+
     def handle_polygon_tool_deactivated(self):
         """Handle the polygon tool being deactivated by another tool"""
+        self._in_polygon_draw_mode = False
+        self._remove_canvas_key_filter()
         self.polygon_tool = None
 
     def on_polygon_drawn(self, geometry):
@@ -1410,10 +1432,56 @@ class DataSourceDialog(QDialog):
         if self.iface and self.iface.mapCanvas():
             self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
 
+        # Clear draw mode and key filter
+        self._in_polygon_draw_mode = False
+        self._remove_canvas_key_filter()
+
+        # Update button states - keep Draw checked to show current AOI source
+        self.extent_button.setChecked(False)
+        self.draw_button.setChecked(True)
+        self.select_button.setChecked(False)
+        self.bbox_button.setChecked(False)
+
         # Re-show the dialog
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def finish_polygon_draw(self):
+        """Finish polygon drawing when Enter is pressed"""
+        if self.polygon_tool:
+            if self.polygon_tool.finishPolygon():
+                # The polygonSelected signal will be emitted and on_polygon_drawn will be called
+                pass
+            else:
+                # Not enough vertices yet, show message
+                if self.iface:
+                    self.iface.messageBar().pushMessage(
+                        "Draw Polygon",
+                        "Need at least 3 points to create a polygon. Keep clicking to add more points.",
+                        level=1,  # Warning level
+                        duration=3
+                    )
+
+    def cancel_polygon_draw(self):
+        """Cancel polygon drawing when Escape is pressed"""
+        self._in_polygon_draw_mode = False
+        self._remove_canvas_key_filter()
+
+        if self.polygon_tool:
+            self.polygon_tool.cancelPolygon()
+            if self.iface and self.iface.mapCanvas():
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.iface.actionPan().trigger()
+            self.polygon_tool = None
+
+        # Re-show the dialog
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+        # Uncheck the draw button
+        self.draw_button.setChecked(False)
 
     def get_reprojected_geometry(self, target_crs):
         """Return the geometry reprojected to the target CRS if needed"""
@@ -1461,6 +1529,7 @@ class DataSourceDialog(QDialog):
     def clear_extent(self):
         """Clear the current area of interest"""
         self._in_feature_select_mode = False
+        self._in_polygon_draw_mode = False
         self._remove_canvas_key_filter()
 
         # Reset the polygon tool if active
@@ -1534,6 +1603,7 @@ class DataSourceDialog(QDialog):
         self.extent_button.setChecked(False)
         self.draw_button.setChecked(False)
         self.select_button.setChecked(False)
+        self.bbox_button.setChecked(False)
 
     def start_feature_selection(self):
         """Start selecting features from the active layer"""
@@ -1602,6 +1672,7 @@ class DataSourceDialog(QDialog):
             self.extent_button.setChecked(False)
             self.draw_button.setChecked(False)
             self.select_button.setChecked(True)
+            self.bbox_button.setChecked(False)
 
     def on_selection_changed(self):
         """Handle when the selection in the active layer changes"""

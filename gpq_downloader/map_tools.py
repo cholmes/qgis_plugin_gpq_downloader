@@ -132,10 +132,38 @@ class PolygonMapTool(QgsMapTool):
             mouse_vertex = self.rubber_band.numberOfVertices() - 1
             self.rubber_band.movePoint(mouse_vertex, event.mapPoint())
 
+    def finishPolygon(self):
+        """Finish the polygon without adding a new point (for Enter key)"""
+        if self.rubber_band is None or self.extent is None:
+            return False
+        if self.rubber_band.numberOfVertices() < 3:
+            # Need at least 3 vertices for a valid polygon
+            return False
+        # Get the current geometry
+        self.extent = self.rubber_band.asGeometry()
+        # Validate geometry before firing signal
+        self.extent.removeDuplicateNodes()
+        self.polygonSelected.emit(self.extent)
+        self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+        del self.rubber_band
+        self.rubber_band = None
+        self.vertex_count = 1
+        return True
+
+    def cancelPolygon(self):
+        """Cancel polygon drawing and clean up"""
+        if self.rubber_band:
+            self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+            del self.rubber_band
+            self.rubber_band = None
+        self.extent = None
+        self.vertex_count = 1
+
     def deactivate(self):
         QgsMapTool.deactivate(self)
         # Emit deactivated signal
         self.deactivated.emit()
+
 
 class RectangleMapTool(QgsMapTool):
     """Map tool for drawing a rectangular bounding box"""
