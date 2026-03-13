@@ -128,33 +128,33 @@ def test_dialog_divisions_subtypes_visibility(qgs_app, mock_iface):
     """Test that Divisions subtypes appear when checkbox is checked"""
     dialog = DataSourceDialog(None, mock_iface)
 
-    # Initially hidden
-    assert not dialog.divisions_subtype_widget.isVisible()
+    # Initially hidden (use isHidden() since isVisible() requires parent to be shown)
+    assert dialog.divisions_subtype_widget.isHidden()
 
     # Check divisions checkbox
     dialog.divisions_checkbox.setChecked(True)
 
     # Subtypes should now be visible
-    assert dialog.divisions_subtype_widget.isVisible()
+    assert not dialog.divisions_subtype_widget.isHidden()
 
     # Uncheck should hide
     dialog.divisions_checkbox.setChecked(False)
-    assert not dialog.divisions_subtype_widget.isVisible()
+    assert dialog.divisions_subtype_widget.isHidden()
 
 
 def test_dialog_base_subtypes_visibility(qgs_app, mock_iface):
     """Test that Base subtypes appear when checkbox is checked"""
     dialog = DataSourceDialog(None, mock_iface)
 
-    # Initially hidden
-    assert not dialog.base_subtype_widget.isVisible()
+    # Initially hidden (use isHidden() since isVisible() requires parent to be shown)
+    assert dialog.base_subtype_widget.isHidden()
 
     # Check base checkbox
     dialog.base_checkbox.setChecked(True)
 
     # Subtypes should now be visible
-    assert dialog.base_subtype_widget.isVisible()
+    assert not dialog.base_subtype_widget.isHidden()
 
     # Uncheck should hide
     dialog.base_checkbox.setChecked(False)
-    assert not dialog.base_subtype_widget.isVisible()
+    assert dialog.base_subtype_widget.isHidden()
