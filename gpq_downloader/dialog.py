@@ -706,7 +706,6 @@ class DataSourceDialog(QDialog):
             "has_bbox": False,
             "schema": None,
             "bbox_column": None,
-            "geometry_column": "geometry",
         }
         if reply == QMessageBox.StandardButton.No:
             self.validation_complete.emit(
