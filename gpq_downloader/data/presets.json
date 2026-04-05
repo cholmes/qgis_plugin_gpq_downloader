@@ -116,6 +116,11 @@
             "info_url": "https://data.openstreetmap.us/",
             "needs_validation": false
         },
+        "parks": {
+            "url": "https://data.openstreetmap.us/layercake/parks.parquet",
+            "info_url": "https://data.openstreetmap.us/",
+            "needs_validation": false
+        },
         "settlements": {
             "url": "https://data.openstreetmap.us/layercake/settlements.parquet",
             "info_url": "https://data.openstreetmap.us/",
