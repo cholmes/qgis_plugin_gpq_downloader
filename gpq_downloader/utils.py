@@ -135,7 +135,14 @@ class Worker(QObject):
                     conn.execute("LOAD spatial;")
 
                 # Get schema early as we need it for both column names and bbox check
-                schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
+                use_union_by_name = "*" in self.dataset_url
+                read_parquet_sql = (
+                    f"read_parquet('{self.dataset_url}', union_by_name=true)"
+                    if use_union_by_name
+                    else f"read_parquet('{self.dataset_url}')"
+                )
+
+                schema_query = f"DESCRIBE SELECT * FROM {read_parquet_sql}"
                 schema_result = conn.execute(schema_query).fetchall()
                 self.validation_results['schema'] = schema_result
                 
@@ -295,7 +302,7 @@ class Worker(QObject):
                 # Base query
                 base_query = f"""
                 CREATE TABLE {table_name} AS (
-                    {select_query} FROM read_parquet('{self.dataset_url}')
+                    {select_query} FROM {read_parquet_sql}
                     {where_clause}
                 ) 
                 """
@@ -615,7 +622,15 @@ class ValidationWorker(QObject):
                 return
 
             self.progress.emit("Checking data format...")
-            schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
+
+            use_union_by_name = "*" in self.dataset_url
+            read_parquet_sql = (
+                f"read_parquet('{self.dataset_url}', union_by_name=true)"
+                if use_union_by_name
+                else f"read_parquet('{self.dataset_url}')"
+            )
+            
+            schema_query = f"DESCRIBE SELECT * FROM {read_parquet_sql}"
             schema_result = conn.execute(schema_query).fetchall()
 
             # Update validation results with schema

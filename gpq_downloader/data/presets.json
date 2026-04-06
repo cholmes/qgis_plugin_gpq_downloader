@@ -1,7 +1,7 @@
 {
     "overture": {
         "buildings": {
-            "url_template": "s3://overturemaps-us-west-2/release/{release}/theme=buildings/type=building/*",
+            "url_template": "s3://overturemaps-us-west-2/release/{release}/theme=buildings/type=building*/*",
             "info_url": "https://docs.overturemaps.org/reference/buildings",
             "needs_validation": false
         },
