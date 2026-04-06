@@ -621,6 +621,24 @@ class ValidationWorker(QObject):
             # Update validation results with schema
             validation_results["schema"] = schema_result
 
+            # Detect geometry column from schema
+            geometry_found = False
+            for row in schema_result:
+                col_name = row[0]
+                col_type = row[1].upper()
+                if 'GEOMETRY' in col_type or 'GEOGRAPHY' in col_type:
+                    validation_results['geometry_column'] = col_name
+                    geometry_found = True
+                    break
+
+            if not geometry_found:
+                for row in schema_result:
+                    col_name_lower = row[0].lower()
+                    col_name_orig = row[0]
+                    if col_name_lower in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
+                        validation_results['geometry_column'] = col_name_orig
+                        break
+
             # Check for standard bbox column first
             has_bbox = any(
                 row[0].lower() == "bbox" and "struct" in row[1].lower()

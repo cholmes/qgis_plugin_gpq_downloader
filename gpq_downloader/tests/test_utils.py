@@ -196,6 +196,91 @@ def test_transform_bbox_with_none(qgs_app):
     assert result is None
 
 @patch('duckdb.connect')
+def test_validation_worker_detects_geom_column(mock_connect, mock_iface):
+    """Test that ValidationWorker detects non-standard geometry column names like 'geom'"""
+    mock_conn = MagicMock()
+    # Schema with 'geom' column of GEOMETRY type
+    schema_result = [
+        ("id", "INTEGER", "YES", None, None, None),
+        ("geom", "GEOMETRY", "YES", None, None, None),
+        ("bbox", "STRUCT(xmin DOUBLE, ymin DOUBLE, xmax DOUBLE, ymax DOUBLE)", "YES", None, None, None),
+    ]
+    mock_conn.execute.return_value.fetchall.side_effect = [
+        schema_result,  # DESCRIBE query
+        [],             # parquet_kv_metadata (no geo metadata)
+    ]
+    mock_connect.return_value = mock_conn
+
+    worker = ValidationWorker(
+        "https://example.com/test.parquet",
+        mock_iface,
+        QgsRectangle(0, 0, 1, 1)
+    )
+
+    results = []
+    worker.finished.connect(lambda success, msg, res: results.append(res))
+    worker.run()
+
+    assert len(results) == 1
+    assert results[0]['geometry_column'] == 'geom'
+
+
+@patch('duckdb.connect')
+def test_validation_worker_detects_the_geom_column(mock_connect, mock_iface):
+    """Test that ValidationWorker detects non-standard geometry column names like 'the_geom'"""
+    mock_conn = MagicMock()
+    # Schema with 'the_geom' column as BLOB (WKB)
+    schema_result = [
+        ("id", "INTEGER", "YES", None, None, None),
+        ("the_geom", "BLOB", "YES", None, None, None),
+    ]
+    mock_conn.execute.return_value.fetchall.side_effect = [
+        schema_result,  # DESCRIBE query
+        [],             # parquet_kv_metadata (no geo metadata)
+    ]
+    mock_connect.return_value = mock_conn
+
+    worker = ValidationWorker(
+        "https://example.com/test.parquet",
+        mock_iface,
+        QgsRectangle(0, 0, 1, 1)
+    )
+
+    results = []
+    worker.finished.connect(lambda success, msg, res: results.append(res))
+    worker.run()
+
+    assert len(results) == 1
+    assert results[0]['geometry_column'] == 'the_geom'
+
+
+@patch('duckdb.connect')
+def test_validation_worker_detects_standard_geometry_column(mock_connect, mock_iface):
+    """Test that ValidationWorker still works with standard 'geometry' column"""
+    mock_conn = MagicMock()
+    schema_result = [
+        ("id", "INTEGER", "YES", None, None, None),
+        ("geometry", "GEOMETRY", "YES", None, None, None),
+        ("bbox", "STRUCT(xmin DOUBLE, ymin DOUBLE, xmax DOUBLE, ymax DOUBLE)", "YES", None, None, None),
+    ]
+    mock_conn.execute.return_value.fetchall.return_value = schema_result
+    mock_connect.return_value = mock_conn
+
+    worker = ValidationWorker(
+        "https://example.com/test.parquet",
+        mock_iface,
+        QgsRectangle(0, 0, 1, 1)
+    )
+
+    results = []
+    worker.finished.connect(lambda success, msg, res: results.append(res))
+    worker.run()
+
+    assert len(results) == 1
+    assert results[0]['geometry_column'] == 'geometry'
+
+
+@patch('duckdb.connect')
 def test_worker_error_handling(mock_connect, mock_iface, sample_bbox, tmp_path):
     """Test Worker error handling"""
     mock_connect.side_effect = Exception("Test error")
