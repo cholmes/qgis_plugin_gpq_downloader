@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from qgis.PyQt.QtWidgets import QDialog
 from qgis.PyQt.QtCore import Qt
+from qgis.core import QgsMapLayerType
 
 from gpq_downloader.dialog import DataSourceDialog
 
@@ -106,6 +107,34 @@ def test_dialog_aoi_checkbox_state_saved(mock_settings, qgs_app, mock_iface):
     calls = mock_settings_instance.setValue.call_args_list
     aoi_call = [c for c in calls if 'aoi_enabled' in str(c)]
     assert len(aoi_call) > 0
+
+
+def test_finish_feature_selection_clears_layer_selection(qgs_app, mock_iface):
+    """Feature-selection AOI capture should not leave layer features selected."""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    active_layer = mock_iface.activeLayer.return_value
+    active_layer.type.return_value = QgsMapLayerType.VectorLayer
+
+    dialog.finish_feature_selection()
+
+    active_layer.selectionChanged.disconnect.assert_called_with(dialog.on_selection_changed)
+    active_layer.removeSelection.assert_called_once()
+    mock_iface.actionPan.return_value.trigger.assert_called_once()
+
+
+def test_reject_clears_layer_selection(qgs_app, mock_iface):
+    """Canceling the dialog should clear any transient feature selection."""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    active_layer = mock_iface.activeLayer.return_value
+    active_layer.type.return_value = QgsMapLayerType.VectorLayer
+
+    dialog.reject()
+
+    active_layer.selectionChanged.disconnect.assert_called_with(dialog.on_selection_changed)
+    active_layer.removeSelection.assert_called_once()
+    mock_iface.actionPan.return_value.trigger.assert_called_once()
 
 
 def test_dialog_divisions_checkbox_in_first_row(qgs_app, mock_iface):
