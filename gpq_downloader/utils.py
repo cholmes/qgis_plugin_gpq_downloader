@@ -23,40 +23,58 @@ def configure_s3_for_url(conn, url):
         conn.execute("SET s3_url_style='path';")
 
 
-_QUADKEY_FILE_RE = re.compile(r"^(.*[._])([0-3]+)\.parquet$")
+# building.002213.parquet (OpenBuildingMap): Bing/Web Mercator quadkey after a prefix.
+# A prefix and at least 4 digits are required so names like 0.parquet or part_1.parquet
+# are not mistaken for quadkeys.
+_QUADKEY_FILE_RE = re.compile(r"^(.*[._])([0-3]{4,})\.parquet$")
+# e100_n20_e105_n15.parquet (GlobalBuildingAtlas): lon/lat corners of a grid cell
+_GRID_FILE_RE = re.compile(r"^([ew])(\d{3})_([ns])(\d{2})_([ew])(\d{3})_([ns])(\d{2})\.parquet$")
 
 
-def quadkeys_for_bbox(xmin, ymin, xmax, ymax, zoom):
-    """Return the set of Bing/Web Mercator quadkeys at `zoom` overlapping a WGS84 bbox."""
+def quadkey_bounds(quadkey):
+    """Return (xmin, ymin, xmax, ymax) in WGS84 of a Bing/Web Mercator quadkey tile."""
+    zoom = len(quadkey)
+    x = y = 0
+    for i, digit in enumerate(quadkey):
+        mask = 1 << (zoom - 1 - i)
+        d = int(digit)
+        if d & 1:
+            x |= mask
+        if d & 2:
+            y |= mask
     n = 2 ** zoom
-    max_lat = 85.05112878
 
-    def tile_x(lon):
-        return min(n - 1, max(0, int((lon + 180.0) / 360.0 * n)))
+    def lat(tile_y):
+        return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * tile_y / n))))
 
-    def tile_y(lat):
-        lat = math.radians(max(-max_lat, min(max_lat, lat)))
-        return min(n - 1, max(0, int((1.0 - math.asinh(math.tan(lat)) / math.pi) / 2.0 * n)))
+    return (x / n * 360.0 - 180.0, lat(y + 1), (x + 1) / n * 360.0 - 180.0, lat(y))
 
-    keys = set()
-    for x in range(tile_x(xmin), tile_x(xmax) + 1):
-        for y in range(tile_y(ymax), tile_y(ymin) + 1):
-            digits = []
-            for i in range(zoom, 0, -1):
-                mask = 1 << (i - 1)
-                digits.append(str((1 if x & mask else 0) + (2 if y & mask else 0)))
-            keys.add("".join(digits))
-    return keys
+
+def extent_from_file_name(name):
+    """Extent encoded in a partition file name, or None if the name has no known pattern."""
+    m = _GRID_FILE_RE.match(name)
+    if m:
+        ew1, x1, ns1, y1, ew2, x2, ns2, y2 = m.groups()
+        x1 = int(x1) * (-1 if ew1 == "w" else 1)
+        x2 = int(x2) * (-1 if ew2 == "w" else 1)
+        y1 = int(y1) * (-1 if ns1 == "s" else 1)
+        y2 = int(y2) * (-1 if ns2 == "s" else 1)
+        return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+    m = _QUADKEY_FILE_RE.match(name)
+    if m:
+        return quadkey_bounds(m.group(2))
+    return None
 
 
 def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
     """Build the read_parquet() argument for `url`, pruned to the bbox when possible.
 
-    Some datasets (e.g. Source Cooperative's OpenBuildingMap) are split into files named
-    by quadkey, like building.002213.parquet. Reading a glob over them forces DuckDB to
-    fetch the footer of every file, which takes minutes. When every file matched by the
-    glob ends in a quadkey of the same length, only the overlapping tiles are passed in.
-    Returns a SQL literal, or None when no tile overlaps the bbox.
+    Some datasets are split into files whose names encode their extent: quadkeys in
+    OpenBuildingMap (building.002213.parquet) or 5-degree cells in GlobalBuildingAtlas
+    (e100_n20_e105_n15.parquet). Reading a glob over them forces DuckDB to fetch the
+    footer of every file, which takes minutes. When every file matched by the glob has
+    such a name, only the files overlapping the bbox are passed in.
+    Returns a SQL literal, or None when no file overlaps the bbox.
     """
     default = f"'{url}'"
     if bbox is None or "*" not in url or not url.endswith(".parquet"):
@@ -66,25 +84,27 @@ def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
     except Exception as e:
         logger.log(f"Could not list files for partition pruning: {e}")
         return default
-    tiles = {}
-    for f in files:
-        m = _QUADKEY_FILE_RE.match(f.rsplit("/", 1)[-1])
-        if not m:
-            return default
-        tiles[m.group(2)] = f
-    zooms = {len(k) for k in tiles}
-    if len(zooms) != 1:
+    if not files:
         return default
-    wanted = quadkeys_for_bbox(
-        bbox.xMinimum() - buffer_deg, bbox.yMinimum() - buffer_deg,
-        bbox.xMaximum() + buffer_deg, bbox.yMaximum() + buffer_deg,
-        zooms.pop(),
-    )
-    selected = sorted(tiles[k] for k in wanted if k in tiles)
-    logger.log(f"Quadkey partition pruning: reading {len(selected)} of {len(files)} files")
+    quadkey_lengths = {
+        len(m.group(2)) for m in (_QUADKEY_FILE_RE.match(f.rsplit("/", 1)[-1]) for f in files) if m
+    }
+    if len(quadkey_lengths) > 1:  # mixed zoom levels: not a quadkey partitioning
+        return default
+    xmin, ymin = bbox.xMinimum() - buffer_deg, bbox.yMinimum() - buffer_deg
+    xmax, ymax = bbox.xMaximum() + buffer_deg, bbox.yMaximum() + buffer_deg
+    selected = []
+    for f in files:
+        extent = extent_from_file_name(f.rsplit("/", 1)[-1])
+        if extent is None:
+            return default
+        fxmin, fymin, fxmax, fymax = extent
+        if fxmin <= xmax and fxmax >= xmin and fymin <= ymax and fymax >= ymin:
+            selected.append(f)
+    logger.log(f"Partition pruning by file name: reading {len(selected)} of {len(files)} files")
     if not selected:
         return None
-    return "[" + ", ".join(f"'{f}'" for f in selected) + "]"
+    return "[" + ", ".join(f"'{f}'" for f in sorted(selected)) + "]"
 
 
 def transform_bbox_to_4326(extent, source_crs):
