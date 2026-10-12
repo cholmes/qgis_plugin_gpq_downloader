@@ -1,9 +1,9 @@
 import json
-import time
 
 from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsGeometry
 from qgis.PyQt.QtCore import pyqtSignal, QObject
 import os
+import time
 import duckdb
 
 from . import logger
