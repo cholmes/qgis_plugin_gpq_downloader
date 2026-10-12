@@ -1,4 +1,6 @@
 import json
+import math
+import re
 
 from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsGeometry
 from qgis.PyQt.QtCore import pyqtSignal, QObject
@@ -6,6 +8,83 @@ import os
 import duckdb
 
 from . import logger
+
+
+def configure_s3_for_url(conn, url):
+    """Use path-style S3 URLs for buckets whose names contain dots
+    (e.g. us-west-2.opendata.source.coop). Virtual-host style turns them into
+    multi-level subdomains that fail AWS's *.s3.amazonaws.com certificate."""
+    if not url or not url.startswith("s3://"):
+        return
+    bucket = url[5:].split("/", 1)[0]
+    if "." in bucket:
+        conn.execute("SET s3_region='us-west-2';")
+        conn.execute("SET s3_endpoint='s3.us-west-2.amazonaws.com';")
+        conn.execute("SET s3_url_style='path';")
+
+
+_QUADKEY_FILE_RE = re.compile(r"^(.*[._])([0-3]+)\.parquet$")
+
+
+def quadkeys_for_bbox(xmin, ymin, xmax, ymax, zoom):
+    """Return the set of Bing/Web Mercator quadkeys at `zoom` overlapping a WGS84 bbox."""
+    n = 2 ** zoom
+    max_lat = 85.05112878
+
+    def tile_x(lon):
+        return min(n - 1, max(0, int((lon + 180.0) / 360.0 * n)))
+
+    def tile_y(lat):
+        lat = math.radians(max(-max_lat, min(max_lat, lat)))
+        return min(n - 1, max(0, int((1.0 - math.asinh(math.tan(lat)) / math.pi) / 2.0 * n)))
+
+    keys = set()
+    for x in range(tile_x(xmin), tile_x(xmax) + 1):
+        for y in range(tile_y(ymax), tile_y(ymin) + 1):
+            digits = []
+            for i in range(zoom, 0, -1):
+                mask = 1 << (i - 1)
+                digits.append(str((1 if x & mask else 0) + (2 if y & mask else 0)))
+            keys.add("".join(digits))
+    return keys
+
+
+def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
+    """Build the read_parquet() argument for `url`, pruned to the bbox when possible.
+
+    Some datasets (e.g. Source Cooperative's OpenBuildingMap) are split into files named
+    by quadkey, like building.002213.parquet. Reading a glob over them forces DuckDB to
+    fetch the footer of every file, which takes minutes. When every file matched by the
+    glob ends in a quadkey of the same length, only the overlapping tiles are passed in.
+    Returns a SQL literal, or None when no tile overlaps the bbox.
+    """
+    default = f"'{url}'"
+    if bbox is None or "*" not in url or not url.endswith(".parquet"):
+        return default
+    try:
+        files = [row[0] for row in conn.execute(f"SELECT file FROM glob('{url}')").fetchall()]
+    except Exception as e:
+        logger.log(f"Could not list files for partition pruning: {e}")
+        return default
+    tiles = {}
+    for f in files:
+        m = _QUADKEY_FILE_RE.match(f.rsplit("/", 1)[-1])
+        if not m:
+            return default
+        tiles[m.group(2)] = f
+    zooms = {len(k) for k in tiles}
+    if len(zooms) != 1:
+        return default
+    wanted = quadkeys_for_bbox(
+        bbox.xMinimum() - buffer_deg, bbox.yMinimum() - buffer_deg,
+        bbox.xMaximum() + buffer_deg, bbox.yMaximum() + buffer_deg,
+        zooms.pop(),
+    )
+    selected = sorted(tiles[k] for k in wanted if k in tiles)
+    logger.log(f"Quadkey partition pruning: reading {len(selected)} of {len(files)} files")
+    if not selected:
+        return None
+    return "[" + ", ".join(f"'{f}'" for f in selected) + "]"
 
 
 def transform_bbox_to_4326(extent, source_crs):
@@ -125,7 +204,8 @@ class Worker(QObject):
                 conn.execute("INSTALL spatial;")
                 conn.execute("LOAD httpfs;")
                 conn.execute("LOAD spatial;")
-                
+                configure_s3_for_url(conn, self.dataset_url)
+
                 # Verify spatial extension is loaded by testing a spatial function
                 try:
                     conn.execute("SELECT ST_AsText(ST_GeomFromText('POINT(0 0)'))").fetchone()
@@ -292,10 +372,16 @@ class Worker(QObject):
                     # Log the updated where_clause for debugging
                     logger.log(f"Applying AOI geometry filter: {aoi_wkt}")
 
+                parquet_source = parquet_source_for_bbox(conn, self.dataset_url, bbox)
+                if parquet_source is None:
+                    self.info.emit(f"No data found{layer_info} in the requested area. Check that your map extent overlaps with the data and/or expand your map extent. Skipping to next dataset if available.")
+                    self.finished.emit()
+                    return
+
                 # Base query
                 base_query = f"""
                 CREATE TABLE {table_name} AS (
-                    {select_query} FROM read_parquet('{self.dataset_url}')
+                    {select_query} FROM read_parquet({parquet_source})
                     {where_clause}
                 ) 
                 """
@@ -605,6 +691,7 @@ class ValidationWorker(QObject):
             conn.execute("LOAD spatial;")
             conn.execute("INSTALL httpfs;")
             conn.execute("LOAD httpfs;")
+            configure_s3_for_url(conn, self.dataset_url)
 
             if not self.needs_validation():
                 validation_results.update({
