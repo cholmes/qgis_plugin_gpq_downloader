@@ -1,4 +1,5 @@
 import json
+import time
 
 from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsGeometry
 from qgis.PyQt.QtCore import pyqtSignal, QObject
@@ -51,6 +52,7 @@ class Worker(QObject):
         self.layer_name = layer_name
         self.size_warning_accepted = False
         self.aoi_geometry = aoi_geometry
+        self.conn = None  # kept so kill() can interrupt a running query
 
     def get_bbox_info_from_metadata(self, conn):
         """Read GeoParquet metadata to find bbox column info"""
@@ -112,6 +114,7 @@ class Worker(QObject):
             #logger.log(f"Full validation_results at start of run: {self.validation_results}")
 
             conn = None
+            started_at = time.time() - 1  # 1 s slack for coarse filesystem timestamps
             try:
                 # Install and load the spatial extension
                 self.progress.emit(f"Loading spatial extension{layer_info}...")
@@ -119,7 +122,10 @@ class Worker(QObject):
                 if self.output_file.lower().endswith('.duckdb'):
                     conn = duckdb.connect(self.output_file)  # Connect directly to output file
                 else:
-                    conn = duckdb.connect() 
+                    conn = duckdb.connect()
+                self.conn = conn
+                if self.killed:
+                    return
 
                 conn.execute("INSTALL httpfs;")
                 conn.execute("INSTALL spatial;")
@@ -438,7 +444,17 @@ class Worker(QObject):
                             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
                         except:
                             pass
+                    self.conn = None
                     conn.close()
+                # Don't leave a half-written export behind after a cancel
+                # (.duckdb is the user's database file, so it is never removed)
+                if self.killed and not self.output_file.lower().endswith('.duckdb'):
+                    try:
+                        # Only remove it if this run wrote it, not a file the cancel never reached
+                        if os.path.exists(self.output_file) and os.path.getmtime(self.output_file) >= started_at:
+                            os.remove(self.output_file)
+                    except OSError as e:
+                        logger.log(f"Could not remove partial output {self.output_file}: {e}")
 
         except Exception as e:
             if not self.killed:
@@ -446,6 +462,14 @@ class Worker(QObject):
 
     def kill(self):
         self.killed = True
+        # Stop the running DuckDB query; otherwise cancel waits for it to finish
+        # and the UI thread blocks in QThread.wait().
+        conn = self.conn
+        if conn is not None:
+            try:
+                conn.interrupt()
+            except Exception as e:
+                logger.log(f"Could not interrupt DuckDB query: {e}")
 
     def estimate_file_size(self, conn, table_name):
         """Estimate the output file size in MB using GeoJSON feature collection structure"""
@@ -534,6 +558,7 @@ class ValidationWorker(QObject):
         self.iface = iface
         self.extent = extent
         self.killed = False
+        self.conn = None  # kept so kill() can interrupt a running query
 
         base_path = os.path.dirname(os.path.abspath(__file__))
         presets_path = os.path.join(base_path, "data", "presets.json")
@@ -601,6 +626,7 @@ class ValidationWorker(QObject):
         try:
             self.progress.emit("Connecting to data source...")
             conn = duckdb.connect()
+            self.conn = conn
             conn.execute("INSTALL spatial;")
             conn.execute("LOAD spatial;")
             conn.execute("INSTALL httpfs;")
@@ -646,13 +672,25 @@ class ValidationWorker(QObject):
 
         except Exception as e:
             logger.log(f"Error in ValidationWorker: {str(e)}")
-            # Emit warning before error if no bbox was found
-            if not validation_results.get("has_bbox"):
-                self.needs_bbox_warning.emit()
-            # Still emit validation results with default values in case of error
-            self.finished.emit(False, f"Error validating source: {str(e)}", validation_results)
+            if not self.killed:
+                # Emit warning before error if no bbox was found
+                if not validation_results.get("has_bbox"):
+                    self.needs_bbox_warning.emit()
+                # Still emit validation results with default values in case of error
+                self.finished.emit(False, f"Error validating source: {str(e)}", validation_results)
         finally:
+            self.conn = None
             conn.close()
+
+    def kill(self):
+        """Stop validation; interrupts the running DuckDB query so cancel returns at once."""
+        self.killed = True
+        conn = self.conn
+        if conn is not None:
+            try:
+                conn.interrupt()
+            except Exception as e:
+                logger.log(f"Could not interrupt DuckDB query: {e}")
 
     def needs_validation(self):
         """Determine if the dataset needs any validation"""
