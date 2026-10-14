@@ -59,6 +59,8 @@ class DataSourceDialog(QDialog):
         self._in_feature_select_mode = False
         self._in_polygon_draw_mode = False
         self._canvas_key_filter = None
+        # Layer the plugin made a Select Features selection on, if any
+        self._selection_layer = None
 
         # Create the AOI highlighter
         self.aoi_highlighter = None
@@ -331,7 +333,7 @@ class DataSourceDialog(QDialog):
             self.dialog = dialog
 
         def eventFilter(self, obj, event):
-            if event.type() != QEvent.KeyPress:
+            if event.type() != QEvent.Type.KeyPress:
                 return False
 
             in_select_mode = getattr(self.dialog, "_in_feature_select_mode", False)
@@ -340,13 +342,13 @@ class DataSourceDialog(QDialog):
             if not in_select_mode and not in_draw_mode:
                 return False
 
-            if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+            if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
                 if in_select_mode:
                     self.dialog.finish_feature_selection()
                 elif in_draw_mode:
                     self.dialog.finish_polygon_draw()
                 return True
-            elif event.key() == Qt.Key_Escape:
+            elif event.key() == Qt.Key.Key_Escape:
                 if in_select_mode:
                     self.dialog.cancel_feature_selection()
                 elif in_draw_mode:
@@ -364,19 +366,32 @@ class DataSourceDialog(QDialog):
             self.iface.mapCanvas().removeEventFilter(self._canvas_key_filter)
             self._canvas_key_filter = None
 
+    def _release_selection_layer(self):
+        """Disconnect from the layer used for Select Features and clear the
+        selection the plugin made on it. Selections the user made on other
+        layers, or before opening the dialog, are left alone."""
+        layer = self._selection_layer
+        self._selection_layer = None
+        if layer is None:
+            return
+        try:
+            layer.selectionChanged.disconnect(self.on_selection_changed)
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            layer.removeSelection()
+        except RuntimeError:
+            pass  # layer was removed from the project
+
     def finish_feature_selection(self):
         """Confirm the current feature selection and use it as AOI"""
         self._in_feature_select_mode = False
         self._remove_canvas_key_filter()
 
         if self.iface and self.iface.mapCanvas():
-            # Disconnect selection changed signal
-            layer = self.iface.activeLayer()
-            if layer and layer.type() == QgsMapLayerType.VectorLayer:
-                try:
-                    layer.selectionChanged.disconnect(self.on_selection_changed)
-                except TypeError:
-                    pass
+            # The AOI has already been copied into dialog state; clear the
+            # transient layer selection so it does not remain highlighted.
+            self._release_selection_layer()
 
             # Restore pan tool
             self.iface.actionPan().trigger()
@@ -392,13 +407,7 @@ class DataSourceDialog(QDialog):
         self._remove_canvas_key_filter()
 
         if self.iface and self.iface.mapCanvas():
-            layer = self.iface.activeLayer()
-            if layer and layer.type() == QgsMapLayerType.VectorLayer:
-                try:
-                    layer.selectionChanged.disconnect(self.on_selection_changed)
-                except TypeError:
-                    pass
-                layer.removeSelection()
+            self._release_selection_layer()
 
             self.iface.actionPan().trigger()
 
@@ -582,14 +591,8 @@ class DataSourceDialog(QDialog):
         if self.aoi_highlighter:
             self.aoi_highlighter.clear()
 
-        # Disconnect from any active layer selection signals
-        if self.iface:
-            layer = self.iface.activeLayer()
-            if layer and layer.type() == QgsMapLayerType.VectorLayer:
-                try:
-                    layer.selectionChanged.disconnect(self.on_selection_changed)
-                except:
-                    pass
+        # Clear the Select Features selection (a user's own selection is kept)
+        self._release_selection_layer()
 
         # Restore the default map tool
         if self.iface:
@@ -604,7 +607,7 @@ class DataSourceDialog(QDialog):
             return [self.url_input.text().strip()]
         elif self.overture_radio.isChecked():
             latest_release = requests.get(
-                "https://labs.overturemaps.org/data/releases.json"
+                "https://stac.overturemaps.org/catalog.json", timeout=30
             ).json()["latest"]
 
             for theme, checkbox in self.overture_checkboxes.items():
@@ -706,7 +709,6 @@ class DataSourceDialog(QDialog):
             "has_bbox": False,
             "schema": None,
             "bbox_column": None,
-            "geometry_column": "geometry",
         }
         if reply == QMessageBox.StandardButton.No:
             self.validation_complete.emit(
@@ -1306,14 +1308,8 @@ class DataSourceDialog(QDialog):
         if self.aoi_highlighter:
             self.aoi_highlighter.clear()
 
-        # Disconnect from any active layer selection signals
-        if self.iface:
-            layer = self.iface.activeLayer()
-            if layer and layer.type() == QgsMapLayerType.VectorLayer:
-                try:
-                    layer.selectionChanged.disconnect(self.on_selection_changed)
-                except:
-                    pass
+        # Clear the Select Features selection (a user's own selection is kept)
+        self._release_selection_layer()
 
         super().accept()
 
@@ -1328,14 +1324,8 @@ class DataSourceDialog(QDialog):
         if self.aoi_highlighter:
             self.aoi_highlighter.clear()
 
-        # Disconnect from any active layer selection signals
-        if self.iface:
-            layer = self.iface.activeLayer()
-            if layer and layer.type() == QgsMapLayerType.VectorLayer:
-                try:
-                    layer.selectionChanged.disconnect(self.on_selection_changed)
-                except:
-                    pass
+        # Clear the Select Features selection (a user's own selection is kept)
+        self._release_selection_layer()
 
         # Restore the default map tool
         if self.iface:
@@ -1678,6 +1668,7 @@ class DataSourceDialog(QDialog):
 
             # Connect to the selection changed signal
             layer.selectionChanged.connect(self.on_selection_changed)
+            self._selection_layer = layer
 
             # Enter feature select mode
             self._in_feature_select_mode = True

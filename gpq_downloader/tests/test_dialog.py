@@ -2,6 +2,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 from qgis.PyQt.QtWidgets import QDialog
 from qgis.PyQt.QtCore import Qt
+from qgis.core import QgsCoordinateReferenceSystem, QgsFeature, QgsGeometry, QgsVectorLayer
+from qgis.gui import QgsMapCanvas
 
 from gpq_downloader.dialog import DataSourceDialog
 
@@ -106,6 +108,62 @@ def test_dialog_aoi_checkbox_state_saved(mock_settings, qgs_app, mock_iface):
     calls = mock_settings_instance.setValue.call_args_list
     aoi_call = [c for c in calls if 'aoi_enabled' in str(c)]
     assert len(aoi_call) > 0
+
+
+def _layer_with_features(mock_iface):
+    """Real memory layer with two polygons, set as the iface's active layer."""
+    layer = QgsVectorLayer("Polygon?crs=EPSG:4326", "aoi_source", "memory")
+    feats = []
+    for wkt in ["POLYGON((0 0,1 0,1 1,0 1,0 0))", "POLYGON((2 2,3 2,3 3,2 3,2 2))"]:
+        f = QgsFeature()
+        f.setGeometry(QgsGeometry.fromWkt(wkt))
+        feats.append(f)
+    layer.dataProvider().addFeatures(feats)
+    # A real canvas, so the AOI highlighter and CRS transforms behave as in QGIS
+    canvas = QgsMapCanvas()
+    canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
+    mock_iface.mapCanvas = MagicMock(return_value=canvas)
+    mock_iface.activeLayer = MagicMock(return_value=layer)
+    for name in ("actionPan", "actionSelectRectangle", "messageBar", "layerTreeView"):
+        setattr(mock_iface, name, MagicMock())
+    return layer, canvas
+
+
+def test_finish_feature_selection_clears_selection_keeps_aoi(qgs_app, mock_iface):
+    """Select Features: the selection highlight is cleared, the AOI is kept."""
+    layer, _canvas = _layer_with_features(mock_iface)
+    dialog = DataSourceDialog(None, mock_iface)
+    dialog.start_feature_selection()
+    layer.selectByIds([f.id() for f in layer.getFeatures()][:1])
+    assert dialog.aoi_geometry is not None
+
+    dialog.finish_feature_selection()
+
+    assert layer.selectedFeatureCount() == 0
+    assert dialog.aoi_geometry is not None
+    mock_iface.actionPan.return_value.trigger.assert_called()
+
+
+def test_reject_clears_selection_made_by_plugin(qgs_app, mock_iface):
+    """Canceling the dialog mid-selection clears the plugin's selection."""
+    layer, _canvas = _layer_with_features(mock_iface)
+    dialog = DataSourceDialog(None, mock_iface)
+    dialog.start_feature_selection()
+    layer.selectByIds([f.id() for f in layer.getFeatures()])
+
+    dialog.reject()
+
+    assert layer.selectedFeatureCount() == 0
+
+
+def test_closing_dialog_keeps_users_own_selection(qgs_app, mock_iface):
+    """A selection the user made without Select Features must survive accept/reject."""
+    layer, _canvas = _layer_with_features(mock_iface)
+    for close in ("accept", "reject"):
+        layer.selectByIds([f.id() for f in layer.getFeatures()])
+        dialog = DataSourceDialog(None, mock_iface)
+        getattr(dialog, close)()
+        assert layer.selectedFeatureCount() == 2, close
 
 
 def test_dialog_divisions_checkbox_in_first_row(qgs_app, mock_iface):

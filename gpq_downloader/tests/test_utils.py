@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import os
-from qgis.core import QgsRectangle, QgsCoordinateReferenceSystem
+from qgis.core import QgsRectangle, QgsCoordinateReferenceSystem, QgsVectorLayer
 from pathlib import Path
 
 from gpq_downloader.utils import (
@@ -196,6 +196,91 @@ def test_transform_bbox_with_none(qgs_app):
     assert result is None
 
 @patch('duckdb.connect')
+def test_validation_worker_detects_geom_column(mock_connect, mock_iface):
+    """Test that ValidationWorker detects non-standard geometry column names like 'geom'"""
+    mock_conn = MagicMock()
+    # Schema with 'geom' column of GEOMETRY type
+    schema_result = [
+        ("id", "INTEGER", "YES", None, None, None),
+        ("geom", "GEOMETRY", "YES", None, None, None),
+        ("bbox", "STRUCT(xmin DOUBLE, ymin DOUBLE, xmax DOUBLE, ymax DOUBLE)", "YES", None, None, None),
+    ]
+    mock_conn.execute.return_value.fetchall.side_effect = [
+        schema_result,  # DESCRIBE query
+        [],             # parquet_kv_metadata (no geo metadata)
+    ]
+    mock_connect.return_value = mock_conn
+
+    worker = ValidationWorker(
+        "https://example.com/test.parquet",
+        mock_iface,
+        QgsRectangle(0, 0, 1, 1)
+    )
+
+    results = []
+    worker.finished.connect(lambda success, msg, res: results.append(res))
+    worker.run()
+
+    assert len(results) == 1
+    assert results[0]['geometry_column'] == 'geom'
+
+
+@patch('duckdb.connect')
+def test_validation_worker_detects_the_geom_column(mock_connect, mock_iface):
+    """Test that ValidationWorker detects non-standard geometry column names like 'the_geom'"""
+    mock_conn = MagicMock()
+    # Schema with 'the_geom' column as BLOB (WKB)
+    schema_result = [
+        ("id", "INTEGER", "YES", None, None, None),
+        ("the_geom", "BLOB", "YES", None, None, None),
+    ]
+    mock_conn.execute.return_value.fetchall.side_effect = [
+        schema_result,  # DESCRIBE query
+        [],             # parquet_kv_metadata (no geo metadata)
+    ]
+    mock_connect.return_value = mock_conn
+
+    worker = ValidationWorker(
+        "https://example.com/test.parquet",
+        mock_iface,
+        QgsRectangle(0, 0, 1, 1)
+    )
+
+    results = []
+    worker.finished.connect(lambda success, msg, res: results.append(res))
+    worker.run()
+
+    assert len(results) == 1
+    assert results[0]['geometry_column'] == 'the_geom'
+
+
+@patch('duckdb.connect')
+def test_validation_worker_detects_standard_geometry_column(mock_connect, mock_iface):
+    """Test that ValidationWorker still works with standard 'geometry' column"""
+    mock_conn = MagicMock()
+    schema_result = [
+        ("id", "INTEGER", "YES", None, None, None),
+        ("geometry", "GEOMETRY", "YES", None, None, None),
+        ("bbox", "STRUCT(xmin DOUBLE, ymin DOUBLE, xmax DOUBLE, ymax DOUBLE)", "YES", None, None, None),
+    ]
+    mock_conn.execute.return_value.fetchall.return_value = schema_result
+    mock_connect.return_value = mock_conn
+
+    worker = ValidationWorker(
+        "https://example.com/test.parquet",
+        mock_iface,
+        QgsRectangle(0, 0, 1, 1)
+    )
+
+    results = []
+    worker.finished.connect(lambda success, msg, res: results.append(res))
+    worker.run()
+
+    assert len(results) == 1
+    assert results[0]['geometry_column'] == 'geometry'
+
+
+@patch('duckdb.connect')
 def test_worker_error_handling(mock_connect, mock_iface, sample_bbox, tmp_path):
     """Test Worker error handling"""
     mock_connect.side_effect = Exception("Test error")
@@ -221,3 +306,33 @@ def test_worker_error_handling(mock_connect, mock_iface, sample_bbox, tmp_path):
     
     assert error_message is not None
     assert "Test error" in error_message 
+
+def test_download_with_wkb_geometry_column_named_the_geom(qgs_app, mock_iface, tmp_path):
+    """Real DuckDB run: a WKB (BLOB) geometry column with a non-standard name downloads."""
+    import duckdb
+    source = tmp_path / "the_geom.parquet"
+    conn = duckdb.connect()
+    conn.execute("INSTALL spatial; LOAD spatial;")
+    conn.execute(f"""
+        COPY (SELECT i AS id, ST_AsWKB(ST_Point(i * 0.01, i * 0.01)) AS the_geom
+              FROM range(50) t(i)) TO '{source}' (FORMAT parquet)
+    """)
+    conn.close()
+    extent = QgsRectangle(0, 0, 0.2, 0.2)
+
+    validation = []
+    vworker = ValidationWorker(str(source), mock_iface, extent)
+    vworker.finished.connect(lambda ok, msg, res: validation.append(res))
+    vworker.run()
+    assert validation[0]["geometry_column"] == "the_geom"
+
+    output = tmp_path / "out.gpkg"  # non-parquet output goes through the column rewrite
+    worker = Worker(str(source), extent, str(output), mock_iface, validation[0])
+    errors = []
+    worker.error.connect(errors.append)
+    worker.run()
+
+    assert errors == []
+    layer = QgsVectorLayer(str(output), "out", "ogr")
+    assert layer.isValid()
+    assert layer.featureCount() == 21  # points 0..20 fall inside the extent
