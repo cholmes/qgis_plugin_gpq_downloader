@@ -90,7 +90,7 @@ class PolygonMapTool(QgsMapTool):
         self.vertex_count = 1  # two points are dropped initially
 
     def canvasReleaseEvent(self, event):
-        if event.button() == Qt.RightButton:
+        if event.button() == Qt.MouseButton.RightButton:
             if self.rubber_band is None or self.extent is None:
                 return
             # Add the right-click point as the final vertex
@@ -105,7 +105,7 @@ class PolygonMapTool(QgsMapTool):
             self.rubber_band = None
             self.vertex_count = 1  # two points are dropped initially
             return
-        elif event.button() == Qt.LeftButton:
+        elif event.button() == Qt.MouseButton.LeftButton:
             if self.rubber_band is None:
                 self.rubber_band = QgsRubberBand(
                     self.canvas, QgsWkbTypes.PolygonGeometry
@@ -180,7 +180,7 @@ class RectangleMapTool(QgsMapTool):
         self.rubber_band.setWidth(1)
 
     def canvasPressEvent(self, event):
-        if event.button() != Qt.LeftButton:
+        if event.button() != Qt.MouseButton.LeftButton:
             return
         self.start_point = event.mapPoint()
         self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
@@ -196,7 +196,7 @@ class RectangleMapTool(QgsMapTool):
         self.rubber_band.setToGeometry(geom, None)
 
     def canvasReleaseEvent(self, event):
-        if not self.start_point or event.button() != Qt.LeftButton:
+        if not self.start_point or event.button() != Qt.MouseButton.LeftButton:
             return
 
         end_point = event.mapPoint()

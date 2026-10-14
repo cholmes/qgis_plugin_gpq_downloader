@@ -331,7 +331,7 @@ class DataSourceDialog(QDialog):
             self.dialog = dialog
 
         def eventFilter(self, obj, event):
-            if event.type() != QEvent.KeyPress:
+            if event.type() != QEvent.Type.KeyPress:
                 return False
 
             in_select_mode = getattr(self.dialog, "_in_feature_select_mode", False)
@@ -340,13 +340,13 @@ class DataSourceDialog(QDialog):
             if not in_select_mode and not in_draw_mode:
                 return False
 
-            if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+            if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
                 if in_select_mode:
                     self.dialog.finish_feature_selection()
                 elif in_draw_mode:
                     self.dialog.finish_polygon_draw()
                 return True
-            elif event.key() == Qt.Key_Escape:
+            elif event.key() == Qt.Key.Key_Escape:
                 if in_select_mode:
                     self.dialog.cancel_feature_selection()
                 elif in_draw_mode:
@@ -604,7 +604,7 @@ class DataSourceDialog(QDialog):
             return [self.url_input.text().strip()]
         elif self.overture_radio.isChecked():
             latest_release = requests.get(
-                "https://labs.overturemaps.org/data/releases.json"
+                "https://stac.overturemaps.org/catalog.json", timeout=30
             ).json()["latest"]
 
             for theme, checkbox in self.overture_checkboxes.items():
