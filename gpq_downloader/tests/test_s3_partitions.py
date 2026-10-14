@@ -28,6 +28,18 @@ def test_configure_s3_dotted_bucket_uses_path_style():
     assert "SET s3_endpoint='s3.us-west-2.amazonaws.com';" in sql
 
 
+def test_configure_s3_dotted_bucket_without_region_only_sets_path_style():
+    conn = MagicMock()
+    configure_s3_for_url(conn, "s3://my.bucket.example/data/*.parquet")
+    assert executed_sql(conn) == ["SET s3_url_style='path';"]
+
+
+def test_configure_s3_uses_region_from_bucket_name():
+    conn = MagicMock()
+    configure_s3_for_url(conn, "s3://eu-central-1.data.example/x.parquet")
+    assert "SET s3_endpoint='s3.eu-central-1.amazonaws.com';" in executed_sql(conn)
+
+
 def test_configure_s3_leaves_other_urls_alone():
     for url in [
         "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings/type=building/*",
@@ -116,3 +128,15 @@ def test_parquet_source_skips_listing_for_single_files():
     url = "https://data.source.coop/cholmes/nhd/NHDFlowline.parquet"
     assert parquet_source_for_bbox(conn, url, QgsRectangle(0, 0, 1, 1)) == f"'{url}'"
     conn.execute.assert_not_called()
+
+
+def test_parquet_source_ignores_year_named_files():
+    url = "s3://bucket/data/*.parquet"
+    conn = mock_glob([f"s3://bucket/data/data_{y}.parquet" for y in (2020, 2021, 2022, 2023)])
+    assert parquet_source_for_bbox(conn, url, QgsRectangle(*NAN_THAILAND)) == f"'{url}'"
+
+
+def test_parquet_source_ignores_repeated_basenames():
+    url = "s3://bucket/data/*/*.parquet"
+    conn = mock_glob([f"s3://bucket/data/country={c}/part_00000.parquet" for c in ("TH", "LA", "VN")])
+    assert parquet_source_for_bbox(conn, url, QgsRectangle(*NAN_THAILAND)) == f"'{url}'"

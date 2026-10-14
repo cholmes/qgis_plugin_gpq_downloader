@@ -10,16 +10,24 @@ import duckdb
 from . import logger
 
 
+# Region prefix of bucket names like us-west-2.opendata.source.coop
+_BUCKET_REGION_RE = re.compile(r"^([a-z]{2}(?:-gov)?-[a-z]+-\d)\.")
+
+
 def configure_s3_for_url(conn, url):
     """Use path-style S3 URLs for buckets whose names contain dots
     (e.g. us-west-2.opendata.source.coop). Virtual-host style turns them into
-    multi-level subdomains that fail AWS's *.s3.amazonaws.com certificate."""
+    multi-level subdomains that fail AWS's *.s3.amazonaws.com certificate.
+    When the bucket name starts with a region, use that region's endpoint."""
     if not url or not url.startswith("s3://"):
         return
     bucket = url[5:].split("/", 1)[0]
     if "." in bucket:
-        conn.execute("SET s3_region='us-west-2';")
-        conn.execute("SET s3_endpoint='s3.us-west-2.amazonaws.com';")
+        m = _BUCKET_REGION_RE.match(bucket)
+        if m:
+            region = m.group(1)
+            conn.execute(f"SET s3_region='{region}';")
+            conn.execute(f"SET s3_endpoint='s3.{region}.amazonaws.com';")
         conn.execute("SET s3_url_style='path';")
 
 
@@ -86,16 +94,23 @@ def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
         return default
     if not files:
         return default
-    quadkey_lengths = {
-        len(m.group(2)) for m in (_QUADKEY_FILE_RE.match(f.rsplit("/", 1)[-1]) for f in files) if m
-    }
-    if len(quadkey_lengths) > 1:  # mixed zoom levels: not a quadkey partitioning
-        return default
+    names = [f.rsplit("/", 1)[-1] for f in files]
+    quadkeys = [m for m in (_QUADKEY_FILE_RE.match(n) for n in names) if m]
+    if quadkeys:
+        # Only treat names as quadkeys when they look like one tiling: a single
+        # prefix, a single zoom level of at least 5, and no repeated names.
+        # Otherwise names like data_2021.parquet or country=*/part_0000.parquet
+        # would be mistaken for tiles and their data silently skipped.
+        if (len({m.group(1) for m in quadkeys}) > 1
+                or len({len(m.group(2)) for m in quadkeys}) > 1
+                or len(quadkeys[0].group(2)) < 5
+                or len(set(names)) < len(names)):
+            return default
     xmin, ymin = bbox.xMinimum() - buffer_deg, bbox.yMinimum() - buffer_deg
     xmax, ymax = bbox.xMaximum() + buffer_deg, bbox.yMaximum() + buffer_deg
     selected = []
-    for f in files:
-        extent = extent_from_file_name(f.rsplit("/", 1)[-1])
+    for f, name in zip(files, names):
+        extent = extent_from_file_name(name)
         if extent is None:
             return default
         fxmin, fymin, fxmax, fymax = extent
