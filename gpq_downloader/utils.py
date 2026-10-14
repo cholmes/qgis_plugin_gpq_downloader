@@ -1,11 +1,146 @@
 import json
+import math
+import re
 
-from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject
+from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsGeometry
 from qgis.PyQt.QtCore import pyqtSignal, QObject
 import os
 import duckdb
 
 from . import logger
+
+
+class CancellableConnection:
+    """DuckDB connection whose execute() raises once the worker is killed.
+
+    conn.interrupt() only stops a query that is running; DuckDB drops an
+    interrupt that arrives between two queries. Checking the worker's flag
+    before every query makes a cancel in that gap stop the next query too.
+    """
+
+    def __init__(self, conn, worker):
+        self._conn = conn
+        self._worker = worker
+
+    def execute(self, *args, **kwargs):
+        if self._worker.killed:
+            raise duckdb.InterruptException("Cancelled")
+        return self._conn.execute(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+# Region prefix of bucket names like us-west-2.opendata.source.coop
+_BUCKET_REGION_RE = re.compile(r"^([a-z]{2}(?:-gov)?-[a-z]+-\d)\.")
+
+
+def configure_s3_for_url(conn, url):
+    """Use path-style S3 URLs for buckets whose names contain dots
+    (e.g. us-west-2.opendata.source.coop). Virtual-host style turns them into
+    multi-level subdomains that fail AWS's *.s3.amazonaws.com certificate.
+    When the bucket name starts with a region, use that region's endpoint."""
+    if not url or not url.startswith("s3://"):
+        return
+    bucket = url[5:].split("/", 1)[0]
+    if "." in bucket:
+        m = _BUCKET_REGION_RE.match(bucket)
+        if m:
+            region = m.group(1)
+            conn.execute(f"SET s3_region='{region}';")
+            conn.execute(f"SET s3_endpoint='s3.{region}.amazonaws.com';")
+        conn.execute("SET s3_url_style='path';")
+
+
+# building.002213.parquet (OpenBuildingMap): Bing/Web Mercator quadkey after a prefix.
+# A prefix and at least 4 digits are required so names like 0.parquet or part_1.parquet
+# are not mistaken for quadkeys.
+_QUADKEY_FILE_RE = re.compile(r"^(.*[._])([0-3]{4,})\.parquet$")
+# e100_n20_e105_n15.parquet (GlobalBuildingAtlas): lon/lat corners of a grid cell
+_GRID_FILE_RE = re.compile(r"^([ew])(\d{3})_([ns])(\d{2})_([ew])(\d{3})_([ns])(\d{2})\.parquet$")
+
+
+def quadkey_bounds(quadkey):
+    """Return (xmin, ymin, xmax, ymax) in WGS84 of a Bing/Web Mercator quadkey tile."""
+    zoom = len(quadkey)
+    x = y = 0
+    for i, digit in enumerate(quadkey):
+        mask = 1 << (zoom - 1 - i)
+        d = int(digit)
+        if d & 1:
+            x |= mask
+        if d & 2:
+            y |= mask
+    n = 2 ** zoom
+
+    def lat(tile_y):
+        return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * tile_y / n))))
+
+    return (x / n * 360.0 - 180.0, lat(y + 1), (x + 1) / n * 360.0 - 180.0, lat(y))
+
+
+def extent_from_file_name(name):
+    """Extent encoded in a partition file name, or None if the name has no known pattern."""
+    m = _GRID_FILE_RE.match(name)
+    if m:
+        ew1, x1, ns1, y1, ew2, x2, ns2, y2 = m.groups()
+        x1 = int(x1) * (-1 if ew1 == "w" else 1)
+        x2 = int(x2) * (-1 if ew2 == "w" else 1)
+        y1 = int(y1) * (-1 if ns1 == "s" else 1)
+        y2 = int(y2) * (-1 if ns2 == "s" else 1)
+        return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+    m = _QUADKEY_FILE_RE.match(name)
+    if m:
+        return quadkey_bounds(m.group(2))
+    return None
+
+
+def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
+    """Build the read_parquet() argument for `url`, pruned to the bbox when possible.
+
+    Some datasets are split into files whose names encode their extent: quadkeys in
+    OpenBuildingMap (building.002213.parquet) or 5-degree cells in GlobalBuildingAtlas
+    (e100_n20_e105_n15.parquet). Reading a glob over them forces DuckDB to fetch the
+    footer of every file, which takes minutes. When every file matched by the glob has
+    such a name, only the files overlapping the bbox are passed in.
+    Returns a SQL literal, or None when no file overlaps the bbox.
+    """
+    default = f"'{url}'"
+    if bbox is None or "*" not in url or not url.endswith(".parquet"):
+        return default
+    try:
+        files = [row[0] for row in conn.execute(f"SELECT file FROM glob('{url}')").fetchall()]
+    except Exception as e:
+        logger.log(f"Could not list files for partition pruning: {e}")
+        return default
+    if not files:
+        return default
+    names = [f.rsplit("/", 1)[-1] for f in files]
+    quadkeys = [m for m in (_QUADKEY_FILE_RE.match(n) for n in names) if m]
+    if quadkeys:
+        # Only treat names as quadkeys when they look like one tiling: a single
+        # prefix, a single zoom level of at least 5, and no repeated names.
+        # Otherwise names like data_2021.parquet or country=*/part_0000.parquet
+        # would be mistaken for tiles and their data silently skipped.
+        if (len({m.group(1) for m in quadkeys}) > 1
+                or len({len(m.group(2)) for m in quadkeys}) > 1
+                or len(quadkeys[0].group(2)) < 5
+                or len(set(names)) < len(names)):
+            return default
+    xmin, ymin = bbox.xMinimum() - buffer_deg, bbox.yMinimum() - buffer_deg
+    xmax, ymax = bbox.xMaximum() + buffer_deg, bbox.yMaximum() + buffer_deg
+    selected = []
+    for f, name in zip(files, names):
+        extent = extent_from_file_name(name)
+        if extent is None:
+            return default
+        fxmin, fymin, fxmax, fymax = extent
+        if fxmin <= xmax and fxmax >= xmin and fymin <= ymax and fymax >= ymin:
+            selected.append(f)
+    logger.log(f"Partition pruning by file name: reading {len(selected)} of {len(files)} files")
+    if not selected:
+        return None
+    return "[" + ", ".join(f"'{f}'" for f in sorted(selected)) + "]"
 
 
 def transform_bbox_to_4326(extent, source_crs):
@@ -40,17 +175,18 @@ class Worker(QObject):
     percent = pyqtSignal(int)
     file_size_warning = pyqtSignal(float)  # Signal for file size warnings (in MB)
 
-    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None):
+    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None):
         super().__init__()
         self.dataset_url = dataset_url
         self.extent = extent
         self.output_file = output_file
         self.iface = iface
-        #logger.log(f"Worker __init__ received validation_results: {validation_results}")
         self.validation_results = validation_results
         self.killed = False
-        self.layer_name = layer_name  # Ensure this is included if needed
-        self.size_warning_accepted = False  # Ensure this is False on initialization
+        self.layer_name = layer_name
+        self.size_warning_accepted = False
+        self.aoi_geometry = aoi_geometry
+        self.conn = None  # kept so kill() can interrupt a running query
 
     def get_bbox_info_from_metadata(self, conn):
         """Read GeoParquet metadata to find bbox column info"""
@@ -95,21 +231,6 @@ class Worker(QObject):
                     continue
         return None
 
-    def support_s3_style_urls(self, conn):
-        if "minio://" in self.dataset_url:
-            url = self.dataset_url[len("minio://"):]
-            first_slash = url.find("/")
-            if first_slash == -1:
-                return
-            
-            host = url[:first_slash]
-            path = "s3://" + url[first_slash+1:]
-            
-            conn.execute("SET s3_url_style='path';")
-            conn.execute(f"SET s3_endpoint='{host}';")
-            return path
-        return self.dataset_url
-
     def run(self):
         try:
             layer_info = f" for {self.layer_name}" if self.layer_name else ""
@@ -117,10 +238,17 @@ class Worker(QObject):
             source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
             bbox = transform_bbox_to_4326(self.extent, source_crs)
 
-            # Log validation results dictionary at the beginning of run
+            # Log the dataset URL and aoi_geometry for debugging
+            logger.log(f"Processing dataset: {self.dataset_url}")
+            if self.aoi_geometry:
+                logger.log(f"Using AOI geometry: {self.aoi_geometry.asWkt()}")
+            else:
+                logger.log("No AOI geometry provided.")
+
             #logger.log(f"Full validation_results at start of run: {self.validation_results}")
 
-            conn = duckdb.connect()
+            conn = None
+            copy_started = False  # only an export this run started is removed on cancel
             try:
                 # Install and load the spatial extension
                 self.progress.emit(f"Loading spatial extension{layer_info}...")
@@ -128,17 +256,26 @@ class Worker(QObject):
                 if self.output_file.lower().endswith('.duckdb'):
                     conn = duckdb.connect(self.output_file)  # Connect directly to output file
                 else:
-                    conn = duckdb.connect() 
+                    conn = duckdb.connect()
+                conn = CancellableConnection(conn, self)
+                self.conn = conn
 
                 conn.execute("INSTALL httpfs;")
                 conn.execute("INSTALL spatial;")
                 conn.execute("LOAD httpfs;")
                 conn.execute("LOAD spatial;")
+                configure_s3_for_url(conn, self.dataset_url)
 
-                url = self.support_s3_style_urls(conn)
+                # Verify spatial extension is loaded by testing a spatial function
+                try:
+                    conn.execute("SELECT ST_AsText(ST_GeomFromText('POINT(0 0)'))").fetchone()
+                except Exception as e:
+                    logger.log(f"Failed to verify spatial extension: {e}")
+                    # Force reload
+                    conn.execute("LOAD spatial;")
 
                 # Get schema early as we need it for both column names and bbox check
-                schema_query = f"DESCRIBE SELECT * FROM read_parquet('{url}')"
+                schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
                 schema_result = conn.execute(schema_query).fetchall()
                 self.validation_results['schema'] = schema_result
                 
@@ -168,15 +305,26 @@ class Worker(QObject):
                         #logger.log("No standard geometry column found, trying alternative detection")
                         for row in schema_result:
                             col_name = row[0].lower()
-                            if col_name == 'geom' or col_name == 'the_geom' or col_name == 'wkb_geometry':
-                                self.validation_results['geometry_column'] = row[0]  # Use original case
-                                #logger.log(f"Found likely geometry column by name: {row[0]}")
+                            col_name_orig = row[0]  # Keep original case
+                            col_type = row[1].upper()
+                            
+                            # Check for common geometry column names
+                            if col_name in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
+                                self.validation_results['geometry_column'] = col_name_orig
+                                #logger.log(f"Found likely geometry column by name: {col_name_orig}")
+                                geometry_found = True
+                                break
+                            # Also check for BLOB columns with geometry-like names
+                            elif 'BLOB' in col_type and col_name in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
+                                self.validation_results['geometry_column'] = col_name_orig
+                                logger.log(f"Found WKB BLOB geometry column: {col_name_orig}")
                                 geometry_found = True
                                 break
                 
                #logger.log(f"Final geometry column detection result: {self.validation_results['geometry_column']}")
 
                 table_name = "download_data"
+                geometry_column = self.validation_results.get('geometry_column', 'geometry')
 
                 self.progress.emit(f"Preparing query{layer_info}...")
                 select_query = "SELECT *"
@@ -196,6 +344,10 @@ class Worker(QObject):
                             columns.append(f"array_to_string({quoted_col_name}, ', ') AS {quoted_col_name}")
                         elif col_type.upper() == 'UTINYINT':
                             columns.append(f"CAST({quoted_col_name} AS INTEGER) AS {quoted_col_name}")
+                        elif 'BLOB' in col_type.upper() and col_name == geometry_column:
+                            # For BLOB geometry columns, we'll handle conversion differently
+                            # to avoid spatial function validation issues
+                            columns.append(quoted_col_name)
                         else:
                             columns.append(quoted_col_name)
 
@@ -227,6 +379,13 @@ class Worker(QObject):
                 #logger.log(f"Final bbox_column value: {bbox_column}")
                 #logger.log(f"Using geometry column: {geometry_column}")
 
+                # Check if geometry column is a BLOB that needs conversion
+                geometry_col_type = None
+                for row in schema_result:
+                    if row[0] == geometry_column:
+                        geometry_col_type = row[1].upper()
+                        break
+                
                 if bbox_column is not None:
                     #logger.log(f"Using bbox column for query: {bbox_column}")
                     where_clause = f"""
@@ -235,30 +394,105 @@ class Worker(QObject):
                     """
                 else:
                     #logger.log("Using spatial filter instead of bbox")
-                    where_clause = f"""
-                    WHERE ST_Intersects(
-                        "{geometry_column}",
-                        ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
-                                            {bbox.xMaximum()} {bbox.yMinimum()},
-                                            {bbox.xMaximum()} {bbox.yMaximum()},
-                                            {bbox.xMinimum()} {bbox.yMaximum()},
-                                            {bbox.xMinimum()} {bbox.yMinimum()}))')
-                    )
-                    """
+                    # If it's a BLOB column, we can't use spatial functions in the initial query
+                    # We'll apply the filter after converting the geometry
+                    if geometry_col_type and 'BLOB' in geometry_col_type:
+                        where_clause = ""  # No spatial filter initially for BLOB columns
+                    else:
+                        # For proper geometry columns, we can use spatial filter directly
+                        geometry_expr = f'"{geometry_column}"'
+                        where_clause = f"""
+                        WHERE ST_Intersects(
+                            {geometry_expr},
+                            ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
+                                                {bbox.xMaximum()} {bbox.yMinimum()},
+                                                {bbox.xMaximum()} {bbox.yMaximum()},
+                                                {bbox.xMinimum()} {bbox.yMaximum()},
+                                                {bbox.xMinimum()} {bbox.yMinimum()}))')
+                        )
+                        """
 
-                url = self.support_s3_style_urls(conn)
-                
+                # Additional filtering with aoi_geometry if available
+                if self.aoi_geometry is not None:
+                    # Create a temporary clone for transformation to WGS 1984 (EPSG:4326)
+                    dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+                    source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+                    
+                    # Log the source and destination CRS for debugging
+                    logger.log(f"Source CRS: {source_crs.authid()}, Destination CRS: {dest_crs.authid()}")
+                    
+                    # Clone and transform only for the SQL query
+                    transformed_geom = QgsGeometry(self.aoi_geometry)
+                    transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
+                    transformed_geom.transform(transform)
+                    
+                    # Use the transformed geometry for the SQL query
+                    aoi_wkt = transformed_geom.asWkt()
+                    where_clause += f" AND ST_Intersects(\"{geometry_column}\", ST_GeomFromText('{aoi_wkt}'))"
+                    
+                    # Log the updated where_clause for debugging
+                    logger.log(f"Applying AOI geometry filter: {aoi_wkt}")
+
+                parquet_source = parquet_source_for_bbox(conn, self.dataset_url, bbox)
+                if parquet_source is None:
+                    self.info.emit(f"No data found{layer_info} in the requested area. Check that your map extent overlaps with the data and/or expand your map extent. Skipping to next dataset if available.")
+                    self.finished.emit()
+                    return
+
                 # Base query
                 base_query = f"""
                 CREATE TABLE {table_name} AS (
-                    {select_query} FROM read_parquet('{url}')
+                    {select_query} FROM read_parquet({parquet_source})
                     {where_clause}
                 ) 
                 """
                 self.progress.emit(f"Downloading{layer_info} data...")
                 logger.log("Executing SQL query:")
                 logger.log(base_query)
+                
                 conn.execute(base_query)
+                
+                # If we have a BLOB geometry column, we need to convert it after table creation
+                # and apply spatial filter if needed
+                if (geometry_column and geometry_col_type and 'BLOB' in geometry_col_type):
+                    # Create a new table with converted geometry
+                    temp_table = f"{table_name}_converted"
+                    
+                    # Build column list for conversion
+                    convert_columns = []
+                    for col_name, col_type, _, _, _, _ in schema_result:
+                        quoted_col_name = f'"{col_name}"'
+                        if col_name == geometry_column:
+                            convert_columns.append(f"ST_GeomFromWKB({quoted_col_name}) AS {quoted_col_name}")
+                        else:
+                            convert_columns.append(quoted_col_name)
+                    
+                    # Add spatial filter if bbox is available and we didn't filter earlier
+                    spatial_filter = ""
+                    if bbox and not bbox_column:  # Only if we didn't filter with bbox column
+                        spatial_filter = f"""
+                        WHERE ST_Intersects(
+                            ST_GeomFromWKB("{geometry_column}"),
+                            ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
+                                                {bbox.xMaximum()} {bbox.yMinimum()},
+                                                {bbox.xMaximum()} {bbox.yMaximum()},
+                                                {bbox.xMinimum()} {bbox.yMaximum()},
+                                                {bbox.xMinimum()} {bbox.yMinimum()}))')
+                        )
+                        """
+                    
+                    convert_query = f"""
+                    CREATE TABLE {temp_table} AS
+                    SELECT {', '.join(convert_columns)}
+                    FROM {table_name}
+                    {spatial_filter}
+                    """
+                    
+                    conn.execute(convert_query)
+                    
+                    # Drop original and rename
+                    conn.execute(f"DROP TABLE {table_name}")
+                    conn.execute(f"ALTER TABLE {temp_table} RENAME TO {table_name}")
                 
                 # Add check for empty results
                 row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
@@ -288,14 +522,23 @@ class Worker(QObject):
                             return
 
                     # Use the geometry column from validation results for the Hilbert sorting
+                    # At this point, if we converted BLOB to geometry, it's already a GEOMETRY type
+                    # So we don't need ST_GeomFromWKB anymore
+                    geometry_expr = f'"{geometry_column}"'
+                    extent_expr = f'"{geometry_column}"'
+                    
                     copy_query = f"""
                     COPY (
-                        SELECT * FROM {table_name}
-                        ORDER BY ST_Hilbert(
-                            "{geometry_column}",
-                            (SELECT ST_Extent(ST_Extent_Agg("{geometry_column}"))::BOX_2D FROM {table_name})
+                        WITH bbox AS (
+                            SELECT ST_Extent(ST_Extent_Agg({extent_expr}))::BOX_2D AS b
+                            FROM   {table_name}
                         )
-                    ) TO '{self.output_file}'"""
+                        SELECT   t.*
+                        FROM     {table_name} AS t
+                                CROSS JOIN bbox
+                        ORDER BY ST_Hilbert(t.{geometry_expr}, bbox.b)
+                    ) TO '{self.output_file}' 
+                    """
 
                     if file_extension == "parquet":
                         format_options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 22);"
@@ -310,6 +553,7 @@ class Worker(QObject):
                     
                     logger.log("Executing SQL query:")
                     logger.log(copy_query + format_options)
+                    copy_started = True
                     conn.execute(copy_query + format_options)
 
                 
@@ -336,12 +580,25 @@ class Worker(QObject):
                     else:
                         self.error.emit(error_str)
             finally:
-                if not self.output_file.lower().endswith('.duckdb'): # Clean up temporary table
-                    try:
-                        conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-                    except:
-                        pass
-                conn.close()
+                if conn:
+                    if not self.output_file.lower().endswith('.duckdb'): # Clean up temporary table
+                        try:
+                            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+                        except:
+                            pass
+                    self.conn = None
+                    conn.close()
+                # Don't leave a half-written export behind after a cancel
+                # (.duckdb is the user's database file, so it is never removed)
+                if self.killed and copy_started and not self.output_file.lower().endswith('.duckdb'):
+                    # DuckDB writes parquet to tmp_<name> when overwriting an existing file
+                    out_dir, out_name = os.path.split(self.output_file)
+                    for path in (self.output_file, os.path.join(out_dir, "tmp_" + out_name)):
+                        try:
+                            if os.path.exists(path):
+                                os.remove(path)
+                        except OSError as e:
+                            logger.log(f"Could not remove partial output {path}: {e}")
 
         except Exception as e:
             if not self.killed:
@@ -349,6 +606,14 @@ class Worker(QObject):
 
     def kill(self):
         self.killed = True
+        # Stop the running DuckDB query; otherwise cancel waits for it to finish
+        # and the UI thread blocks in QThread.wait().
+        conn = self.conn
+        if conn is not None:
+            try:
+                conn.interrupt()
+            except Exception as e:
+                logger.log(f"Could not interrupt DuckDB query: {e}")
 
     def estimate_file_size(self, conn, table_name):
         """Estimate the output file size in MB using GeoJSON feature collection structure"""
@@ -437,6 +702,7 @@ class ValidationWorker(QObject):
         self.iface = iface
         self.extent = extent
         self.killed = False
+        self.conn = None  # kept so kill() can interrupt a running query
 
         base_path = os.path.dirname(os.path.abspath(__file__))
         presets_path = os.path.join(base_path, "data", "presets.json")
@@ -492,21 +758,6 @@ class ValidationWorker(QObject):
                     conn.execute("DROP TABLE IF EXISTS temp_json")
         return None
 
-    def support_s3_style_urls(self, conn):
-        if "minio://" in self.dataset_url:
-            url = self.dataset_url[len("minio://"):]
-            first_slash = url.find("/")
-            if first_slash == -1:
-                return
-            
-            host = url[:first_slash]
-            path = "s3://" + url[first_slash+1:]
-            
-            conn.execute("SET s3_url_style='path';")
-            conn.execute(f"SET s3_endpoint='{host}';")
-            return path
-        return self.dataset_url
-
     def run(self):
         # Initialize validation results with default values
         validation_results = {
@@ -516,14 +767,19 @@ class ValidationWorker(QObject):
             "geometry_column": "geometry"  # Default fallback
         }
         
+        conn = None
         try:
             self.progress.emit("Connecting to data source...")
-            conn = duckdb.connect()
+            conn = CancellableConnection(duckdb.connect(), self)
+            self.conn = conn
             conn.execute("INSTALL spatial;")
             conn.execute("LOAD spatial;")
             conn.execute("INSTALL httpfs;")
             conn.execute("LOAD httpfs;")
+            configure_s3_for_url(conn, self.dataset_url)
 
+            if self.killed:
+                return
             if not self.needs_validation():
                 validation_results.update({
                     "has_bbox": True,
@@ -533,13 +789,31 @@ class ValidationWorker(QObject):
                 return
 
             self.progress.emit("Checking data format...")
-            url = self.support_s3_style_urls(conn)
-
-            schema_query = f"DESCRIBE SELECT * FROM read_parquet('{url}')"
+            schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
             schema_result = conn.execute(schema_query).fetchall()
 
             # Update validation results with schema
             validation_results["schema"] = schema_result
+            if self.killed:
+                return
+
+            # Detect geometry column from schema
+            geometry_found = False
+            for row in schema_result:
+                col_name = row[0]
+                col_type = row[1].upper()
+                if 'GEOMETRY' in col_type or 'GEOGRAPHY' in col_type:
+                    validation_results['geometry_column'] = col_name
+                    geometry_found = True
+                    break
+
+            if not geometry_found:
+                for row in schema_result:
+                    col_name_lower = row[0].lower()
+                    col_name_orig = row[0]
+                    if col_name_lower in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
+                        validation_results['geometry_column'] = col_name_orig
+                        break
 
             # Check for standard bbox column first
             has_bbox = any(
@@ -554,6 +828,8 @@ class ValidationWorker(QObject):
             else:
                 # Check metadata for alternative bbox column
                 bbox_column = self.check_bbox_metadata(conn)
+                if self.killed:  # check_bbox_metadata swallows the interrupt
+                    return
                 if bbox_column:
                     validation_results["has_bbox"] = True
                     validation_results["bbox_column"] = bbox_column
@@ -566,13 +842,26 @@ class ValidationWorker(QObject):
 
         except Exception as e:
             logger.log(f"Error in ValidationWorker: {str(e)}")
-            # Emit warning before error if no bbox was found
-            if not validation_results.get("has_bbox"):
-                self.needs_bbox_warning.emit()
-            # Still emit validation results with default values in case of error
-            self.finished.emit(False, f"Error validating source: {str(e)}", validation_results)
+            if not self.killed:
+                # Emit warning before error if no bbox was found
+                if not validation_results.get("has_bbox"):
+                    self.needs_bbox_warning.emit()
+                # Still emit validation results with default values in case of error
+                self.finished.emit(False, f"Error validating source: {str(e)}", validation_results)
         finally:
-            conn.close()
+            self.conn = None
+            if conn is not None:
+                conn.close()
+
+    def kill(self):
+        """Stop validation; interrupts the running DuckDB query so cancel returns at once."""
+        self.killed = True
+        conn = self.conn
+        if conn is not None:
+            try:
+                conn.interrupt()
+            except Exception as e:
+                logger.log(f"Could not interrupt DuckDB query: {e}")
 
     def needs_validation(self):
         """Determine if the dataset needs any validation"""

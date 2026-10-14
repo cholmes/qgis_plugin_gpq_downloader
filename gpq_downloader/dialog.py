@@ -1,5 +1,7 @@
 import json
 
+import requests
+
 from qgis.PyQt.QtWidgets import (
     QMessageBox,
     QDialog,
@@ -14,11 +16,20 @@ from qgis.PyQt.QtWidgets import (
     QStackedWidget,
     QWidget,
     QCheckBox,
+    QToolButton,
+    QMenu,
+    QAction,
+    QGroupBox,
+    QTextEdit,
+    QDoubleSpinBox,
+    QGridLayout,
 )
-from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread
-from qgis.core import QgsSettings
+from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread, QPoint, QObject, QEvent
+from qgis.PyQt.QtGui import QIcon
+from qgis.core import QgsSettings, QgsRectangle, QgsGeometry, QgsApplication, QgsMapLayerType
 import os
 from .utils import ValidationWorker
+from .map_tools import PolygonMapTool, AoiHighlighter, RectangleMapTool
 
 
 class DataSourceDialog(QDialog):
@@ -31,9 +42,47 @@ class DataSourceDialog(QDialog):
         self.validation_worker = None
         self.progress_message = None
         self.requires_validation = True
+        self.extent_group = None
+        self.extent_button = None
+        self.extent_display = None
+        self.current_extent = None
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.polygon_tool = None
+        self.bbox_button = None
+        self.bbox_group = None
+        self.xmin_spin = None
+        self.ymin_spin = None
+        self.xmax_spin = None
+        self.ymax_spin = None
+        self.rectangle_tool = None
+        self._in_feature_select_mode = False
+        self._in_polygon_draw_mode = False
+        self._canvas_key_filter = None
+        # Layer the plugin made a Select Features selection on, if any
+        self._selection_layer = None
+
+        # Create the AOI highlighter
+        self.aoi_highlighter = None
+        if self.iface and self.iface.mapCanvas():
+            self.aoi_highlighter = AoiHighlighter(self.iface.mapCanvas())
+            
+            # Connect to layer changes
+            from qgis.core import QgsProject
+            QgsProject.instance().layersAdded.connect(self.on_layers_changed)
+            QgsProject.instance().layersRemoved.connect(self.on_layers_changed)
+            QgsProject.instance().layerWasAdded.connect(self.on_layers_changed)
+            QgsProject.instance().layerWillBeRemoved.connect(self.on_layers_changed)
+            
+            # Connect to layer order changes
+            if self.iface.layerTreeView():
+                self.iface.layerTreeView().model().rowsMoved.connect(self.on_layers_changed)
+                self.iface.layerTreeView().model().rowsInserted.connect(self.on_layers_changed)
+                self.iface.layerTreeView().model().rowsRemoved.connect(self.on_layers_changed)
+            
         self.setWindowTitle("GeoParquet Data Source")
         self.setMinimumWidth(500)
-        
+
 
         base_path = os.path.dirname(os.path.abspath(__file__))
         presets_path = os.path.join(base_path, "data", "presets.json")
@@ -49,19 +98,19 @@ class DataSourceDialog(QDialog):
         # Create radio buttons
         self.overture_radio = QRadioButton("Overture Maps")
         self.sourcecoop_radio = QRadioButton("Source Cooperative")
-        self.other_radio = QRadioButton("Hugging Face")
+        self.osm_radio = QRadioButton("OpenStreetMap")
         self.custom_radio = QRadioButton("Custom URL")
 
         # Add radio buttons to horizontal layout
         radio_layout.addWidget(self.overture_radio)
         radio_layout.addWidget(self.sourcecoop_radio)
-        radio_layout.addWidget(self.other_radio)
+        radio_layout.addWidget(self.osm_radio)
         radio_layout.addWidget(self.custom_radio)
 
         # Connect to save state
         self.overture_radio.released.connect(self.save_radio_button_state)
         self.sourcecoop_radio.released.connect(self.save_radio_button_state)
-        self.other_radio.released.connect(self.save_radio_button_state)
+        self.osm_radio.released.connect(self.save_radio_button_state)
         self.custom_radio.released.connect(self.save_radio_button_state)
 
         # Add radio button layout to main layout
@@ -87,61 +136,93 @@ class DataSourceDialog(QDialog):
         overture_page = QWidget()
         overture_layout = QVBoxLayout()
 
-        # Create horizontal layout for main checkboxes
+        # Create horizontal layout for main checkboxes (first row)
         checkbox_layout = QHBoxLayout()
 
         # Create a widget to hold checkboxes
         self.overture_checkboxes = {}
-        for key in self.PRESET_DATASETS['overture'].keys():
-            if key != 'base':  # Handle base separately
+        for key in self.PRESET_DATASETS["overture"].keys():
+            if key not in ["base", "divisions"]:  # Handle base and divisions separately
                 checkbox = QCheckBox(key.title())
                 self.overture_checkboxes[key] = checkbox
                 checkbox_layout.addWidget(checkbox)
 
+        # Add Divisions to the first row (before Base which has subtypes)
+        self.divisions_checkbox = QCheckBox("Divisions")
+        self.overture_checkboxes["divisions"] = self.divisions_checkbox
+        checkbox_layout.addWidget(self.divisions_checkbox)
+
         # Add the horizontal checkbox layout to main layout
         overture_layout.addLayout(checkbox_layout)
 
-        # Add base layer section
-        base_group = QWidget()
-        base_layout = QVBoxLayout()
-        base_layout.setContentsMargins(0, 10, 0, 0)  # Add some top margin
+        # Divisions subtype checkboxes (right after first row, shown when Divisions is checked)
+        self.divisions_subtype_widget = QWidget()
+        divisions_subtype_layout = QHBoxLayout()
+        divisions_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Indent subtypes
 
-        self.base_checkbox = QCheckBox("Base")
-        self.overture_checkboxes['base'] = self.base_checkbox
-        base_layout.addWidget(self.base_checkbox)
-
-        # Add base subtype checkboxes
-        self.base_subtype_widget = QWidget()
-        base_subtype_layout = QHBoxLayout()  # Horizontal layout for subtypes
-        base_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Add left margin for indentation
-
-        # Replace combo box with checkboxes
-        self.base_subtype_checkboxes = {}
-        subtype_display_names = {
-            'infrastructure': 'Infrastructure',
-            'land': 'Land',
-            'land_cover': 'Land Cover',
-            'land_use': 'Land Use',
-            'water': 'Water',
-            'bathymetry': 'Bathymetry'
+        self.divisions_subtype_checkboxes = {}
+        divisions_subtype_display_names = {
+            "division": "Division",
+            "division_area": "Division Area",
+            "division_boundary": "Division Boundary",
         }
 
-        for subtype in self.PRESET_DATASETS['overture']['base']['subtypes']:
-            checkbox = QCheckBox(subtype_display_names[subtype])
+        for subtype in self.PRESET_DATASETS["overture"]["divisions"]["subtypes"]:
+            checkbox = QCheckBox(divisions_subtype_display_names[subtype])
+            self.divisions_subtype_checkboxes[subtype] = checkbox
+            divisions_subtype_layout.addWidget(checkbox)
+
+        self.divisions_subtype_widget.setLayout(divisions_subtype_layout)
+        self.divisions_subtype_widget.hide()
+        overture_layout.addWidget(self.divisions_subtype_widget)
+
+        # Connect divisions checkbox to show/hide subtype checkboxes
+        self.divisions_checkbox.toggled.connect(
+            self.divisions_subtype_widget.setVisible
+        )
+        self.divisions_checkbox.toggled.connect(
+            lambda checked: self.adjust_dialog_width(checked, 100)
+        )
+
+        # Second row: Base checkbox
+        second_row = QHBoxLayout()
+        second_row.setContentsMargins(0, 5, 0, 0)
+
+        self.base_checkbox = QCheckBox("Base")
+        self.overture_checkboxes["base"] = self.base_checkbox
+        second_row.addWidget(self.base_checkbox)
+        second_row.addStretch()
+        overture_layout.addLayout(second_row)
+
+        # Base subtype checkboxes (shown when Base is checked)
+        self.base_subtype_widget = QWidget()
+        base_subtype_layout = QHBoxLayout()
+        base_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Indent subtypes
+
+        self.base_subtype_checkboxes = {}
+        base_subtype_display_names = {
+            "infrastructure": "Infrastructure",
+            "land": "Land",
+            "land_cover": "Land Cover",
+            "land_use": "Land Use",
+            "water": "Water",
+            "bathymetry": "Bathymetry",
+        }
+
+        for subtype in self.PRESET_DATASETS["overture"]["base"]["subtypes"]:
+            checkbox = QCheckBox(base_subtype_display_names[subtype])
             self.base_subtype_checkboxes[subtype] = checkbox
             base_subtype_layout.addWidget(checkbox)
 
         self.base_subtype_widget.setLayout(base_subtype_layout)
         self.base_subtype_widget.hide()
+        overture_layout.addWidget(self.base_subtype_widget)
 
-        base_layout.addWidget(self.base_subtype_widget)
-        base_group.setLayout(base_layout)
-        overture_layout.addWidget(base_group)
-
-        # Connect base checkbox to show/hide subtype checkboxes and resize dialog
+        # Connect base checkbox to show/hide subtype checkboxes
         self.base_checkbox.toggled.connect(self.base_subtype_widget.setVisible)
-        self.base_checkbox.toggled.connect(lambda checked: self.adjust_dialog_width(checked, 100))
-        
+        self.base_checkbox.toggled.connect(
+            lambda checked: self.adjust_dialog_width(checked, 100)
+        )
 
         overture_page.setLayout(overture_layout)
 
@@ -150,10 +231,13 @@ class DataSourceDialog(QDialog):
         sourcecoop_layout = QVBoxLayout()
         self.sourcecoop_combo = QComboBox()
         self.sourcecoop_combo.addItems(
-            [
-                dataset["display_name"]
-                for dataset in self.PRESET_DATASETS["source_cooperative"].values()
-            ]
+            sorted(
+                [
+                    dataset["display_name"]
+                    for dataset in self.PRESET_DATASETS["source_cooperative"].values()
+                ],
+                key=str.lower,
+            )
         )
         sourcecoop_layout.addWidget(self.sourcecoop_combo)
 
@@ -167,38 +251,44 @@ class DataSourceDialog(QDialog):
         self.sourcecoop_combo.currentTextChanged.connect(self.update_sourcecoop_link)
         sourcecoop_page.setLayout(sourcecoop_layout)
 
-        # Other sources page
-        other_page = QWidget()
-        other_layout = QVBoxLayout()
-        self.other_combo = QComboBox()
-        self.other_combo.addItems(
-            [
-                dataset["display_name"]
-                for dataset in self.PRESET_DATASETS["other"].values()
-            ]
+        # OpenStreetMap page
+        osm_page = QWidget()
+        osm_layout = QVBoxLayout()
+
+        # Create horizontal layout for checkboxes
+        osm_checkbox_layout = QHBoxLayout()
+
+        # Create checkboxes for OSM datasets
+        self.osm_checkboxes = {}
+        for key in self.PRESET_DATASETS["openstreetmap"].keys():
+            checkbox = QCheckBox(key.title())
+            self.osm_checkboxes[key] = checkbox
+            osm_checkbox_layout.addWidget(checkbox)
+
+        # Add the horizontal checkbox layout to main layout
+        osm_layout.addLayout(osm_checkbox_layout)
+
+        # Add link label for LayerCake info
+        self.osm_link = QLabel()
+        self.osm_link.setText(
+            'Data from <a href="https://openstreetmap.us/our-work/layercake/">LayerCake GeoParquet files</a>'
         )
-        other_layout.addWidget(self.other_combo)
+        self.osm_link.setOpenExternalLinks(True)
+        self.osm_link.setWordWrap(True)
+        osm_layout.addWidget(self.osm_link)
 
-        # Add link label for other sources
-        self.other_link = QLabel()
-        self.other_link.setOpenExternalLinks(True)
-        self.other_link.setWordWrap(True)
-        other_layout.addWidget(self.other_link)
-
-        # Connect combo box change to update link
-        self.other_combo.currentTextChanged.connect(self.update_other_link)
-        other_page.setLayout(other_layout)
-
-        # Add initial link update for other sources
-        self.update_other_link(self.other_combo.currentText())
+        osm_page.setLayout(osm_layout)
 
         # Add pages to stack
         self.stack.addWidget(custom_page)
         self.stack.addWidget(overture_page)
         self.stack.addWidget(sourcecoop_page)
-        self.stack.addWidget(other_page)
+        self.stack.addWidget(osm_page)
 
         layout.addWidget(self.stack)
+
+        # Add Area of Interest group
+        layout.addWidget(self.setup_area_of_interest())
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -214,7 +304,7 @@ class DataSourceDialog(QDialog):
         self.custom_radio.toggled.connect(lambda: self.stack.setCurrentIndex(0))
         self.overture_radio.toggled.connect(lambda: self.stack.setCurrentIndex(1))
         self.sourcecoop_radio.toggled.connect(lambda: self.stack.setCurrentIndex(2))
-        self.other_radio.toggled.connect(lambda: self.stack.setCurrentIndex(3))
+        self.osm_radio.toggled.connect(lambda: self.stack.setCurrentIndex(3))
         self.ok_button.clicked.connect(self.validate_and_accept)
         self.cancel_button.clicked.connect(self.reject)
 
@@ -229,9 +319,114 @@ class DataSourceDialog(QDialog):
             checkbox.toggled.connect(self.save_checkbox_states)
         for checkbox in self.base_subtype_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
+        for checkbox in self.divisions_subtype_checkboxes.values():
+            checkbox.toggled.connect(self.save_checkbox_states)
+        for checkbox in self.osm_checkboxes.values():
+            checkbox.toggled.connect(self.save_checkbox_states)
 
         # Ensure to call save_checkbox_states when the dialog is accepted
         self.ok_button.clicked.connect(self.save_checkbox_states)
+
+    class _CanvasKeyFilter(QObject):
+        def __init__(self, dialog):
+            super().__init__()
+            self.dialog = dialog
+
+        def eventFilter(self, obj, event):
+            if event.type() != QEvent.Type.KeyPress:
+                return False
+
+            in_select_mode = getattr(self.dialog, "_in_feature_select_mode", False)
+            in_draw_mode = getattr(self.dialog, "_in_polygon_draw_mode", False)
+
+            if not in_select_mode and not in_draw_mode:
+                return False
+
+            if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
+                if in_select_mode:
+                    self.dialog.finish_feature_selection()
+                elif in_draw_mode:
+                    self.dialog.finish_polygon_draw()
+                return True
+            elif event.key() == Qt.Key.Key_Escape:
+                if in_select_mode:
+                    self.dialog.cancel_feature_selection()
+                elif in_draw_mode:
+                    self.dialog.cancel_polygon_draw()
+                return True
+            return False
+
+    def _install_canvas_key_filter(self):
+        if self._canvas_key_filter is None and self.iface and self.iface.mapCanvas():
+            self._canvas_key_filter = self._CanvasKeyFilter(self)
+            self.iface.mapCanvas().installEventFilter(self._canvas_key_filter)
+
+    def _remove_canvas_key_filter(self):
+        if self._canvas_key_filter is not None and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().removeEventFilter(self._canvas_key_filter)
+            self._canvas_key_filter = None
+
+    def _release_selection_layer(self):
+        """Disconnect from the layer used for Select Features and clear the
+        selection the plugin made on it. Selections the user made on other
+        layers, or before opening the dialog, are left alone."""
+        layer = self._selection_layer
+        self._selection_layer = None
+        if layer is None:
+            return
+        try:
+            layer.selectionChanged.disconnect(self.on_selection_changed)
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            layer.removeSelection()
+        except RuntimeError:
+            pass  # layer was removed from the project
+
+    def finish_feature_selection(self):
+        """Confirm the current feature selection and use it as AOI"""
+        self._in_feature_select_mode = False
+        self._remove_canvas_key_filter()
+
+        if self.iface and self.iface.mapCanvas():
+            # The AOI has already been copied into dialog state; clear the
+            # transient layer selection so it does not remain highlighted.
+            self._release_selection_layer()
+
+            # Restore pan tool
+            self.iface.actionPan().trigger()
+
+        # Re-show the dialog
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def cancel_feature_selection(self):
+        """Cancel feature selection and clear any AOI"""
+        self._in_feature_select_mode = False
+        self._remove_canvas_key_filter()
+
+        if self.iface and self.iface.mapCanvas():
+            self._release_selection_layer()
+
+            self.iface.actionPan().trigger()
+
+        # Clear any AOI that was set
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = None
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+        self.update_extent_display("No area of interest selected")
+
+        # Uncheck select button
+        if self.select_button:
+            self.select_button.setChecked(False)
+
+        # Re-show the dialog
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def save_radio_button_state(self) -> None:
         if self.custom_radio.isChecked():
@@ -240,9 +435,9 @@ class DataSourceDialog(QDialog):
             button_name = self.overture_radio.text()
         elif self.sourcecoop_radio.isChecked():
             button_name = self.sourcecoop_radio.text()
-        elif self.other_radio.isChecked():
-            button_name = self.other_radio.text()
-        elif self.custom_radio.isChecked():
+        elif self.osm_radio.isChecked():
+            button_name = self.osm_radio.text()
+        else:
             button_name = self.custom_radio.text()
 
         QgsSettings().setValue(
@@ -259,46 +454,79 @@ class DataSourceDialog(QDialog):
         """Validate the input and accept the dialog if valid"""
         urls = self.get_urls()
         if not urls:
-            QMessageBox.warning(self, "Validation Error", "Please select at least one dataset")
+            QMessageBox.warning(
+                self, "Validation Error", "Please select at least one dataset"
+            )
             return
+            
+        # Check if the user selected an Area of Interest
+        # Only warn if AOI checkbox is checked but no extent is selected
+        if self.extent_group.isChecked() and not self.current_extent:
+            reply = QMessageBox.warning(
+                self,
+                "No Area of Interest Selected",
+                "You enabled 'Area of Interest' but haven't selected one. The current map canvas extent will be used instead.\n\n"
+                "Do you want to continue using the current map canvas extent?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
 
-        # For Overture datasets, we know they're valid so we can skip validation
-        if self.overture_radio.isChecked():
+        # For Overture and OSM datasets, we know they're valid so we can skip validation
+        if self.overture_radio.isChecked() or self.osm_radio.isChecked():
             self.accept()
             return
 
         # For custom URLs, do validation
         if self.custom_radio.isChecked():
             for url in urls:
-                if not (url.startswith('http://') or url.startswith('https://') or 
-                       url.startswith('s3://') or url.startswith('minio://') or url.startswith('file://') or url.startswith('hf://')):
-                    QMessageBox.warning(self, "Validation Error", 
-                        "URL must start with http://, https://, minio://, s3://, hf://, or file://")
+                if not (
+                    url.startswith("http://")
+                    or url.startswith("https://")
+                    or url.startswith("s3://")
+                    or url.startswith("file://")
+                    or url.startswith("hf://")
+                ):
+                    QMessageBox.warning(
+                        self,
+                        "Validation Error",
+                        "URL must start with http://, https://, s3://, hf://, or file://",
+                    )
                     return
 
                 # Create progress dialog for validation
-                self.progress_dialog = QProgressDialog("Validating URL...", "Cancel", 0, 0, self)
-                self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+                self.progress_dialog = QProgressDialog(
+                    "Validating URL...", "Cancel", 0, 0, self
+                )
+                self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
                 self.progress_dialog.canceled.connect(self.cancel_validation)
 
+                # Use custom extent if set, otherwise use canvas extent
+                extent = self.current_extent if self.current_extent else self.iface.mapCanvas().extent()
+
                 # Create validation worker
-                self.validation_worker = ValidationWorker(url, self.iface, self.iface.mapCanvas().extent())
+                self.validation_worker = ValidationWorker(url, self.iface, extent)
                 self.validation_thread = QThread()
                 self.validation_worker.moveToThread(self.validation_thread)
 
                 # Connect signals
                 self.validation_thread.started.connect(self.validation_worker.run)
-                self.validation_worker.progress.connect(self.progress_dialog.setLabelText)
+                self.validation_worker.progress.connect(
+                    self.progress_dialog.setLabelText
+                )
                 self.validation_worker.finished.connect(
                     lambda success, message, results: self.handle_validation_result(
                         success, message, results
                     )
                 )
-                self.validation_worker.needs_bbox_warning.connect(self.show_bbox_warning)
+                self.validation_worker.needs_bbox_warning.connect(
+                    self.show_bbox_warning
+                )
 
                 # Start validation
                 self.validation_thread.start()
-                self.progress_dialog.exec()
+                self.progress_dialog.show()
                 return
 
         # For other preset sources, we can skip validation
@@ -307,7 +535,7 @@ class DataSourceDialog(QDialog):
     def handle_validation_result(self, success, message, validation_results):
         """Handle validation result in the dialog"""
         self.cleanup_validation()
-        
+
         if success:
             self.validation_complete.emit(True, message, validation_results)
             self.accept()
@@ -318,12 +546,12 @@ class DataSourceDialog(QDialog):
     def cancel_validation(self):
         """Handle validation cancellation"""
         if self.validation_worker:
-            self.validation_worker.killed = True
+            self.validation_worker.kill()
         self.cleanup_validation()
 
     def cleanup_validation(self):
         """Clean up validation resources"""
-        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+        if hasattr(self, "progress_dialog") and self.progress_dialog:
             self.progress_dialog.close()
             self.progress_dialog = None
 
@@ -338,8 +566,38 @@ class DataSourceDialog(QDialog):
             self.validation_thread = None
 
     def closeEvent(self, event):
-        """Handle dialog closing"""
-        self.cleanup_validation()
+        """Handle dialog close event"""
+        self._in_feature_select_mode = False
+        self._remove_canvas_key_filter()
+
+        # Clean up validation if running
+        if self.validation_thread and self.validation_thread.isRunning():
+            self.cancel_validation()
+
+        # Disconnect from layer changes
+        if self.iface:
+            from qgis.core import QgsProject
+            QgsProject.instance().layersAdded.disconnect(self.on_layers_changed)
+            QgsProject.instance().layersRemoved.disconnect(self.on_layers_changed)
+            QgsProject.instance().layerWasAdded.disconnect(self.on_layers_changed)
+            QgsProject.instance().layerWillBeRemoved.disconnect(self.on_layers_changed)
+
+        # Reset the map tool to default
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+
+        # Clear any AOI highlighting
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+
+        # Clear the Select Features selection (a user's own selection is kept)
+        self._release_selection_layer()
+
+        # Restore the default map tool
+        if self.iface:
+            self.iface.actionPan().trigger()
+
         super().closeEvent(event)
 
     def get_urls(self):
@@ -348,66 +606,87 @@ class DataSourceDialog(QDialog):
         if self.custom_radio.isChecked():
             return [self.url_input.text().strip()]
         elif self.overture_radio.isChecked():
+            latest_release = requests.get(
+                "https://stac.overturemaps.org/catalog.json", timeout=30
+            ).json()["latest"]
+
             for theme, checkbox in self.overture_checkboxes.items():
                 if checkbox.isChecked():
-                    dataset = self.PRESET_DATASETS['overture'][theme]
+                    dataset = self.PRESET_DATASETS["overture"][theme]
                     if theme == "transportation":
                         type_str = "segment"
                     elif theme == "divisions":
-                        type_str = "division_area"
+                        # Handle multiple divisions subtypes
+                        for (
+                            subtype,
+                            subtype_checkbox,
+                        ) in self.divisions_subtype_checkboxes.items():
+                            if subtype_checkbox.isChecked():
+                                urls.append(
+                                    dataset["url_template"].format(
+                                        subtype=subtype, release=latest_release
+                                    )
+                                )
+                        continue  # Skip the normal URL append for divisions
                     elif theme == "addresses":
                         type_str = "*"
                     elif theme == "base":
                         # Handle multiple base subtypes
-                        for subtype, subtype_checkbox in self.base_subtype_checkboxes.items():
+                        for (
+                            subtype,
+                            subtype_checkbox,
+                        ) in self.base_subtype_checkboxes.items():
                             if subtype_checkbox.isChecked():
-                                urls.append(dataset['url_template'].format(subtype=subtype))
+                                urls.append(
+                                    dataset["url_template"].format(
+                                        subtype=subtype, release=latest_release
+                                    )
+                                )
                         continue  # Skip the normal URL append for base
                     else:
-                        type_str = theme.rstrip('s')  # remove trailing 's' for singular form
-                    urls.append(dataset['url_template'].format(subtype=type_str))
+                        type_str = theme.rstrip(
+                            "s"
+                        )  # remove trailing 's' for singular form
+                    urls.append(
+                        dataset["url_template"].format(
+                            subtype=type_str, release=latest_release
+                        )
+                    )
         elif self.sourcecoop_radio.isChecked():
             selection = self.sourcecoop_combo.currentText()
-            dataset = next((dataset for dataset in self.PRESET_DATASETS['source_cooperative'].values() 
-                           if dataset['display_name'] == selection), None)
-            return [dataset['url']] if dataset else []
-        elif self.other_radio.isChecked():
-            selection = self.other_combo.currentText()
-            dataset = next((dataset for dataset in self.PRESET_DATASETS['other'].values() 
-                           if dataset['display_name'] == selection), None)
-            return [dataset['url']] if dataset else []
+            dataset = next(
+                (
+                    dataset
+                    for dataset in self.PRESET_DATASETS["source_cooperative"].values()
+                    if dataset["display_name"] == selection
+                ),
+                None,
+            )
+            return [dataset["url"]] if dataset else []
+        elif self.osm_radio.isChecked():
+            for layer, checkbox in self.osm_checkboxes.items():
+                if checkbox.isChecked():
+                    dataset = self.PRESET_DATASETS["openstreetmap"][layer]
+                    urls.append(dataset["url"])
         return urls
 
     def update_sourcecoop_link(self, selection):
         """Update the link based on the selected dataset"""
-        if selection == "Planet EU Field Boundaries (2022)":
+        # Find the dataset by display_name
+        dataset = next(
+            (
+                dataset
+                for dataset in self.PRESET_DATASETS["source_cooperative"].values()
+                if dataset["display_name"] == selection
+            ),
+            None,
+        )
+        if dataset and "info_url" in dataset:
             self.sourcecoop_link.setText(
-                '<a href="https://source.coop/repositories/planet/eu-field-boundaries/description">View dataset info</a>'
-            )
-        elif selection == "USDA Crop Sequence Boundaries":
-            self.sourcecoop_link.setText(
-                '<a href="https://source.coop/fiboa/us-usda-cropland/description">View dataset info</a>'
-            )
-        elif selection == "California Crop Mapping":
-            self.sourcecoop_link.setText(
-                '<a href="https://source.coop/repositories/fiboa/us-ca-scm/description">View dataset info</a>'
-            )
-        elif selection == "VIDA Google/Microsoft/OSM Buildings":
-            self.sourcecoop_link.setText(
-                '<a href="https://source.coop/repositories/vida/google-microsoft-osm-open-buildings/description">View dataset info</a>'
+                f'<a href="{dataset["info_url"]}">View dataset info</a>'
             )
         else:
             self.sourcecoop_link.setText("")
-
-    def update_other_link(self, selection):
-        """Update the link based on the selected dataset"""
-        for dataset in self.PRESET_DATASETS["other"].values():
-            if dataset["display_name"] == selection:
-                self.other_link.setText(
-                    f'<a href="{dataset["info_url"]}">View dataset info</a>'
-                )
-                return
-        self.other_link.setText("")
 
     def show_bbox_warning(self):
         """Show bbox warning dialog in main thread"""
@@ -426,7 +705,11 @@ class DataSourceDialog(QDialog):
             QMessageBox.StandardButton.No,
         )
 
-        validation_results = {"has_bbox": False, "schema": None, "bbox_column": None, "geometry_column": "geometry"}
+        validation_results = {
+            "has_bbox": False,
+            "schema": None,
+            "bbox_column": None,
+        }
         if reply == QMessageBox.StandardButton.No:
             self.validation_complete.emit(
                 False, "Download cancelled by user.", validation_results
@@ -453,7 +736,7 @@ class DataSourceDialog(QDialog):
                 checkbox.isChecked(),
                 section=QgsSettings.Plugins,
             )
-        
+
         # Save base subtype checkboxes
         for key, checkbox in self.base_subtype_checkboxes.items():
             QgsSettings().setValue(
@@ -461,6 +744,29 @@ class DataSourceDialog(QDialog):
                 checkbox.isChecked(),
                 section=QgsSettings.Plugins,
             )
+
+        # Save divisions subtype checkboxes
+        for key, checkbox in self.divisions_subtype_checkboxes.items():
+            QgsSettings().setValue(
+                f"gpq_downloader/divisions_subtype_checkbox_{key}",
+                checkbox.isChecked(),
+                section=QgsSettings.Plugins,
+            )
+
+        # Save OSM checkboxes
+        for key, checkbox in self.osm_checkboxes.items():
+            QgsSettings().setValue(
+                f"gpq_downloader/osm_checkbox_{key}",
+                checkbox.isChecked(),
+                section=QgsSettings.Plugins,
+            )
+
+        # Save AOI checkbox state
+        QgsSettings().setValue(
+            "gpq_downloader/aoi_enabled",
+            self.extent_group.isChecked(),
+            section=QgsSettings.Plugins,
+        )
 
     def load_checkbox_states(self) -> None:
         # Load main checkboxes
@@ -472,7 +778,7 @@ class DataSourceDialog(QDialog):
                 section=QgsSettings.Plugins,
             )
             checkbox.setChecked(checked)
-        
+
         # Load base subtype checkboxes
         for key, checkbox in self.base_subtype_checkboxes.items():
             checked = QgsSettings().value(
@@ -482,11 +788,1115 @@ class DataSourceDialog(QDialog):
                 section=QgsSettings.Plugins,
             )
             checkbox.setChecked(checked)
-            
+
+        # Load divisions subtype checkboxes
+        for key, checkbox in self.divisions_subtype_checkboxes.items():
+            checked = QgsSettings().value(
+                f"gpq_downloader/divisions_subtype_checkbox_{key}",
+                False,
+                type=bool,
+                section=QgsSettings.Plugins,
+            )
+            checkbox.setChecked(checked)
+
+        # Load OSM checkboxes
+        for key, checkbox in self.osm_checkboxes.items():
+            checked = QgsSettings().value(
+                f"gpq_downloader/osm_checkbox_{key}",
+                False,
+                type=bool,
+                section=QgsSettings.Plugins,
+            )
+            checkbox.setChecked(checked)
+
         # Update base subtype widget visibility based on base checkbox state
         self.base_subtype_widget.setVisible(self.base_checkbox.isChecked())
+
+        # Update divisions subtype widget visibility based on divisions checkbox state
+        self.divisions_subtype_widget.setVisible(self.divisions_checkbox.isChecked())
+
+        # Load AOI checkbox state
+        aoi_enabled = QgsSettings().value(
+            "gpq_downloader/aoi_enabled",
+            False,
+            type=bool,
+            section=QgsSettings.Plugins,
+        )
+        self.extent_group.setChecked(aoi_enabled)
 
     def on_validation_finished(self, success, message, results):
         # This method should handle the validation results
         # Check how it's setting validation_results
         pass
+
+    def setup_area_of_interest(self):
+        """Create and setup the Area of Interest group with Extent button"""
+        # Create a container widget to hold the group box and extent display
+        self.aoi_container = QWidget()
+        container_layout = QVBoxLayout()
+        container_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create checkable group box - unchecked by default means use current view
+        self.extent_group = QGroupBox("Area of Interest")
+        self.extent_group.setCheckable(True)
+        self.extent_group.setChecked(False)
+        self.extent_group.toggled.connect(self.on_aoi_checkbox_toggled)
+        extent_layout = QVBoxLayout()
+        
+        # Add layer selection dropdown
+        layer_layout = QHBoxLayout()
+        layer_label = QLabel("Active Layer:")
+        self.layer_combo = QComboBox()
+        self.layer_combo.setToolTip("Select the active layer to use for extent and feature selection")
+        self.populate_layer_combo()
+        layer_layout.addWidget(layer_label)
+        layer_layout.addWidget(self.layer_combo)
+        layer_layout.addStretch()
+        extent_layout.addLayout(layer_layout)
+        
+        # Create tool button with dropdown menu
+        button_layout = QHBoxLayout()
+        
+        # Extent button
+        self.extent_button = QToolButton()
+        self.extent_button.setText(" Extent")
+        self.extent_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.extent_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.extent_button.setToolTip("Click the dropdown arrow to select an existing extent")
+        self.extent_button.setCheckable(True)  # Make button checkable
+        
+        # Use the extents.svg icon from the icons folder
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(base_path, "icons", "extents.svg")
+        self.extent_button.setIcon(QIcon(icon_path))
+        
+        # Create menu for the extent button
+        extent_menu = QMenu()
+        
+        # Add actions to menu
+        canvas_action = QAction("Use current map canvas extent", self)
+        canvas_action.triggered.connect(self.use_canvas_extent)
+        
+        layer_action = QAction("Use extent of the active layer", self)
+        layer_action.triggered.connect(self.use_active_layer_extent)
+        
+        extent_menu.addAction(canvas_action)
+        extent_menu.addAction(layer_action)
+        
+        # Set the menu to the button
+        self.extent_button.setMenu(extent_menu)
+        
+        # Connect button click to show the menu
+        self.extent_button.clicked.connect(self.show_extent_menu)
+        
+        # Draw button
+        self.draw_button = QToolButton()
+        self.draw_button.setText(" Draw")
+        self.draw_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.draw_button.setToolTip("Draw a custom polygon on the map")
+        self.draw_button.setCheckable(True)  # Make button checkable
+        # Use the extents.svg icon from the icons folder
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(base_path, "icons", "extent-draw-polygon.svg")
+        self.draw_button.setIcon(QIcon(icon_path))
+        
+        # Connect button click directly to polygon drawing
+        self.draw_button.clicked.connect(self.start_polygon_draw)
+        
+        # Select Features button
+        self.select_button = QToolButton()
+        self.select_button.setText(" Select")
+        self.select_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.select_button.setToolTip("Select features from active layer to define area of interest")
+        self.select_button.setCheckable(True)  # Make button checkable
+        # Use the selection icon or fall back to standard icon
+        try:
+            # Try to use a QGIS selection icon if available
+            selection_icon = QgsApplication.getThemeIcon("/mActionSelectRectangle.svg")
+            if not selection_icon.isNull():
+                self.select_button.setIcon(selection_icon)
+            else:
+                # If QGIS theme icon not available, use standard QStyle icon
+                from qgis.PyQt.QtWidgets import QStyle
+                self.select_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogListView))
+        except:
+            # If there's any error, use a generic icon
+            from qgis.PyQt.QtWidgets import QStyle
+            self.select_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogListView))
+        
+        # Connect select button to selection tool
+        self.select_button.clicked.connect(self.start_feature_selection)
+
+        # BBox button
+        self.bbox_button = QToolButton()
+        self.bbox_button.setText(" BBox")
+        self.bbox_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.bbox_button.setToolTip("Enter a bounding box manually or draw one on the map")
+        self.bbox_button.setCheckable(True)
+        bbox_icon = QgsApplication.getThemeIcon("/mActionAddBasicRectangle.svg")
+        if not bbox_icon.isNull():
+            self.bbox_button.setIcon(bbox_icon)
+        self.bbox_button.clicked.connect(self.start_bbox_mode)
+
+        # Clear button
+        self.clear_button = QToolButton()
+        self.clear_button.setText(" Clear")
+        self.clear_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.clear_button.setToolTip("Clear the current area of interest and selected features")
+        # Use the clear icon if available or another suitable icon
+        icon_path = os.path.join(base_path, "icons", "extent-clear.svg")
+        if os.path.exists(icon_path):
+            self.clear_button.setIcon(QIcon(icon_path))
+        else:
+            # Fallback to a standard icon if the custom one isn't available
+            from qgis.PyQt.QtWidgets import QStyle
+            self.clear_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
+        
+        # Connect clear button to clear function
+        self.clear_button.clicked.connect(self.clear_extent)
+        
+        # Add buttons to layout
+        button_layout.addWidget(self.extent_button)
+        button_layout.addWidget(self.draw_button)
+        button_layout.addWidget(self.select_button)
+        button_layout.addWidget(self.bbox_button)
+        button_layout.addWidget(self.clear_button)
+        button_layout.addStretch()
+        extent_layout.addLayout(button_layout)
+        
+        # Manual BBox panel (hidden by default)
+        self.bbox_group = QGroupBox("Bounding Box (Map CRS)")
+        bbox_layout = QVBoxLayout()
+        grid = QGridLayout()
+
+        self.xmin_spin = QDoubleSpinBox()
+        self.ymin_spin = QDoubleSpinBox()
+        self.xmax_spin = QDoubleSpinBox()
+        self.ymax_spin = QDoubleSpinBox()
+
+        for spin in (self.xmin_spin, self.ymin_spin, self.xmax_spin, self.ymax_spin):
+            spin.setDecimals(6)
+            spin.setRange(-99999999, 99999999)
+
+        grid.addWidget(QLabel("X min:"), 0, 0)
+        grid.addWidget(self.xmin_spin, 0, 1)
+        grid.addWidget(QLabel("Y min:"), 0, 2)
+        grid.addWidget(self.ymin_spin, 0, 3)
+        grid.addWidget(QLabel("X max:"), 1, 0)
+        grid.addWidget(self.xmax_spin, 1, 1)
+        grid.addWidget(QLabel("Y max:"), 1, 2)
+        grid.addWidget(self.ymax_spin, 1, 3)
+
+        bbox_layout.addLayout(grid)
+
+        bbox_btn_row = QHBoxLayout()
+        self.bbox_draw_btn = QPushButton("Draw on map")
+        self.bbox_draw_btn.clicked.connect(self.start_bbox_draw)
+        self.bbox_apply_btn = QPushButton("Apply")
+        self.bbox_apply_btn.clicked.connect(self.apply_manual_bbox)
+        bbox_btn_row.addWidget(self.bbox_draw_btn)
+        bbox_btn_row.addWidget(self.bbox_apply_btn)
+        bbox_layout.addLayout(bbox_btn_row)
+
+        self.bbox_group.setLayout(bbox_layout)
+        self.bbox_group.setVisible(False)
+        extent_layout.addWidget(self.bbox_group)
+
+        # Set the layout to the group
+        self.extent_group.setLayout(extent_layout)
+
+        # Add the group to the container
+        container_layout.addWidget(self.extent_group)
+
+        # Add text display for extent OUTSIDE the QGroupBox so it won't be grayed out
+        self.extent_display = QTextEdit()
+        self.extent_display.setReadOnly(True)
+        self.extent_display.setMaximumHeight(40)
+        self.extent_display.setPlaceholderText(
+            "Using current map view. Check the box above to define a custom area of interest."
+        )
+        container_layout.addWidget(self.extent_display)
+
+        self.aoi_container.setLayout(container_layout)
+        return self.aoi_container
+
+    def on_aoi_checkbox_toggled(self, checked):
+        """Handle the Area of Interest checkbox being toggled"""
+        if checked:
+            # Clear any previous state and show instructions
+            self.extent_display.clear()
+            self.extent_display.setPlaceholderText(
+                "No area of interest selected. Use the buttons above to select one."
+            )
+        else:
+            # Clear AOI and show current view message
+            self.clear_extent()
+            self.extent_display.clear()
+            self.extent_display.setPlaceholderText(
+                "Using current map view. Check the box above to define a custom area of interest."
+            )
+
+    def start_bbox_mode(self):
+        """Show the manual bbox entry panel"""
+        # Clear any previous AOI first
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = None
+        self.extent_display.clear()
+        self.extent_display.setPlaceholderText("Enter bounding box coordinates or draw on map...")
+
+        if self.bbox_group:
+            self.bbox_group.setVisible(True)
+
+        # Update button states
+        self.extent_button.setChecked(False)
+        self.draw_button.setChecked(False)
+        self.select_button.setChecked(False)
+        self.bbox_button.setChecked(True)
+
+    def start_bbox_draw(self):
+        """Activate the rectangle map tool to draw a bbox on the map"""
+        if not self.iface or not self.iface.mapCanvas():
+            return
+
+        self.rectangle_tool = RectangleMapTool(self.iface.mapCanvas())
+        self.rectangle_tool.rectangleSelected.connect(self.on_bbox_drawn)
+        self.rectangle_tool.deactivated.connect(self.handle_bbox_tool_deactivated)
+        self.iface.mapCanvas().setMapTool(self.rectangle_tool)
+
+        # Hide dialog while drawing
+        self.hide()
+
+        self.iface.messageBar().pushMessage(
+            "Draw BBox",
+            "Click and drag to draw a bounding box. Release to confirm.",
+            level=0,
+            duration=5,
+        )
+
+    def on_bbox_drawn(self, rect):
+        """Handle a drawn rectangle from the map tool"""
+        if self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.rectangle_tool)
+            self.iface.actionPan().trigger()
+
+        # Populate spin boxes
+        self.xmin_spin.setValue(rect.xMinimum())
+        self.ymin_spin.setValue(rect.yMinimum())
+        self.xmax_spin.setValue(rect.xMaximum())
+        self.ymax_spin.setValue(rect.yMaximum())
+
+        # Apply it immediately
+        self.apply_manual_bbox()
+
+        # Re-show dialog
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def handle_bbox_tool_deactivated(self):
+        """Re-show the dialog if the bbox tool is deactivated without drawing"""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def apply_manual_bbox(self):
+        """Apply manually entered bounding box values"""
+        xmin = self.xmin_spin.value()
+        ymin = self.ymin_spin.value()
+        xmax = self.xmax_spin.value()
+        ymax = self.ymax_spin.value()
+
+        if xmin >= xmax or ymin >= ymax:
+            QMessageBox.warning(
+                self,
+                "Invalid BBox",
+                "Min values must be less than max values.",
+            )
+            return
+
+        rect = QgsRectangle(xmin, ymin, xmax, ymax)
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = rect
+        self.update_extent_display("Manual BBox")
+
+        if self.aoi_highlighter:
+            self.aoi_highlighter.highlight_aoi(extent=rect)
+
+        # Update button states
+        self.extent_button.setChecked(False)
+        self.draw_button.setChecked(False)
+        self.select_button.setChecked(False)
+
+    def use_canvas_extent(self):
+        """Use the current map canvas extent as Area of Interest"""
+        if self.iface and self.iface.mapCanvas():
+            # Reset the polygon tool if active
+            if self.polygon_tool:
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.polygon_tool = None
+
+            # Hide bbox panel
+            if self.bbox_group:
+                self.bbox_group.setVisible(False)
+
+            # Disconnect from any active layer selection signals
+            layer = self.iface.activeLayer()
+            if layer and layer.type() == QgsMapLayerType.VectorLayer:
+                try:
+                    layer.selectionChanged.disconnect(self.on_selection_changed)
+                except:
+                    pass
+                
+            # Clear any previous AOI visualization first
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+
+            # Clear any previously drawn geometry
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
+            self.current_extent = self.iface.mapCanvas().extent()
+            self.update_extent_display("Current Map Canvas")
+
+            # Update the AOI highlighting
+            if self.aoi_highlighter:
+                self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
+                
+            # Update button states
+            self.extent_button.setChecked(True)
+            self.draw_button.setChecked(False)
+            self.select_button.setChecked(False)
+            self.bbox_button.setChecked(False)
+
+    def use_active_layer_extent(self):
+        """Use the active layer extent as Area of Interest"""
+        if self.bbox_group:
+            self.bbox_group.setVisible(False)
+
+        layer = self.iface.activeLayer() if self.iface else None
+        if not layer or layer.type() != QgsMapLayerType.VectorLayer:
+            QMessageBox.warning(
+                self,
+                "Vector layer required",
+                "Use Layer Extent requires an active vector layer.\n\n"
+                "Tip: Click a vector layer in the Layers panel, "
+                "or use Draw/BBox/current map viewpoint AOI instead."
+            )
+            self.extent_button.setChecked(False)
+            return
+
+        if self.iface and self.iface.activeLayer():
+            # Reset the polygon tool if active
+            if self.polygon_tool and self.iface.mapCanvas():
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.polygon_tool = None
+
+            # Disconnect from any active layer selection signals
+            try:
+                self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
+            except:
+                pass
+
+            # Clear any previous AOI visualization first
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+
+            # Clear any previously drawn geometry
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
+            self.current_extent = None
+            
+            # Get the active layer and its extent
+            active_layer = self.iface.activeLayer()
+            layer_extent = active_layer.extent()
+            
+            # Get the layer's CRS and the map canvas CRS
+            layer_crs = active_layer.crs()
+            map_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+            
+            # Check if the layer CRS is different from the map canvas CRS
+            if layer_crs.authid() != map_crs.authid():
+                # Create a coordinate transform from layer CRS to map canvas CRS
+                from qgis.core import QgsCoordinateTransform, QgsProject
+                transform = QgsCoordinateTransform(
+                    layer_crs,
+                    map_crs,
+                    QgsProject.instance()
+                )
+                
+                # Transform the extent to the map canvas CRS
+                layer_extent = transform.transformBoundingBox(layer_extent)
+                
+                # Store the transformed extent
+                self.current_extent = layer_extent
+                
+                # Also store the geometry with its CRS for later use
+                extent_geom = QgsGeometry.fromRect(layer_extent)
+                self.aoi_geometry = extent_geom
+                self.aoi_geometry_crs = map_crs
+            else:
+                # No transformation needed, use the layer extent directly
+                self.current_extent = layer_extent
+            
+            # Update the display with the layer name
+            layer_name = active_layer.name()
+            self.update_extent_display(f"Layer: {layer_name}")
+            
+            # Ensure the AOI highlighter is properly initialized
+            if not self.aoi_highlighter and self.iface.mapCanvas():
+                from .map_tools import AoiHighlighter
+                self.aoi_highlighter = AoiHighlighter(self.iface.mapCanvas())
+                
+            # Update the AOI highlighting
+            if self.aoi_highlighter:
+                self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
+                
+            # Update button states
+            self.extent_button.setChecked(True)
+            self.draw_button.setChecked(False)
+            self.select_button.setChecked(False)
+            self.bbox_button.setChecked(False)
+
+    def update_extent_display(self, source):
+        """Update the extent display with the current extent information"""
+        if self.current_extent:
+            # Show either drawn geometry WKT or extent WKT
+            wkt = ""
+            if source == "Drawn Polygon" and self.aoi_geometry:
+                # Ensure we're getting a standard WKT format
+                from qgis.core import QgsWkbTypes
+                geom = QgsGeometry(self.aoi_geometry)
+                if geom.wkbType() == QgsWkbTypes.MultiSurface:
+                    geom = QgsGeometry.fromMultiPolygonXY(geom.asMultiPolygon())
+                elif geom.wkbType() == QgsWkbTypes.CurvePolygon:
+                    geom = QgsGeometry.fromPolygonXY(geom.asPolygon())
+                wkt = geom.asWkt()
+            else:
+                extent_geom = QgsGeometry.fromRect(self.current_extent)
+                wkt = extent_geom.asWkt()
+            
+            extent_str = (f"Source: {source}\n"
+                         f"WKT: {wkt}")
+            self.extent_display.setText(extent_str)
+        else:
+            self.extent_display.clear()
+            self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
+
+    def get_current_extent(self):
+        """Returns the current selected extent or None if not set"""
+        return self.current_extent
+    
+    def accept(self):
+        """Override accept to store the current extent"""
+        # Store the extent to be used by the plugin
+        if hasattr(self, 'current_extent') and self.current_extent:
+            QgsSettings().setValue(
+                "gpq_downloader/last_used_extent",
+                self.current_extent.toString(),
+                section=QgsSettings.Plugins,
+            )
+
+        # Reset the map tool to default when accepting dialog
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+
+        # Clear any AOI highlighting when dialog is accepted
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+
+        # Clear the Select Features selection (a user's own selection is kept)
+        self._release_selection_layer()
+
+        super().accept()
+
+    def reject(self):
+        """Override reject to clean up resources"""
+        # Reset the map tool to default when rejecting dialog
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+
+        # Clear any AOI highlighting when dialog is rejected
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+
+        # Clear the Select Features selection (a user's own selection is kept)
+        self._release_selection_layer()
+
+        # Restore the default map tool
+        if self.iface:
+            self.iface.actionPan().trigger()
+
+        super().reject()
+
+    def load_last_extent(self):
+        """Load the last used extent from QgsSettings if available"""
+        last_extent_str = QgsSettings().value("gpq_downloader/last_used_extent", "", type=str)
+        if last_extent_str:
+            try:
+                self.current_extent = QgsRectangle.fromString(last_extent_str)
+                if self.current_extent and self.current_extent.isNull() == False:
+                    self.update_extent_display("Last Used Extent")
+                    
+                    # Update the AOI highlighting
+                    if self.aoi_highlighter:
+                        self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
+            except Exception:
+                self.current_extent = None
+
+    def on_map_extent_changed(self):
+        """Handle map canvas extent changes"""
+        if self.iface and self.iface.mapCanvas():
+            self.current_extent = self.iface.mapCanvas().extent()
+            self.update_extent_display("Map Canvas")
+            
+            # Update the AOI highlighting (only if we're using the canvas extent)
+            if self.aoi_geometry is None and self.aoi_highlighter:
+                self.aoi_highlighter.highlight_aoi(extent=self.current_extent)
+
+    def start_polygon_draw(self):
+        """Start drawing a polygon on the map canvas"""
+        # Clear any previous AOI first
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = None
+        self.extent_display.clear()
+        self.extent_display.setPlaceholderText("Draw a polygon on the map...")
+
+        if self.bbox_group:
+            self.bbox_group.setVisible(False)
+
+        if self.iface and self.iface.mapCanvas():
+            # Clean up existing polygon tool if there is one
+            if self.polygon_tool:
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.polygon_tool = None
+
+            # Disconnect from any active layer selection signals
+            layer = self.iface.activeLayer()
+            if layer and layer.type() == QgsMapLayerType.VectorLayer:
+                try:
+                    layer.selectionChanged.disconnect(self.on_selection_changed)
+                except:
+                    pass
+
+                # Clear any selected features in the active layer
+                layer.removeSelection()
+
+            # Create and set the polygon map tool
+            self.polygon_tool = PolygonMapTool(self.iface.mapCanvas())
+            self.iface.mapCanvas().setMapTool(self.polygon_tool)
+
+            # Connect the signal
+            self.polygon_tool.polygonSelected.connect(self.on_polygon_drawn)
+
+            # Connect the deactivated signal to clean up the tool when another tool is selected
+            self.polygon_tool.deactivated.connect(self.handle_polygon_tool_deactivated)
+
+            # Enter polygon draw mode and install key filter
+            self._in_polygon_draw_mode = True
+            self._install_canvas_key_filter()
+
+            # Hide dialog while drawing
+            self.hide()
+
+            # Show instructions
+            self.iface.messageBar().pushMessage(
+                "Draw Polygon",
+                "Click to add vertices. Press Enter or right-click to finish (Esc to cancel).",
+                level=0,
+                duration=10
+            )
+
+            # Update button states
+            self.extent_button.setChecked(False)
+            self.draw_button.setChecked(True)
+            self.select_button.setChecked(False)
+            self.bbox_button.setChecked(False)
+
+    def handle_polygon_tool_deactivated(self):
+        """Handle the polygon tool being deactivated by another tool"""
+        self._in_polygon_draw_mode = False
+        self._remove_canvas_key_filter()
+        self.polygon_tool = None
+
+    def on_polygon_drawn(self, geometry):
+        """Handle when a polygon is drawn"""
+        # Store the full geometry
+        self.aoi_geometry = QgsGeometry(geometry)
+        
+        # Get the current map CRS
+        map_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+        
+        # Store the CRS with the geometry for later reprojection if needed
+        self.aoi_geometry_crs = map_crs
+        
+        # Convert polygon geometry to extent for display
+        self.current_extent = geometry.boundingBox()
+        
+        # Update the display
+        self.update_extent_display("Drawn Polygon")
+        
+        # Update the AOI highlighting
+        if self.aoi_highlighter:
+            self.aoi_highlighter.highlight_aoi(geometry=self.aoi_geometry)
+            
+        # Reset the map tool after drawing is complete (but keep the tool reference)
+        if self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+
+        # Clear draw mode and key filter
+        self._in_polygon_draw_mode = False
+        self._remove_canvas_key_filter()
+
+        # Update button states - keep Draw checked to show current AOI source
+        self.extent_button.setChecked(False)
+        self.draw_button.setChecked(True)
+        self.select_button.setChecked(False)
+        self.bbox_button.setChecked(False)
+
+        # Re-show the dialog
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def finish_polygon_draw(self):
+        """Finish polygon drawing when Enter is pressed"""
+        if self.polygon_tool:
+            if self.polygon_tool.finishPolygon():
+                # The polygonSelected signal will be emitted and on_polygon_drawn will be called
+                pass
+            else:
+                # Not enough vertices yet, show message
+                if self.iface:
+                    self.iface.messageBar().pushMessage(
+                        "Draw Polygon",
+                        "Need at least 3 points to create a polygon. Keep clicking to add more points.",
+                        level=1,  # Warning level
+                        duration=3
+                    )
+
+    def cancel_polygon_draw(self):
+        """Cancel polygon drawing when Escape is pressed"""
+        self._in_polygon_draw_mode = False
+        self._remove_canvas_key_filter()
+
+        if self.polygon_tool:
+            self.polygon_tool.cancelPolygon()
+            if self.iface and self.iface.mapCanvas():
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.iface.actionPan().trigger()
+            self.polygon_tool = None
+
+        # Re-show the dialog
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+        # Uncheck the draw button
+        self.draw_button.setChecked(False)
+
+    def get_reprojected_geometry(self, target_crs):
+        """Return the geometry reprojected to the target CRS if needed"""
+        if not self.aoi_geometry:
+            return None
+            
+        # If target CRS is not specified, return the original geometry
+        if not target_crs:
+            return self.aoi_geometry
+            
+        # Check if we need to reproject
+        if self.aoi_geometry_crs.authid() != target_crs.authid():
+            from qgis.core import QgsCoordinateTransform, QgsProject
+            
+            # Create a coordinate transform
+            transform = QgsCoordinateTransform(
+                self.aoi_geometry_crs,
+                target_crs,
+                QgsProject.instance()
+            )
+            
+            # Create a copy of the geometry and transform it
+            reprojected_geom = QgsGeometry(self.aoi_geometry)
+            reprojected_geom.transform(transform)
+            
+            # Ensure the geometry is in a standard format
+            from qgis.core import QgsWkbTypes
+            if reprojected_geom.wkbType() == QgsWkbTypes.MultiSurface:
+                reprojected_geom = QgsGeometry.fromMultiPolygonXY(reprojected_geom.asMultiPolygon())
+            elif reprojected_geom.wkbType() == QgsWkbTypes.CurvePolygon:
+                reprojected_geom = QgsGeometry.fromPolygonXY(reprojected_geom.asPolygon())
+            
+            return reprojected_geom
+        
+        # No reprojection needed, but still ensure the geometry is in a standard format
+        from qgis.core import QgsWkbTypes
+        geom = QgsGeometry(self.aoi_geometry)
+        if geom.wkbType() == QgsWkbTypes.MultiSurface:
+            geom = QgsGeometry.fromMultiPolygonXY(geom.asMultiPolygon())
+        elif geom.wkbType() == QgsWkbTypes.CurvePolygon:
+            geom = QgsGeometry.fromPolygonXY(geom.asPolygon())
+        
+        return geom
+
+    def clear_extent(self):
+        """Clear the current area of interest"""
+        self._in_feature_select_mode = False
+        self._in_polygon_draw_mode = False
+        self._remove_canvas_key_filter()
+
+        # Reset the polygon tool if active
+        if self.polygon_tool and self.iface and self.iface.mapCanvas():
+            self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+            self.polygon_tool = None
+
+        # Hide bbox panel
+        if self.bbox_group:
+            self.bbox_group.setVisible(False)
+
+        # Clear any previously drawn geometry
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = None
+
+        # Clear the extent display
+        self.extent_display.clear()
+        self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
+        
+        # Clear the AOI highlighting
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+            
+        # Clear selected features in all layers and disconnect signals
+        if self.iface:
+            # Get all layers from the project
+            from qgis.core import QgsProject
+            layers = QgsProject.instance().mapLayers().values()
+            
+            for layer in layers:
+                # Only process vector layers
+                if layer.type() == 0:  # Vector layer
+                    # Disconnect from the selection changed signal first to avoid loops
+                    try:
+                        layer.selectionChanged.disconnect(self.on_selection_changed)
+                    except:
+                        pass  # If it wasn't connected, just continue
+                        
+                    # Clear the selection
+                    layer.removeSelection()
+            
+            # If there's an active layer, connect to its selection changed signal
+            active_layer = self.iface.activeLayer()
+            if active_layer and active_layer.type() == 0:  # Vector layer
+                try:
+                    active_layer.selectionChanged.disconnect(self.on_selection_changed)
+                except:
+                    pass  # Make sure it's not already connected
+                
+            # Deactivate feature selection mode
+            if self.iface.mapCanvas():
+                # Get the current map tool
+                current_tool = self.iface.mapCanvas().mapTool()
+                
+                # Check if the current tool is a selection tool
+                if current_tool and hasattr(current_tool, 'name') and 'select' in current_tool.name().lower():
+                    # Switch back to the pan tool
+                    self.iface.actionPan().trigger()
+                
+                # Explicitly deactivate the select rectangle tool
+                self.iface.actionSelectRectangle().trigger()
+                
+                # Ensure we're using the pan tool
+                self.iface.actionPan().trigger()
+            
+            # Refresh the canvas
+            self.iface.mapCanvas().refresh()
+            
+        # Update button states - uncheck all buttons
+        self.extent_button.setChecked(False)
+        self.draw_button.setChecked(False)
+        self.select_button.setChecked(False)
+        self.bbox_button.setChecked(False)
+
+    def start_feature_selection(self):
+        """Start selecting features from the active layer"""
+        # Clear any previous AOI first (before validation)
+        if self.aoi_highlighter:
+            self.aoi_highlighter.clear()
+        self.aoi_geometry = None
+        self.aoi_geometry_crs = None
+        self.current_extent = None
+        self.extent_display.clear()
+        self.extent_display.setPlaceholderText("No features selected. Select features to define the area of interest.")
+
+        if self.bbox_group:
+            self.bbox_group.setVisible(False)
+
+        layer = self.iface.activeLayer() if self.iface else None
+        if not layer or layer.type() != QgsMapLayerType.VectorLayer:
+            QMessageBox.warning(
+                self,
+                "Vector layer required",
+                "Select Features requires an active vector layer.\n\n"
+                "Tip: Click a vector layer in the Layers panel (or create a temporary AOI layer), "
+                "or use Draw/BBox/current map viewpoint AOI instead."
+            )
+            # Reset UI state so it doesn't look active
+            self.select_button.setChecked(False)
+            return
+
+        if self.iface and self.iface.mapCanvas():
+            # Clean up existing polygon tool if there is one
+            if self.polygon_tool:
+                self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
+                self.polygon_tool = None
+
+            # Clear any previous selection on the layer
+            layer.removeSelection()
+
+            # Disconnect any existing selection signal first to avoid multiple connections
+            try:
+                layer.selectionChanged.disconnect(self.on_selection_changed)
+            except:
+                pass
+
+            # Connect to the selection changed signal
+            layer.selectionChanged.connect(self.on_selection_changed)
+            self._selection_layer = layer
+
+            # Enter feature select mode
+            self._in_feature_select_mode = True
+            self._install_canvas_key_filter()
+
+            # Use QGIS's built-in selection tool
+            self.iface.actionSelectRectangle().trigger()
+
+            # Hide dialog while selecting
+            self.hide()
+
+            # Show instructions
+            self.iface.messageBar().pushMessage(
+                "Select Features",
+                "Select one or more features (Shift=add). Press Enter when done (Esc to cancel).",
+                level=0,  # Info level
+                duration=10
+            )
+
+            # Update button states
+            self.extent_button.setChecked(False)
+            self.draw_button.setChecked(False)
+            self.select_button.setChecked(True)
+            self.bbox_button.setChecked(False)
+
+    def on_selection_changed(self):
+        """Handle when the selection in the active layer changes"""
+        active_layer = self.iface.activeLayer()
+        if not active_layer:
+            return
+            
+        # If no features are selected, clear the highlighting but keep selection mode active
+        if active_layer.selectedFeatureCount() == 0:
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
+            self.current_extent = None
+            
+            # Clear the extent display
+            if hasattr(self, 'extent_display') and self.extent_display is not None:
+                self.extent_display.clear()
+                self.extent_display.setPlaceholderText("No features selected. Select features to define the area of interest.")
+            return
+            
+        # Get the layer's CRS and the map canvas CRS
+        layer_crs = active_layer.crs()
+        map_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+        
+        # Get the combined geometry of all selected features
+        selected_features = active_layer.selectedFeatures()
+        combined_geometry = None
+        
+        for feature in selected_features:
+            geom = feature.geometry()
+            if geom and not geom.isEmpty():
+                # Check if we need to transform the geometry
+                if layer_crs.authid() != map_crs.authid():
+                    # Create a coordinate transform from layer CRS to map canvas CRS
+                    from qgis.core import QgsCoordinateTransform, QgsProject
+                    transform = QgsCoordinateTransform(
+                        layer_crs,
+                        map_crs,
+                        QgsProject.instance()
+                    )
+                    
+                    # Create a copy of the geometry and transform it
+                    transformed_geom = QgsGeometry(geom)
+                    transformed_geom.transform(transform)
+                    geom = transformed_geom
+                
+                if combined_geometry is None:
+                    # Use copy constructor instead of clone method
+                    combined_geometry = QgsGeometry(geom)
+                else:
+                    combined_geometry = combined_geometry.combine(geom)
+        
+        if combined_geometry:
+            # Convert MultiSurface to MultiPolygon if needed
+            from qgis.core import QgsWkbTypes
+            if combined_geometry.wkbType() == QgsWkbTypes.MultiSurface:
+                # Force convert to a standard format (MultiPolygon)
+                combined_geometry = QgsGeometry.fromMultiPolygonXY(combined_geometry.asMultiPolygon())
+            elif combined_geometry.wkbType() == QgsWkbTypes.CurvePolygon:
+                # Convert CurvePolygon to standard Polygon
+                combined_geometry = QgsGeometry.fromPolygonXY(combined_geometry.asPolygon())
+            
+            # Store the geometry
+            self.aoi_geometry = combined_geometry
+            
+            # Store the CRS with the geometry for later reprojection if needed
+            self.aoi_geometry_crs = map_crs
+            
+            # Convert combined geometry to extent
+            self.current_extent = combined_geometry.boundingBox()
+            
+            # Update the display
+            self.update_extent_display("Selected Features")
+            
+            # Ensure the AOI highlighter exists
+            if not self.aoi_highlighter and self.iface.mapCanvas():
+                from .map_tools import AoiHighlighter
+                self.aoi_highlighter = AoiHighlighter(self.iface.mapCanvas())
+                
+            # Update the AOI highlighting - first clear to avoid stacking highlighters
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+                self.aoi_highlighter.highlight_aoi(geometry=self.aoi_geometry)
+
+    def show_extent_menu(self):
+        """Show the extent menu"""
+        # Get the menu from the extent button
+        menu = self.extent_button.menu()
+        if menu:
+            # Get the button's position in global coordinates
+            button_pos = self.extent_button.mapToGlobal(QPoint(0, 20))
+            # Show the menu below the button
+            menu.exec_(button_pos)
+
+    def populate_layer_combo(self):
+        """Populate the layer combo box with available layers"""
+        if not self.iface:
+            return
+            
+        # Store the current selection
+        current_layer = None
+        if self.layer_combo.currentIndex() >= 0:
+            current_layer = self.layer_combo.itemData(self.layer_combo.currentIndex())
+            
+        # Clear existing items
+        self.layer_combo.clear()
+        
+        # Get all layers from the project in the correct order
+        from qgis.core import QgsProject
+        root = QgsProject.instance().layerTreeRoot()
+        
+        # Get all layers in the order they appear in the layer tree
+        layers = []
+        for layer in root.findLayers():
+            if layer.layer() and layer.layer().type() == 0:  # Vector layer
+                layers.append(layer.layer())
+        
+        # Add layers to combo box in the same order as the layer tree
+        for layer in layers:
+            self.layer_combo.addItem(layer.name(), layer)
+            
+        # Connect to layer changed signal (disconnect first to avoid multiple connections)
+        try:
+            self.layer_combo.currentIndexChanged.disconnect(self.on_layer_changed)
+        except TypeError:
+            pass
+        self.layer_combo.currentIndexChanged.connect(self.on_layer_changed)
+        
+        # Restore the previous selection or select the active layer
+        if current_layer and current_layer in layers:
+            index = self.layer_combo.findData(current_layer)
+            if index >= 0:
+                self.layer_combo.setCurrentIndex(index)
+        else:
+            active_layer = self.iface.activeLayer()
+            if active_layer and active_layer in layers:
+                index = self.layer_combo.findData(active_layer)
+                if index >= 0:
+                    self.layer_combo.setCurrentIndex(index)
+
+    def on_layer_changed(self, index):
+        """Handle layer selection change"""
+        if not self.iface or index < 0:
+            return
+            
+        # Get selected layer
+        layer = self.layer_combo.itemData(index)
+        if layer:
+            # Store whether we were in selection mode
+            was_in_selection_mode = False
+            if hasattr(self, 'select_button') and self.select_button is not None:
+                was_in_selection_mode = self.select_button.isChecked()
+            
+            # Clear the AOI highlighting to prevent "stuck" highlights
+            if self.aoi_highlighter:
+                self.aoi_highlighter.clear()
+            
+            # Reset our tracking variables to ensure a clean state
+            self.aoi_geometry = None
+            self.aoi_geometry_crs = None
+            
+            # Clear selection from previous layer if any and disconnect signals
+            prev_layer = self.iface.activeLayer()
+            if prev_layer and prev_layer.type() == QgsMapLayerType.VectorLayer:
+                try:
+                    prev_layer.selectionChanged.disconnect(self.on_selection_changed)
+                except:
+                    pass
+                prev_layer.removeSelection()
+            
+            # Set as active layer
+            self.iface.setActiveLayer(layer)
+            
+            # Uncheck all AOI buttons if they exist and are not None
+            if hasattr(self, 'extent_button') and self.extent_button is not None:
+                self.extent_button.setChecked(False)
+            if hasattr(self, 'draw_button') and self.draw_button is not None:
+                self.draw_button.setChecked(False)
+            if hasattr(self, 'select_button') and self.select_button is not None:
+                self.select_button.setChecked(False)
+            
+            # Update the extent display to show no selection
+            if hasattr(self, 'extent_display') and self.extent_display is not None:
+                self.extent_display.clear()
+                self.extent_display.setPlaceholderText("No area of interest selected. Use the buttons above to select one.")
+            
+            # If we were in selection mode, restart it for the new layer
+            if was_in_selection_mode and hasattr(self, 'select_button') and self.select_button is not None:
+                self.start_feature_selection()
+
+    def on_layers_changed(self):
+        """Handle when layers are added or removed from the project"""
+        if hasattr(self, 'layer_combo'):
+            # Store current active layer
+            current_active = self.iface.activeLayer()
+            
+            # Update the combo box
+            self.populate_layer_combo()
+            
+            # If we had an active layer before, try to restore it
+            if current_active:
+                index = self.layer_combo.findData(current_active)
+                if index >= 0:
+                    self.layer_combo.setCurrentIndex(index)
+                    # Ensure the layer is still active
+                    self.iface.setActiveLayer(current_active)

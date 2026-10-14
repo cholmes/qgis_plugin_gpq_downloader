@@ -2,8 +2,43 @@ import pytest
 from unittest.mock import MagicMock, patch
 from qgis.PyQt.QtWidgets import QDialog
 from qgis.PyQt.QtCore import Qt
+from qgis.core import QgsCoordinateReferenceSystem, QgsFeature, QgsGeometry, QgsVectorLayer
+from qgis.gui import QgsMapCanvas
 
 from gpq_downloader.dialog import DataSourceDialog
+
+@pytest.fixture
+def mock_iface():
+    """Create a mock iface with all required attributes"""
+    iface = MagicMock()
+    
+    # Mock mapCanvas
+    map_canvas = MagicMock()
+    iface.mapCanvas.return_value = map_canvas
+    
+    # Mock layerTreeView
+    layer_tree_view = MagicMock()
+    layer_tree_model = MagicMock()
+    layer_tree_view.model.return_value = layer_tree_model
+    iface.layerTreeView.return_value = layer_tree_view
+    
+    # Mock activeLayer
+    active_layer = MagicMock()
+    iface.activeLayer.return_value = active_layer
+    
+    # Mock messageBar
+    message_bar = MagicMock()
+    iface.messageBar.return_value = message_bar
+    
+    # Mock actionPan
+    pan_action = MagicMock()
+    iface.actionPan.return_value = pan_action
+    
+    # Mock actionSelectRectangle
+    select_action = MagicMock()
+    iface.actionSelectRectangle.return_value = select_action
+    
+    return iface
 
 def test_dialog_initialization(qgs_app, mock_iface):
     """Test dialog initialization"""
@@ -21,17 +56,165 @@ def test_dialog_radio_buttons(qgs_app, mock_iface):
     # Check state after explicitly setting
     assert dialog.overture_radio.isChecked()
     assert not dialog.sourcecoop_radio.isChecked()
-    assert not dialog.other_radio.isChecked()
-    
+    assert not dialog.osm_radio.isChecked()
+
     # Test switching radio buttons
     dialog.sourcecoop_radio.setChecked(True)
     assert not dialog.overture_radio.isChecked()
     assert dialog.sourcecoop_radio.isChecked()
-    assert not dialog.other_radio.isChecked()
+    assert not dialog.osm_radio.isChecked()
 
 @patch('gpq_downloader.dialog.QgsSettings')
 def test_dialog_settings_saved(mock_settings, qgs_app, mock_iface):
     """Test that settings are saved"""
     dialog = DataSourceDialog(None, mock_iface)
     dialog.save_checkbox_states()
-    mock_settings.assert_called() 
+    mock_settings.assert_called()
+
+
+def test_dialog_aoi_checkbox_default_unchecked(qgs_app, mock_iface):
+    """Test that AOI checkbox is unchecked by default"""
+    dialog = DataSourceDialog(None, mock_iface)
+    assert not dialog.extent_group.isChecked()
+
+
+def test_dialog_aoi_checkbox_toggle(qgs_app, mock_iface):
+    """Test AOI checkbox toggle functionality"""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    # Initially unchecked
+    assert not dialog.extent_group.isChecked()
+
+    # Check it
+    dialog.extent_group.setChecked(True)
+    assert dialog.extent_group.isChecked()
+
+    # Uncheck it
+    dialog.extent_group.setChecked(False)
+    assert not dialog.extent_group.isChecked()
+
+
+@patch('gpq_downloader.dialog.QgsSettings')
+def test_dialog_aoi_checkbox_state_saved(mock_settings, qgs_app, mock_iface):
+    """Test that AOI checkbox state is saved"""
+    mock_settings_instance = MagicMock()
+    mock_settings.return_value = mock_settings_instance
+
+    dialog = DataSourceDialog(None, mock_iface)
+    dialog.extent_group.setChecked(True)
+    dialog.save_checkbox_states()
+
+    # Check that setValue was called with the AOI setting
+    calls = mock_settings_instance.setValue.call_args_list
+    aoi_call = [c for c in calls if 'aoi_enabled' in str(c)]
+    assert len(aoi_call) > 0
+
+
+def _layer_with_features(mock_iface):
+    """Real memory layer with two polygons, set as the iface's active layer."""
+    layer = QgsVectorLayer("Polygon?crs=EPSG:4326", "aoi_source", "memory")
+    feats = []
+    for wkt in ["POLYGON((0 0,1 0,1 1,0 1,0 0))", "POLYGON((2 2,3 2,3 3,2 3,2 2))"]:
+        f = QgsFeature()
+        f.setGeometry(QgsGeometry.fromWkt(wkt))
+        feats.append(f)
+    layer.dataProvider().addFeatures(feats)
+    # A real canvas, so the AOI highlighter and CRS transforms behave as in QGIS
+    canvas = QgsMapCanvas()
+    canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
+    mock_iface.mapCanvas = MagicMock(return_value=canvas)
+    mock_iface.activeLayer = MagicMock(return_value=layer)
+    for name in ("actionPan", "actionSelectRectangle", "messageBar", "layerTreeView"):
+        setattr(mock_iface, name, MagicMock())
+    return layer, canvas
+
+
+def test_finish_feature_selection_clears_selection_keeps_aoi(qgs_app, mock_iface):
+    """Select Features: the selection highlight is cleared, the AOI is kept."""
+    layer, _canvas = _layer_with_features(mock_iface)
+    dialog = DataSourceDialog(None, mock_iface)
+    dialog.start_feature_selection()
+    layer.selectByIds([f.id() for f in layer.getFeatures()][:1])
+    assert dialog.aoi_geometry is not None
+
+    dialog.finish_feature_selection()
+
+    assert layer.selectedFeatureCount() == 0
+    assert dialog.aoi_geometry is not None
+    mock_iface.actionPan.return_value.trigger.assert_called()
+
+
+def test_reject_clears_selection_made_by_plugin(qgs_app, mock_iface):
+    """Canceling the dialog mid-selection clears the plugin's selection."""
+    layer, _canvas = _layer_with_features(mock_iface)
+    dialog = DataSourceDialog(None, mock_iface)
+    dialog.start_feature_selection()
+    layer.selectByIds([f.id() for f in layer.getFeatures()])
+
+    dialog.reject()
+
+    assert layer.selectedFeatureCount() == 0
+
+
+def test_closing_dialog_keeps_users_own_selection(qgs_app, mock_iface):
+    """A selection the user made without Select Features must survive accept/reject."""
+    layer, _canvas = _layer_with_features(mock_iface)
+    for close in ("accept", "reject"):
+        layer.selectByIds([f.id() for f in layer.getFeatures()])
+        dialog = DataSourceDialog(None, mock_iface)
+        getattr(dialog, close)()
+        assert layer.selectedFeatureCount() == 2, close
+
+
+def test_dialog_divisions_checkbox_in_first_row(qgs_app, mock_iface):
+    """Test that Divisions checkbox exists and is functional"""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    # Divisions checkbox should exist
+    assert hasattr(dialog, 'divisions_checkbox')
+    assert dialog.divisions_checkbox is not None
+
+    # Should be in overture_checkboxes
+    assert 'divisions' in dialog.overture_checkboxes
+
+    # Toggle should work
+    dialog.divisions_checkbox.setChecked(True)
+    assert dialog.divisions_checkbox.isChecked()
+
+
+def test_dialog_divisions_subtypes_visibility(qgs_app, mock_iface):
+    """Test that Divisions subtypes appear when checkbox is checked"""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    # Ensure checkbox is unchecked to start from known state
+    dialog.divisions_checkbox.setChecked(False)
+    assert dialog.divisions_subtype_widget.isHidden()
+
+    # Check divisions checkbox
+    dialog.divisions_checkbox.setChecked(True)
+
+    # Subtypes should now be visible
+    assert not dialog.divisions_subtype_widget.isHidden()
+
+    # Uncheck should hide
+    dialog.divisions_checkbox.setChecked(False)
+    assert dialog.divisions_subtype_widget.isHidden()
+
+
+def test_dialog_base_subtypes_visibility(qgs_app, mock_iface):
+    """Test that Base subtypes appear when checkbox is checked"""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    # Ensure checkbox is unchecked to start from known state
+    dialog.base_checkbox.setChecked(False)
+    assert dialog.base_subtype_widget.isHidden()
+
+    # Check base checkbox
+    dialog.base_checkbox.setChecked(True)
+
+    # Subtypes should now be visible
+    assert not dialog.base_subtype_widget.isHidden()
+
+    # Uncheck should hide
+    dialog.base_checkbox.setChecked(False)
+    assert dialog.base_subtype_widget.isHidden()

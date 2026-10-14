@@ -55,8 +55,8 @@ class MockMapSettings:
         return QgsCoordinateReferenceSystem("EPSG:4326")
 
 @pytest.fixture
-def mock_iface():
-    """Mock iface fixture"""
+def mock_iface(qgs_app):
+    """Mock iface fixture (creates widgets, so it needs the QGIS application)"""
     return MockIface()
 
 # Sample test data
