@@ -28,7 +28,7 @@ from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread, QPoint, QObject, QEvent
 from qgis.PyQt.QtGui import QIcon
 from qgis.core import QgsSettings, QgsRectangle, QgsGeometry, QgsApplication, QgsMapLayerType
 import os
-from .utils import ValidationWorker
+from .utils import MINIO_URL_FORMAT, ValidationWorker
 from .map_tools import PolygonMapTool, AoiHighlighter, RectangleMapTool
 
 
@@ -127,7 +127,7 @@ class DataSourceDialog(QDialog):
         custom_layout = QVBoxLayout()
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText(
-            "Enter URL to Parquet file or folder (s3:// or https://)"
+            "Enter URL to Parquet file or folder (s3://, https:// or minio://host/bucket/path)"
         )
         custom_layout.addWidget(self.url_input)
         custom_page.setLayout(custom_layout)
@@ -481,17 +481,14 @@ class DataSourceDialog(QDialog):
         # For custom URLs, do validation
         if self.custom_radio.isChecked():
             for url in urls:
-                if not (
-                    url.startswith("http://")
-                    or url.startswith("https://")
-                    or url.startswith("s3://")
-                    or url.startswith("file://")
-                    or url.startswith("hf://")
+                if not url.startswith(
+                    ("http://", "https://", "s3://", "minio://", "minio+http://", "file://", "hf://")
                 ):
                     QMessageBox.warning(
                         self,
                         "Validation Error",
-                        "URL must start with http://, https://, s3://, hf://, or file://",
+                        "URL must start with http://, https://, s3://, minio://, hf://, or file://\n\n"
+                        f"MinIO and other S3-compatible servers: {MINIO_URL_FORMAT}",
                     )
                     return
 
