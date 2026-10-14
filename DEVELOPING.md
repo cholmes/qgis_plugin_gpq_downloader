@@ -7,10 +7,11 @@
 Instead of copying files into QGIS manually, create a symlink so QGIS loads the code directly from your checkout:
 
 ```bash
-bash scripts/setup-dev.sh
+bash scripts/setup-dev.sh        # every QGIS version with a profile (QGIS 3 and/or QGIS 4)
+bash scripts/setup-dev.sh 4      # only QGIS 4 (or 3, or all)
 ```
 
-This replaces any installed copy with a symlink. Your edits are immediately available to QGIS.
+This replaces any installed copy in the default profile with a symlink. Your edits are immediately available to QGIS. QGIS 3 and QGIS 4 keep separate settings directories (`QGIS3/` and `QGIS4/`), so link each version you test with.
 
 ### 2. Install Plugin Reloader
 
