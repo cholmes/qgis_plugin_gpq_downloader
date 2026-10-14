@@ -11,22 +11,42 @@ PLUGIN_NAME="qgis_plugin_gpq_downloader"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_DIR="${REPO_DIR}/gpq_downloader"
 
-# Detect QGIS plugins directory
+usage() {
+    echo "Usage: $0 [3|4|all]"
+    echo "  Link the plugin into the QGIS 3 and/or QGIS 4 default profile."
+    echo "  Without an argument, links every QGIS version that has a profile directory."
+}
+
+# QGIS 3 and QGIS 4 keep separate settings directories (QGIS3, QGIS4)
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    PLUGINS_DIR="$HOME/Library/Application Support/QGIS/QGIS3/profiles/default/python/plugins"
+    QGIS_SETTINGS_DIR="$HOME/Library/Application Support/QGIS"
 elif [[ "$OSTYPE" == "linux"* ]]; then
-    PLUGINS_DIR="$HOME/.local/share/QGIS/QGIS3/profiles/default/python/plugins"
+    QGIS_SETTINGS_DIR="$HOME/.local/share/QGIS"
 else
-    echo "Error: Unsupported platform. On Windows, create the symlink manually:"
-    echo "  mklink /D \"%APPDATA%\\QGIS\\QGIS3\\profiles\\default\\python\\plugins\\${PLUGIN_NAME}\" \"${SOURCE_DIR}\""
+    echo "Error: Unsupported platform. On Windows, create the symlink manually, e.g. for QGIS 4:"
+    echo "  mklink /D \"%APPDATA%\\QGIS\\QGIS4\\profiles\\default\\python\\plugins\\${PLUGIN_NAME}\" \"${SOURCE_DIR}\""
+    echo "  (use QGIS3 instead of QGIS4 for QGIS 3)"
     exit 1
 fi
 
-LINK_PATH="${PLUGINS_DIR}/${PLUGIN_NAME}"
-
-echo "Source:  ${SOURCE_DIR}"
-echo "Target:  ${LINK_PATH}"
-echo ""
+case "${1:-}" in
+    3) VERSIONS="3" ;;
+    4) VERSIONS="4" ;;
+    all) VERSIONS="3 4" ;;
+    "")
+        VERSIONS=""
+        for v in 3 4; do
+            [ -d "${QGIS_SETTINGS_DIR}/QGIS${v}/profiles" ] && VERSIONS="${VERSIONS} ${v}"
+        done
+        if [ -z "$VERSIONS" ]; then
+            echo "No QGIS 3 or QGIS 4 profile found under ${QGIS_SETTINGS_DIR}."
+            echo "Start QGIS once to create a profile, or pass 3 or 4 explicitly."
+            exit 1
+        fi
+        ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage; exit 1 ;;
+esac
 
 # Check source exists
 if [ ! -d "$SOURCE_DIR" ]; then
@@ -34,30 +54,44 @@ if [ ! -d "$SOURCE_DIR" ]; then
     exit 1
 fi
 
-# Handle existing installation
-if [ -L "$LINK_PATH" ]; then
-    EXISTING_TARGET="$(readlink "$LINK_PATH")"
-    if [ "$EXISTING_TARGET" = "$SOURCE_DIR" ]; then
-        echo "Symlink already exists and points to the right place. Nothing to do."
-        exit 0
-    fi
-    echo "Existing symlink points to: ${EXISTING_TARGET}"
-    echo "Replacing with link to this repo."
-    rm "$LINK_PATH"
-elif [ -d "$LINK_PATH" ]; then
-    BACKUP="${LINK_PATH}.backup.$(date +%Y%m%d%H%M%S)"
-    echo "Found existing plugin installation (not a symlink)."
-    echo "Backing up to: ${BACKUP}"
-    mv "$LINK_PATH" "$BACKUP"
-elif [ ! -d "$PLUGINS_DIR" ]; then
-    echo "Creating plugins directory: ${PLUGINS_DIR}"
-    mkdir -p "$PLUGINS_DIR"
-fi
+link_plugin() {
+    local plugins_dir="${QGIS_SETTINGS_DIR}/QGIS$1/profiles/default/python/plugins"
+    local link_path="${plugins_dir}/${PLUGIN_NAME}"
 
-# Create the symlink
-ln -s "$SOURCE_DIR" "$LINK_PATH"
-echo "Symlink created."
-echo ""
+    echo "QGIS $1"
+    echo "  Source:  ${SOURCE_DIR}"
+    echo "  Target:  ${link_path}"
+
+    # Handle existing installation
+    if [ -L "$link_path" ]; then
+        local existing_target
+        existing_target="$(readlink "$link_path")"
+        if [ "$existing_target" = "$SOURCE_DIR" ]; then
+            echo "  Symlink already points to this repo. Nothing to do."
+            return
+        fi
+        echo "  Existing symlink points to: ${existing_target}"
+        echo "  Replacing with link to this repo."
+        rm "$link_path"
+    elif [ -d "$link_path" ]; then
+        local backup="${link_path}.backup.$(date +%Y%m%d%H%M%S)"
+        echo "  Found existing plugin installation (not a symlink)."
+        echo "  Backing up to: ${backup}"
+        mv "$link_path" "$backup"
+    elif [ ! -d "$plugins_dir" ]; then
+        echo "  Creating plugins directory: ${plugins_dir}"
+        mkdir -p "$plugins_dir"
+    fi
+
+    ln -s "$SOURCE_DIR" "$link_path"
+    echo "  Symlink created."
+}
+
+for v in $VERSIONS; do
+    link_plugin "$v"
+    echo ""
+done
+
 echo "Next steps:"
 echo "  1. Restart QGIS (or reload the plugin if you have Plugin Reloader installed)"
 echo "  2. Install 'Plugin Reloader' from the QGIS Plugin Manager for fast reloads"
