@@ -184,6 +184,7 @@ class Worker(QObject):
                #logger.log(f"Final geometry column detection result: {self.validation_results['geometry_column']}")
 
                 table_name = "download_data"
+                geometry_column = self.validation_results.get('geometry_column', 'geometry')
 
                 self.progress.emit(f"Preparing query{layer_info}...")
                 select_query = "SELECT *"
