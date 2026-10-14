@@ -299,6 +299,7 @@ class Worker(QObject):
                #logger.log(f"Final geometry column detection result: {self.validation_results['geometry_column']}")
 
                 table_name = "download_data"
+                geometry_column = self.validation_results.get('geometry_column', 'geometry')
 
                 self.progress.emit(f"Preparing query{layer_info}...")
                 select_query = "SELECT *"
@@ -742,6 +743,24 @@ class ValidationWorker(QObject):
 
             # Update validation results with schema
             validation_results["schema"] = schema_result
+
+            # Detect geometry column from schema
+            geometry_found = False
+            for row in schema_result:
+                col_name = row[0]
+                col_type = row[1].upper()
+                if 'GEOMETRY' in col_type or 'GEOGRAPHY' in col_type:
+                    validation_results['geometry_column'] = col_name
+                    geometry_found = True
+                    break
+
+            if not geometry_found:
+                for row in schema_result:
+                    col_name_lower = row[0].lower()
+                    col_name_orig = row[0]
+                    if col_name_lower in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
+                        validation_results['geometry_column'] = col_name_orig
+                        break
 
             # Check for standard bbox column first
             has_bbox = any(
