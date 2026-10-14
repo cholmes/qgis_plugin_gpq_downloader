@@ -52,6 +52,41 @@ def configure_s3_for_url(conn, url):
         conn.execute("SET s3_url_style='path';")
 
 
+# host or host:port of an S3-compatible server in a minio:// URL
+_MINIO_HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?$")
+MINIO_URL_FORMAT = "minio://host[:port]/bucket/path (or minio+http:// for a server without TLS)"
+
+
+def resolve_dataset_url(conn, url):
+    """Configure `conn` for the URL's storage and return the URL DuckDB should read.
+
+    minio://host[:port]/bucket/key reads s3://bucket/key from that S3-compatible
+    server (MinIO or similar) anonymously, with path-style URLs. It uses https,
+    except on port 80 or with minio+http://. Other s3:// URLs get the
+    configure_s3_for_url() settings; everything else is returned unchanged.
+    """
+    for scheme, use_ssl in (("minio://", True), ("minio+http://", False)):
+        if url.startswith(scheme):
+            host, _, key = url[len(scheme):].partition("/")
+            bucket = key.split("/", 1)[0]
+            if not bucket or not _MINIO_HOST_RE.match(host):
+                raise ValueError(f"Invalid MinIO URL: {url}\nExpected {MINIO_URL_FORMAT}")
+            if host.endswith(":80"):
+                use_ssl = False
+            # A temporary secret scoped to the bucket takes precedence over the
+            # user's own S3 secrets and global settings, and empty keys keep their
+            # AWS credentials from being sent to a third-party server.
+            conn.execute(
+                "CREATE OR REPLACE TEMPORARY SECRET gpq_minio ("
+                " TYPE s3, PROVIDER config, KEY_ID '', SECRET '', REGION 'us-east-1',"
+                " ENDPOINT ?, URL_STYLE 'path', USE_SSL ?, SCOPE ?)",
+                [host, use_ssl, f"s3://{bucket}/"],
+            )
+            return "s3://" + key
+    configure_s3_for_url(conn, url)
+    return url
+
+
 # building.002213.parquet (OpenBuildingMap): Bing/Web Mercator quadkey after a prefix.
 # A prefix and at least 4 digits are required so names like 0.parquet or part_1.parquet
 # are not mistaken for quadkeys.
@@ -178,6 +213,7 @@ class Worker(QObject):
     def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None):
         super().__init__()
         self.dataset_url = dataset_url
+        self.read_url = dataset_url  # what DuckDB reads; set by resolve_dataset_url()
         self.extent = extent
         self.output_file = output_file
         self.iface = iface
@@ -192,7 +228,7 @@ class Worker(QObject):
         """Read GeoParquet metadata to find bbox column info"""
         self.progress.emit("Checking for bbox metadata...")
         metadata_query = (
-            f"SELECT key, value FROM parquet_kv_metadata('{self.dataset_url}')"
+            f"SELECT key, value FROM parquet_kv_metadata('{self.read_url}')"
         )
         metadata_results = conn.execute(metadata_query).fetchall()
 
@@ -264,7 +300,7 @@ class Worker(QObject):
                 conn.execute("INSTALL spatial;")
                 conn.execute("LOAD httpfs;")
                 conn.execute("LOAD spatial;")
-                configure_s3_for_url(conn, self.dataset_url)
+                self.read_url = resolve_dataset_url(conn, self.dataset_url)
 
                 # Verify spatial extension is loaded by testing a spatial function
                 try:
@@ -275,7 +311,7 @@ class Worker(QObject):
                     conn.execute("LOAD spatial;")
 
                 # Get schema early as we need it for both column names and bbox check
-                schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
+                schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.read_url}')"
                 schema_result = conn.execute(schema_query).fetchall()
                 self.validation_results['schema'] = schema_result
                 
@@ -433,7 +469,7 @@ class Worker(QObject):
                     # Log the updated where_clause for debugging
                     logger.log(f"Applying AOI geometry filter: {aoi_wkt}")
 
-                parquet_source = parquet_source_for_bbox(conn, self.dataset_url, bbox)
+                parquet_source = parquet_source_for_bbox(conn, self.read_url, bbox)
                 if parquet_source is None:
                     self.info.emit(f"No data found{layer_info} in the requested area. Check that your map extent overlaps with the data and/or expand your map extent. Skipping to next dataset if available.")
                     self.finished.emit()
@@ -699,6 +735,7 @@ class ValidationWorker(QObject):
     def __init__(self, dataset_url, iface, extent):
         super().__init__()
         self.dataset_url = dataset_url
+        self.read_url = dataset_url  # what DuckDB reads; set by resolve_dataset_url()
         self.iface = iface
         self.extent = extent
         self.killed = False
@@ -712,7 +749,7 @@ class ValidationWorker(QObject):
     def check_bbox_metadata(self, conn):
         """Check for bbox information in GeoParquet metadata"""
         metadata_query = (
-            f"SELECT key, value FROM parquet_kv_metadata('{self.dataset_url}')"
+            f"SELECT key, value FROM parquet_kv_metadata('{self.read_url}')"
         )
         metadata_results = conn.execute(metadata_query).fetchall()
 
@@ -776,7 +813,7 @@ class ValidationWorker(QObject):
             conn.execute("LOAD spatial;")
             conn.execute("INSTALL httpfs;")
             conn.execute("LOAD httpfs;")
-            configure_s3_for_url(conn, self.dataset_url)
+            self.read_url = resolve_dataset_url(conn, self.dataset_url)
 
             if self.killed:
                 return
@@ -789,7 +826,7 @@ class ValidationWorker(QObject):
                 return
 
             self.progress.emit("Checking data format...")
-            schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.dataset_url}')"
+            schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.read_url}')"
             schema_result = conn.execute(schema_query).fetchall()
 
             # Update validation results with schema
