@@ -915,11 +915,11 @@ class DataSourceDialog(QDialog):
             else:
                 # If QGIS theme icon not available, use standard QStyle icon
                 from qgis.PyQt.QtWidgets import QStyle
-                self.select_button.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
+                self.select_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogListView))
         except:
             # If there's any error, use a generic icon
             from qgis.PyQt.QtWidgets import QStyle
-            self.select_button.setIcon(self.style().standardIcon(QStyle.SP_FileDialogListView))
+            self.select_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogListView))
         
         # Connect select button to selection tool
         self.select_button.clicked.connect(self.start_feature_selection)
@@ -947,7 +947,7 @@ class DataSourceDialog(QDialog):
         else:
             # Fallback to a standard icon if the custom one isn't available
             from qgis.PyQt.QtWidgets import QStyle
-            self.clear_button.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
+            self.clear_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
         
         # Connect clear button to clear function
         self.clear_button.clicked.connect(self.clear_extent)
