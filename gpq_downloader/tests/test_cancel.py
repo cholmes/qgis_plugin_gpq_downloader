@@ -49,12 +49,14 @@ def test_duckdb_interrupt_stops_long_query_quickly():
         except duckdb.InterruptException:
             outcome["result"] = "interrupted"
 
-    thread = threading.Thread(target=long_query)
+    thread = threading.Thread(target=long_query, daemon=True)
     thread.start()
-    time.sleep(0.5)
     started = time.time()
-    conn.interrupt()
-    thread.join(timeout=10)
+    # An interrupt sent before the query starts is dropped, so keep sending
+    while thread.is_alive() and time.time() - started < 10:
+        time.sleep(0.2)
+        conn.interrupt()
+    thread.join(timeout=1)
     assert not thread.is_alive()
     assert outcome["result"] == "interrupted"
     assert time.time() - started < 10
@@ -129,3 +131,69 @@ def test_cancel_before_export_keeps_existing_file(
     worker.run()
 
     assert output.read_text() == "previous export"
+
+
+class KilledBetweenQueries(InterruptedOn):
+    """Cancel lands while no query is running: kill() is called but nothing raises."""
+
+    def __init__(self, worker, keyword, schema):
+        super().__init__(worker, keyword, schema)
+        self.queries = []
+
+    def execute(self, query):
+        self.queries.append(query)
+        result = MagicMock()
+        result.fetchall.return_value = self.schema if "DESCRIBE" in query else []
+        result.fetchone.return_value = (1,)
+        if self.keyword in query:
+            self.worker.kill()
+        return result
+
+
+@patch("duckdb.connect")
+def test_cancel_between_queries_stops_before_export(
+    mock_connect, mock_iface, sample_bbox, tmp_path, sample_validation_results
+):
+    output = tmp_path / "out.gpkg"
+    worker = make_worker(mock_iface, sample_bbox, str(output), sample_validation_results)
+    conn = KilledBetweenQueries(worker, "CREATE TABLE", SCHEMA)
+    mock_connect.return_value = conn
+    events = []
+    worker.error.connect(lambda m: events.append("error"))
+    worker.load_layer.connect(lambda p: events.append("load"))
+    worker.finished.connect(lambda: events.append("finished"))
+
+    worker.run()
+
+    assert not any("COPY" in q for q in conn.queries)
+    assert events == []
+    assert not output.exists()
+
+
+@patch("duckdb.connect")
+def test_cancelled_parquet_export_removes_duckdb_temp_file(
+    mock_connect, mock_iface, sample_bbox, tmp_path, sample_validation_results
+):
+    output = tmp_path / "out.parquet"
+    temp = tmp_path / "tmp_out.parquet"
+    worker = make_worker(mock_iface, sample_bbox, str(output), sample_validation_results)
+    mock_connect.return_value = InterruptedOn(worker, "COPY", SCHEMA, write_file=str(temp))
+
+    worker.run()
+
+    assert not temp.exists()
+
+
+@patch("duckdb.connect")
+def test_cancelled_validation_emits_nothing(mock_connect, mock_iface, sample_bbox):
+    """A cancel during the metadata check must not report success (which would start the download)."""
+    no_bbox_schema = [s for s in SCHEMA if s[0] != "bbox"]
+    worker = ValidationWorker("https://example.com/test.parquet", mock_iface, sample_bbox)
+    mock_connect.return_value = InterruptedOn(worker, "parquet_kv_metadata", no_bbox_schema)
+    events = []
+    worker.finished.connect(lambda *a: events.append("finished"))
+    worker.needs_bbox_warning.connect(lambda: events.append("bbox_warning"))
+
+    worker.run()
+
+    assert events == []

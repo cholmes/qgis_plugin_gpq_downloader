@@ -3,10 +3,30 @@ import json
 from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsGeometry
 from qgis.PyQt.QtCore import pyqtSignal, QObject
 import os
-import time
 import duckdb
 
 from . import logger
+
+
+class CancellableConnection:
+    """DuckDB connection whose execute() raises once the worker is killed.
+
+    conn.interrupt() only stops a query that is running; DuckDB drops an
+    interrupt that arrives between two queries. Checking the worker's flag
+    before every query makes a cancel in that gap stop the next query too.
+    """
+
+    def __init__(self, conn, worker):
+        self._conn = conn
+        self._worker = worker
+
+    def execute(self, *args, **kwargs):
+        if self._worker.killed:
+            raise duckdb.InterruptException("Cancelled")
+        return self._conn.execute(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
 
 def transform_bbox_to_4326(extent, source_crs):
@@ -114,7 +134,7 @@ class Worker(QObject):
             #logger.log(f"Full validation_results at start of run: {self.validation_results}")
 
             conn = None
-            started_at = time.time() - 1  # 1 s slack for coarse filesystem timestamps
+            copy_started = False  # only an export this run started is removed on cancel
             try:
                 # Install and load the spatial extension
                 self.progress.emit(f"Loading spatial extension{layer_info}...")
@@ -123,9 +143,8 @@ class Worker(QObject):
                     conn = duckdb.connect(self.output_file)  # Connect directly to output file
                 else:
                     conn = duckdb.connect()
+                conn = CancellableConnection(conn, self)
                 self.conn = conn
-                if self.killed:
-                    return
 
                 conn.execute("INSTALL httpfs;")
                 conn.execute("INSTALL spatial;")
@@ -412,6 +431,7 @@ class Worker(QObject):
                     
                     logger.log("Executing SQL query:")
                     logger.log(copy_query + format_options)
+                    copy_started = True
                     conn.execute(copy_query + format_options)
 
                 
@@ -448,13 +468,15 @@ class Worker(QObject):
                     conn.close()
                 # Don't leave a half-written export behind after a cancel
                 # (.duckdb is the user's database file, so it is never removed)
-                if self.killed and not self.output_file.lower().endswith('.duckdb'):
-                    try:
-                        # Only remove it if this run wrote it, not a file the cancel never reached
-                        if os.path.exists(self.output_file) and os.path.getmtime(self.output_file) >= started_at:
-                            os.remove(self.output_file)
-                    except OSError as e:
-                        logger.log(f"Could not remove partial output {self.output_file}: {e}")
+                if self.killed and copy_started and not self.output_file.lower().endswith('.duckdb'):
+                    # DuckDB writes parquet to tmp_<name> when overwriting an existing file
+                    out_dir, out_name = os.path.split(self.output_file)
+                    for path in (self.output_file, os.path.join(out_dir, "tmp_" + out_name)):
+                        try:
+                            if os.path.exists(path):
+                                os.remove(path)
+                        except OSError as e:
+                            logger.log(f"Could not remove partial output {path}: {e}")
 
         except Exception as e:
             if not self.killed:
@@ -623,15 +645,18 @@ class ValidationWorker(QObject):
             "geometry_column": "geometry"  # Default fallback
         }
         
+        conn = None
         try:
             self.progress.emit("Connecting to data source...")
-            conn = duckdb.connect()
+            conn = CancellableConnection(duckdb.connect(), self)
             self.conn = conn
             conn.execute("INSTALL spatial;")
             conn.execute("LOAD spatial;")
             conn.execute("INSTALL httpfs;")
             conn.execute("LOAD httpfs;")
 
+            if self.killed:
+                return
             if not self.needs_validation():
                 validation_results.update({
                     "has_bbox": True,
@@ -646,6 +671,8 @@ class ValidationWorker(QObject):
 
             # Update validation results with schema
             validation_results["schema"] = schema_result
+            if self.killed:
+                return
 
             # Check for standard bbox column first
             has_bbox = any(
@@ -660,6 +687,8 @@ class ValidationWorker(QObject):
             else:
                 # Check metadata for alternative bbox column
                 bbox_column = self.check_bbox_metadata(conn)
+                if self.killed:  # check_bbox_metadata swallows the interrupt
+                    return
                 if bbox_column:
                     validation_results["has_bbox"] = True
                     validation_results["bbox_column"] = bbox_column
@@ -680,7 +709,8 @@ class ValidationWorker(QObject):
                 self.finished.emit(False, f"Error validating source: {str(e)}", validation_results)
         finally:
             self.conn = None
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     def kill(self):
         """Stop validation; interrupts the running DuckDB query so cancel returns at once."""
