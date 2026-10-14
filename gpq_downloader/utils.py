@@ -10,6 +10,27 @@ import duckdb
 from . import logger
 
 
+class CancellableConnection:
+    """DuckDB connection whose execute() raises once the worker is killed.
+
+    conn.interrupt() only stops a query that is running; DuckDB drops an
+    interrupt that arrives between two queries. Checking the worker's flag
+    before every query makes a cancel in that gap stop the next query too.
+    """
+
+    def __init__(self, conn, worker):
+        self._conn = conn
+        self._worker = worker
+
+    def execute(self, *args, **kwargs):
+        if self._worker.killed:
+            raise duckdb.InterruptException("Cancelled")
+        return self._conn.execute(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 # Region prefix of bucket names like us-west-2.opendata.source.coop
 _BUCKET_REGION_RE = re.compile(r"^([a-z]{2}(?:-gov)?-[a-z]+-\d)\.")
 
@@ -165,6 +186,7 @@ class Worker(QObject):
         self.layer_name = layer_name
         self.size_warning_accepted = False
         self.aoi_geometry = aoi_geometry
+        self.conn = None  # kept so kill() can interrupt a running query
 
     def get_bbox_info_from_metadata(self, conn):
         """Read GeoParquet metadata to find bbox column info"""
@@ -226,6 +248,7 @@ class Worker(QObject):
             #logger.log(f"Full validation_results at start of run: {self.validation_results}")
 
             conn = None
+            copy_started = False  # only an export this run started is removed on cancel
             try:
                 # Install and load the spatial extension
                 self.progress.emit(f"Loading spatial extension{layer_info}...")
@@ -233,7 +256,9 @@ class Worker(QObject):
                 if self.output_file.lower().endswith('.duckdb'):
                     conn = duckdb.connect(self.output_file)  # Connect directly to output file
                 else:
-                    conn = duckdb.connect() 
+                    conn = duckdb.connect()
+                conn = CancellableConnection(conn, self)
+                self.conn = conn
 
                 conn.execute("INSTALL httpfs;")
                 conn.execute("INSTALL spatial;")
@@ -528,6 +553,7 @@ class Worker(QObject):
                     
                     logger.log("Executing SQL query:")
                     logger.log(copy_query + format_options)
+                    copy_started = True
                     conn.execute(copy_query + format_options)
 
                 
@@ -560,7 +586,19 @@ class Worker(QObject):
                             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
                         except:
                             pass
+                    self.conn = None
                     conn.close()
+                # Don't leave a half-written export behind after a cancel
+                # (.duckdb is the user's database file, so it is never removed)
+                if self.killed and copy_started and not self.output_file.lower().endswith('.duckdb'):
+                    # DuckDB writes parquet to tmp_<name> when overwriting an existing file
+                    out_dir, out_name = os.path.split(self.output_file)
+                    for path in (self.output_file, os.path.join(out_dir, "tmp_" + out_name)):
+                        try:
+                            if os.path.exists(path):
+                                os.remove(path)
+                        except OSError as e:
+                            logger.log(f"Could not remove partial output {path}: {e}")
 
         except Exception as e:
             if not self.killed:
@@ -568,6 +606,14 @@ class Worker(QObject):
 
     def kill(self):
         self.killed = True
+        # Stop the running DuckDB query; otherwise cancel waits for it to finish
+        # and the UI thread blocks in QThread.wait().
+        conn = self.conn
+        if conn is not None:
+            try:
+                conn.interrupt()
+            except Exception as e:
+                logger.log(f"Could not interrupt DuckDB query: {e}")
 
     def estimate_file_size(self, conn, table_name):
         """Estimate the output file size in MB using GeoJSON feature collection structure"""
@@ -656,6 +702,7 @@ class ValidationWorker(QObject):
         self.iface = iface
         self.extent = extent
         self.killed = False
+        self.conn = None  # kept so kill() can interrupt a running query
 
         base_path = os.path.dirname(os.path.abspath(__file__))
         presets_path = os.path.join(base_path, "data", "presets.json")
@@ -720,15 +767,19 @@ class ValidationWorker(QObject):
             "geometry_column": "geometry"  # Default fallback
         }
         
+        conn = None
         try:
             self.progress.emit("Connecting to data source...")
-            conn = duckdb.connect()
+            conn = CancellableConnection(duckdb.connect(), self)
+            self.conn = conn
             conn.execute("INSTALL spatial;")
             conn.execute("LOAD spatial;")
             conn.execute("INSTALL httpfs;")
             conn.execute("LOAD httpfs;")
             configure_s3_for_url(conn, self.dataset_url)
 
+            if self.killed:
+                return
             if not self.needs_validation():
                 validation_results.update({
                     "has_bbox": True,
@@ -743,6 +794,8 @@ class ValidationWorker(QObject):
 
             # Update validation results with schema
             validation_results["schema"] = schema_result
+            if self.killed:
+                return
 
             # Detect geometry column from schema
             geometry_found = False
@@ -775,6 +828,8 @@ class ValidationWorker(QObject):
             else:
                 # Check metadata for alternative bbox column
                 bbox_column = self.check_bbox_metadata(conn)
+                if self.killed:  # check_bbox_metadata swallows the interrupt
+                    return
                 if bbox_column:
                     validation_results["has_bbox"] = True
                     validation_results["bbox_column"] = bbox_column
@@ -787,13 +842,26 @@ class ValidationWorker(QObject):
 
         except Exception as e:
             logger.log(f"Error in ValidationWorker: {str(e)}")
-            # Emit warning before error if no bbox was found
-            if not validation_results.get("has_bbox"):
-                self.needs_bbox_warning.emit()
-            # Still emit validation results with default values in case of error
-            self.finished.emit(False, f"Error validating source: {str(e)}", validation_results)
+            if not self.killed:
+                # Emit warning before error if no bbox was found
+                if not validation_results.get("has_bbox"):
+                    self.needs_bbox_warning.emit()
+                # Still emit validation results with default values in case of error
+                self.finished.emit(False, f"Error validating source: {str(e)}", validation_results)
         finally:
-            conn.close()
+            self.conn = None
+            if conn is not None:
+                conn.close()
+
+    def kill(self):
+        """Stop validation; interrupts the running DuckDB query so cancel returns at once."""
+        self.killed = True
+        conn = self.conn
+        if conn is not None:
+            try:
+                conn.interrupt()
+            except Exception as e:
+                logger.log(f"Could not interrupt DuckDB query: {e}")
 
     def needs_validation(self):
         """Determine if the dataset needs any validation"""

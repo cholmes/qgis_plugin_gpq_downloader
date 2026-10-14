@@ -546,7 +546,7 @@ class DataSourceDialog(QDialog):
     def cancel_validation(self):
         """Handle validation cancellation"""
         if self.validation_worker:
-            self.validation_worker.killed = True
+            self.validation_worker.kill()
         self.cleanup_validation()
 
     def cleanup_validation(self):
