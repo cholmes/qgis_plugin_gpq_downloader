@@ -46,7 +46,7 @@
     },
     "source_cooperative": {
         "vida_buildings": {
-            "url": "s3://us-west-2.opendata.source.coop/vida/google-microsoft-osm-open-buildings/geoparquet/by_country/*/*.parquet",
+            "url": "s3://us-west-2.opendata.source.coop/vida/google-microsoft-osm-open-buildings/geoparquet/by_country_s2/*/*.parquet",
             "info_url": "https://source.coop/vida/google-microsoft-osm-open-buildings",
             "needs_validation": false,
             "display_name": "VIDA Google/Microsoft/OSM Buildings"

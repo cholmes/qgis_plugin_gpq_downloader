@@ -95,6 +95,76 @@ _QUADKEY_FILE_RE = re.compile(r"^(.*[._])([0-3]{4,})\.parquet$")
 _GRID_FILE_RE = re.compile(r"^([ew])(\d{3})_([ns])(\d{2})_([ew])(\d{3})_([ns])(\d{2})\.parquet$")
 
 
+# 3517311308976357376.parquet (VIDA by_country_s2): an S2 cell id, sometimes written
+# as a signed 64-bit integer
+_S2_FILE_RE = re.compile(r"^(-?\d{4,20})\.parquet$")
+# Coarsest-to-finest S2 levels accepted as partition cells. Requiring level <= 20
+# keeps small numbered files (0.parquet, 17.parquet) from being read as cells.
+_S2_MAX_LEVEL = 20
+_S2_POS_TO_IJ = ((0, 1, 3, 2), (0, 2, 3, 1), (3, 2, 0, 1), (3, 1, 0, 2))
+_S2_POS_TO_ORIENTATION = (1, 0, 0, 3)
+
+
+def s2_cell_level(cell_id):
+    """Level (0-30) of a valid S2 cell id, or None if it isn't one."""
+    if cell_id < 0:
+        cell_id += 1 << 64
+    if cell_id <= 0 or cell_id >= 1 << 64 or cell_id >> 61 > 5:
+        return None
+    lowest_bit = (cell_id & -cell_id).bit_length() - 1
+    if lowest_bit % 2:
+        return None
+    return 30 - lowest_bit // 2
+
+
+def s2_cell_bounds(cell_id):
+    """Return (xmin, ymin, xmax, ymax) in WGS84 of an S2 cell.
+
+    Cell edges are geodesics, so points along each edge are sampled, not
+    just the corners. Partitions are coarse (level <= 20), so this is cheap.
+    """
+    if cell_id < 0:
+        cell_id += 1 << 64
+    level = s2_cell_level(cell_id)
+    face = cell_id >> 61
+    if level == 0:  # a whole cube face; faces 2 and 5 contain a pole
+        return (-180.0, -90.0, 180.0, 90.0)
+    # Decode the cell's (i, j) position on its face from the Hilbert curve position
+    orientation = face & 1
+    i = j = 0
+    for k in range(level):
+        pos = (cell_id >> (59 - 2 * k)) & 3
+        ij = _S2_POS_TO_IJ[orientation][pos]
+        i = (i << 1) | (ij >> 1)
+        j = (j << 1) | (ij & 1)
+        orientation ^= _S2_POS_TO_ORIENTATION[pos]
+
+    def st_to_uv(st):
+        return (4 * st * st - 1) / 3 if st >= 0.5 else (1 - 4 * (1 - st) ** 2) / 3
+
+    n = 1 << level
+    steps = 8
+    lons, lats = [], []
+    for a in range(steps + 1):
+        for b in range(steps + 1):
+            if a not in (0, steps) and b not in (0, steps):
+                continue  # only the cell's edges
+            u, v = st_to_uv((i + a / steps) / n), st_to_uv((j + b / steps) / n)
+            x, y, z = ((1, u, v), (-u, 1, v), (-u, -v, 1),
+                       (-1, -v, -u), (v, -1, -u), (v, u, -1))[face]
+            lats.append(math.degrees(math.atan2(z, math.hypot(x, y))))
+            lons.append(math.degrees(math.atan2(y, x)))
+    if max(lats) > 89.9 or min(lats) < -89.9:  # touches a pole: every longitude
+        return (-180.0, min(lats), 180.0, max(lats))
+    if max(lons) - min(lons) > 180:
+        # S2 cell edges lie along the antimeridian rather than crossing it, but
+        # points on such an edge can come out as -180 instead of 180 (or the
+        # reverse); put them on the same side as the rest of the cell
+        east = sum(x > 0 for x in lons) >= sum(x < 0 for x in lons)
+        lons = [(180.0 if east else -180.0) if abs(x) > 179.999999 else x for x in lons]
+    return (min(lons), min(lats), max(lons), max(lats))
+
+
 def quadkey_bounds(quadkey):
     """Return (xmin, ymin, xmax, ymax) in WGS84 of a Bing/Web Mercator quadkey tile."""
     zoom = len(quadkey)
@@ -127,6 +197,11 @@ def extent_from_file_name(name):
     m = _QUADKEY_FILE_RE.match(name)
     if m:
         return quadkey_bounds(m.group(2))
+    m = _S2_FILE_RE.match(name)
+    if m:
+        level = s2_cell_level(int(m.group(1)))
+        if level is not None and level <= _S2_MAX_LEVEL:
+            return s2_cell_bounds(int(m.group(1)))
     return None
 
 
@@ -134,8 +209,8 @@ def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
     """Build the read_parquet() argument for `url`, pruned to the bbox when possible.
 
     Some datasets are split into files whose names encode their extent: quadkeys in
-    OpenBuildingMap (building.002213.parquet) or 5-degree cells in GlobalBuildingAtlas
-    (e100_n20_e105_n15.parquet). Reading a glob over them forces DuckDB to fetch the
+    OpenBuildingMap (building.002213.parquet), 5-degree cells in GlobalBuildingAtlas
+    (e100_n20_e105_n15.parquet) or S2 cells in VIDA (3517311308976357376.parquet). Reading a glob over them forces DuckDB to fetch the
     footer of every file, which takes minutes. When every file matched by the glob has
     such a name, only the files overlapping the bbox are passed in.
     Returns a SQL literal, or None when no file overlaps the bbox.

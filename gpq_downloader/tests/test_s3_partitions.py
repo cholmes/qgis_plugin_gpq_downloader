@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock
 
+import pytest
+
 from qgis.core import QgsRectangle
 
 from gpq_downloader.utils import (
@@ -7,6 +9,8 @@ from gpq_downloader.utils import (
     extent_from_file_name,
     parquet_source_for_bbox,
     quadkey_bounds,
+    s2_cell_bounds,
+    s2_cell_level,
 )
 
 SOURCE_COOP_GLOB = "s3://us-west-2.opendata.source.coop/tge-labs/openbuildingmap/*.parquet"
@@ -140,3 +144,54 @@ def test_parquet_source_ignores_repeated_basenames():
     url = "s3://bucket/data/*/*.parquet"
     conn = mock_glob([f"s3://bucket/data/country={c}/part_00000.parquet" for c in ("TH", "LA", "VN")])
     assert parquet_source_for_bbox(conn, url, QgsRectangle(*NAN_THAILAND)) == f"'{url}'"
+
+
+VIDA_S2 = "s3://us-west-2.opendata.source.coop/vida/google-microsoft-osm-open-buildings/geoparquet/by_country_s2/"
+VIDA_S2_GLOB = VIDA_S2 + "*/*.parquet"
+
+
+def contains_point(extent, x, y):
+    xmin, ymin, xmax, ymax = extent
+    return xmin <= x <= xmax and ymin <= y <= ymax
+
+
+def test_s2_cell_level():
+    assert s2_cell_level(1 << 60) == 0                   # face 0
+    assert s2_cell_level(3544332906740580352) == 4       # VIDA THA cell
+    assert s2_cell_level(-6052837899185946624) == 1      # signed int64 form (NZL)
+    assert s2_cell_level(2) is None                      # lowest set bit at an odd position
+    assert s2_cell_level(0) is None
+
+
+def test_s2_cell_bounds_match_vida_cells():
+    # Cells and the places VIDA puts in them (checked against the files' bbox statistics)
+    assert contains_point(s2_cell_bounds(3544332906740580352), 100.77, 18.78)       # THA: Nan
+    assert not contains_point(s2_cell_bounds(3544332906740580352), -0.12, 51.5)
+    assert contains_point(s2_cell_bounds(10466365534009032704), -77.04, -12.05)     # PER: Lima
+    assert contains_point(s2_cell_bounds(-6052837899185946624), 174.76, -36.85)     # NZL: Auckland
+
+
+def test_s2_cells_on_the_antimeridian_stay_on_their_side():
+    # Pacific cells with an edge on 180 degrees: west of it (Fiji) and east of it
+    assert s2_cell_bounds(7782220156096217088) == pytest.approx((135, -45, 180, 0), abs=1e-6)
+    assert s2_cell_bounds(8358680908399640576) == pytest.approx((-180, -45, -135, 0), abs=1e-6)
+    # A level-4 cell in the Aleutians, touching 180 degrees from the west
+    xmin, ymin, xmax, ymax = s2_cell_bounds(6354579074219769856)
+    assert xmin > 170 and xmax == 180
+
+
+def test_numbered_files_are_not_s2_cells():
+    for name in ["0.parquet", "17.parquet", "1024.parquet", "20240101.parquet"]:
+        assert extent_from_file_name(name) is None
+
+
+def test_parquet_source_prunes_s2_files():
+    files = [
+        VIDA_S2 + "country_iso=THA/3544332906740580352.parquet",
+        VIDA_S2 + "country_iso=LAO/3746994889972252672.parquet",
+        VIDA_S2 + "country_iso=PER/10466365534009032704.parquet",
+        VIDA_S2 + "country_iso=NZL/-6052837899185946624.parquet",
+        VIDA_S2 + "country_iso=USA/6354579074219769856.parquet",
+    ]
+    source = parquet_source_for_bbox(mock_glob(files), VIDA_S2_GLOB, QgsRectangle(*NAN_THAILAND))
+    assert source == f"['{files[1]}', '{files[0]}']"  # sorted: LAO, THA
