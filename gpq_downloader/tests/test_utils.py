@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import os
-from qgis.core import QgsRectangle, QgsCoordinateReferenceSystem
+from qgis.core import QgsRectangle, QgsCoordinateReferenceSystem, QgsVectorLayer
 from pathlib import Path
 
 from gpq_downloader.utils import (
@@ -306,3 +306,33 @@ def test_worker_error_handling(mock_connect, mock_iface, sample_bbox, tmp_path):
     
     assert error_message is not None
     assert "Test error" in error_message 
+
+def test_download_with_wkb_geometry_column_named_the_geom(qgs_app, mock_iface, tmp_path):
+    """Real DuckDB run: a WKB (BLOB) geometry column with a non-standard name downloads."""
+    import duckdb
+    source = tmp_path / "the_geom.parquet"
+    conn = duckdb.connect()
+    conn.execute("INSTALL spatial; LOAD spatial;")
+    conn.execute(f"""
+        COPY (SELECT i AS id, ST_AsWKB(ST_Point(i * 0.01, i * 0.01)) AS the_geom
+              FROM range(50) t(i)) TO '{source}' (FORMAT parquet)
+    """)
+    conn.close()
+    extent = QgsRectangle(0, 0, 0.2, 0.2)
+
+    validation = []
+    vworker = ValidationWorker(str(source), mock_iface, extent)
+    vworker.finished.connect(lambda ok, msg, res: validation.append(res))
+    vworker.run()
+    assert validation[0]["geometry_column"] == "the_geom"
+
+    output = tmp_path / "out.gpkg"  # non-parquet output goes through the column rewrite
+    worker = Worker(str(source), extent, str(output), mock_iface, validation[0])
+    errors = []
+    worker.error.connect(errors.append)
+    worker.run()
+
+    assert errors == []
+    layer = QgsVectorLayer(str(output), "out", "ogr")
+    assert layer.isValid()
+    assert layer.featureCount() == 21  # points 0..20 fall inside the extent
