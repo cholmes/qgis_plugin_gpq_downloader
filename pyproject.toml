@@ -24,7 +24,7 @@ dependencies = [
 packages = ["gpq_downloader"]
 
 [tool.pytest.ini_options]
-testpaths = ["gpq_downloader/tests"]
+testpaths = ["gpq_downloader/tests", "scripts/tests"]
 python_files = "test_*.py"
 addopts = "--cov=gpq_downloader"
 
