@@ -12,11 +12,14 @@ The core idea is that GeoParquet can act more like a 'server', letting users dow
 
 The easiest way to install the plugin file is to use the QGIS plugin manager. Just go to `Plugins > Manage and Install Plugins`, click 
 the 'install' tab and search for 'GeoParquet Downloader'. Click on 'Install Plugin' and it will install. Alternatively you can download the zip file from
-one of the [releases](https://github.com/cholmes/qgis_plugin_gpq_downloader/releases) and 'install from zip' in QGIS. For the plugin to work DuckDB
-needs to be installed. As of version 0.3 the plugin should try to automatically install DuckDB, but it doesn't work reliably. If you installed but don't see the 
-icon below then it's likely because DuckDB isn't there.
+one of the [releases](https://github.com/cholmes/qgis_plugin_gpq_downloader/releases) and 'install from zip' in QGIS.
 
-If the installation of DuckDB doesn't work, then on Windows you can use the [QDuckDB plugin](https://oslandia.gitlab.io/qgis/qduckdb/) which includes a precompiled binary. 
+The plugin needs the DuckDB Python package (1.1.0 or newer). QGIS 4 on Mac ships with it. If your QGIS doesn't
+have it, the plugin still loads and its toolbar button appears, and QGIS shows a message with an
+**Install DuckDB** button, which installs it with pip into QGIS's Python. Clicking the toolbar button
+before DuckDB is installed offers the same.
+
+If that install doesn't work (for example on Linux, where the system Python may refuse pip installs), you can use the [QDuckDB plugin](https://oslandia.gitlab.io/qgis/qduckdb/) which includes a precompiled binary. 
 They also document how to install DuckDB on [Linux](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#linux) and 
 [Mac OS/X](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#macos). If you're on Mac we recommend trying 
 the [QGIS 4.0 mac build preview](https://github.com/opengisch/qgis-notarize/) which ships with DuckDB.
@@ -39,7 +42,7 @@ To use it move to an area where you'd like to download data and then select whic
 
 Downloads can sometimes take awhile, especially if the data provider hasn't optimized their GeoParquet files very well, or if you're downloading an area with a lot of data. Overture is one of the faster ones for now, others may take a minute or two. But it should most always be faster than trying to figure out exactly which files you need and downloading them manually.
 
-For now we only support downloading into the current viewport, but hope to [improve that](https://github.com/cholmes/qgis_plugin_gpq_downloader/issues/10). Note also that right now only lat/long data is supported, but we also hope to [support it](https://github.com/cholmes/qgis_plugin_gpq_downloader/issues/102).
+By default the plugin downloads the current map view. Check the 'Area of Interest' box to draw a polygon or a bounding box, or to use the features selected on a layer instead. Features that extend past the area, like a large lake or land cover polygon, are downloaded whole; check 'Clip features to the area' to cut them at its edge. Note also that right now only lat/long data is supported, but we also hope to [support it](https://github.com/cholmes/qgis_plugin_gpq_downloader/issues/102).
 
 If your QGIS doesn't have GeoParquet support you'll get a warning dialog after the data downloads completes. The GeoParquet will be there, but it won't automatically open on the map. We definitely recommend getting your QGIS working with GeoParquet, as the format is faster and handles nested attributes better. See [Installing GeoParquet Support in QGIS](https://github.com/cholmes/qgis_plugin_gpq_downloader/wiki/Installing-GeoParquet-Support-in-QGIS) for more details.
 

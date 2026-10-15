@@ -9,19 +9,44 @@ from qgis.PyQt.QtWidgets import (
     QPushButton,
     QComboBox,
     QProgressDialog,
-    QCheckBox,
-    QWidget,
-    QLineEdit,
+    QProgressBar,
 )
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtCore import Qt, QThread
-from qgis.core import QgsProject, QgsVectorLayer, QgsSettings
+from qgis.core import Qgis, QgsProject, QgsVectorLayer, QgsSettings
 import os
+import re
 import datetime
 from pathlib import Path
 
+from . import duckdb_setup
 from .dialog import DataSourceDialog
 from .utils import Worker
+
+
+def custom_file_stem(url):
+    """A file name stem for a custom URL: the file's name, or the folder a glob reads.
+
+    https://host/data/rivers.parquet -> rivers
+    s3://bucket/cadastre/ple/**/*.parquet -> ple
+    s3://bucket/places/country=*/part-0.parquet -> part-0
+    """
+    path = url.split("?", 1)[0].split("#", 1)[0].split("://", 1)[-1].rstrip("/")
+    for part in reversed(path.split("/")[1:]):  # [0] is the host or bucket
+        if "*" in part:
+            continue  # a glob says nothing about the data
+        if "=" in part and not re.search(r"\.(geo)?parquet$|\.pq$", part, flags=re.IGNORECASE):
+            continue  # a hive partition key like country=US, unless it is a file name
+        stem = re.sub(r"\.(geo)?parquet$|\.pq$", "", part, flags=re.IGNORECASE)
+        stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")
+        if stem:
+            return stem
+    return "custom_download"
+
+
+def _message_level(name):
+    """Qgis.Warning on QGIS 3, Qgis.MessageLevel.Warning where only the scoped name exists."""
+    return getattr(Qgis, name) if hasattr(Qgis, name) else getattr(Qgis.MessageLevel, name)
 
 
 class QgisPluginGeoParquet:
@@ -31,6 +56,8 @@ class QgisPluginGeoParquet:
         self.worker_thread = None
         self.action = None
         self.output_file = None
+        self.clip_to_area = False  # from the dialog's "Clip features to the area" box
+        self._duckdb_message = None  # our widget on the shared QGIS message bar
         # Create a default downloads directory in user's home directory
         self.download_dir = Path.home() / "Downloads"
         # Create the directory if it doesn't exist
@@ -48,6 +75,108 @@ class QgisPluginGeoParquet:
 
         # Add the actions to the toolbar
         self.iface.addToolBarIcon(self.action)
+        self.check_duckdb(startup=True)
+
+    def check_duckdb(self, startup=False):
+        """Return True when a usable DuckDB is importable; otherwise offer to install it."""
+        module, version, usable = duckdb_setup.duckdb_status()
+        if usable:
+            duckdb_setup.activate(module)
+            return True
+        if duckdb_setup.is_installing():
+            self.iface.messageBar().pushMessage(
+                "GeoParquet Downloader",
+                "DuckDB is being installed; this takes a minute.",
+                _message_level("Info"),
+                5,
+            )
+            return False
+        if version:
+            problem = (
+                f"DuckDB {version} is installed, but GeoParquet Downloader needs "
+                "DuckDB 1.1.0 or newer."
+            )
+        else:
+            problem = "GeoParquet Downloader needs the DuckDB Python package, which QGIS's Python doesn't have."
+
+        if startup:
+            bar = self.iface.messageBar()
+            message = bar.createMessage("GeoParquet Downloader", problem)
+            button = QPushButton("Install DuckDB")
+            button.clicked.connect(lambda: self.install_duckdb())
+            message.layout().addWidget(button)
+            bar.pushWidget(message, _message_level("Warning"))
+            self._duckdb_message = message
+            return False
+
+        box = QMessageBox(self.iface.mainWindow())
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("DuckDB Needed")
+        box.setText(problem)
+        box.setInformativeText(
+            "Install it now? This runs pip in QGIS's Python and takes a minute.\n\n"
+            "Alternatively, install the QDuckDB plugin, which bundles DuckDB, and "
+            "restart QGIS."
+        )
+        install_button = box.addButton("Install DuckDB", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() == install_button:
+            self.install_duckdb()
+        return False
+
+    def _pop_duckdb_message(self):
+        """Remove our own message-bar widget, leaving other plugins' messages alone."""
+        if self._duckdb_message is None:
+            return
+        try:
+            self.iface.messageBar().popWidget(self._duckdb_message)
+        except Exception:
+            pass  # the user may already have dismissed it
+        self._duckdb_message = None
+
+    def install_duckdb(self):
+        if duckdb_setup.is_installing():
+            return
+        bar = self.iface.messageBar()
+        self._pop_duckdb_message()
+        message = bar.createMessage("GeoParquet Downloader", "Installing DuckDB...")
+        progress = QProgressBar()
+        progress.setRange(0, 0)
+        message.layout().addWidget(progress)
+        bar.pushWidget(message, _message_level("Info"))
+        self._duckdb_message = message
+        duckdb_setup.install(self.duckdb_install_finished)
+
+    def duckdb_install_finished(self, ok, output, command):
+        bar = self.iface.messageBar()
+        self._pop_duckdb_message()
+        module, version, usable = duckdb_setup.duckdb_status()
+        if ok and usable:
+            duckdb_setup.activate(module)
+            bar.pushMessage(
+                "GeoParquet Downloader",
+                f"DuckDB {version} is installed. You can download GeoParquet data now.",
+                _message_level("Success"),
+                10,
+            )
+            return
+        if ok:
+            # pip upgraded DuckDB, but the old version is already imported
+            bar.pushMessage(
+                "GeoParquet Downloader",
+                "DuckDB was installed. Restart QGIS to start using it.",
+                _message_level("Warning"),
+                0,
+            )
+            return
+        box = QMessageBox(self.iface.mainWindow())
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("DuckDB Install Failed")
+        box.setText("GeoParquet Downloader could not install DuckDB.")
+        box.setInformativeText(duckdb_setup.failure_advice(output))
+        box.setDetailedText(" ".join(command) + "\n\n" + output[-8000:])
+        box.exec()
 
     def unload(self):
         # Clean up worker and thread when plugin is unloaded
@@ -59,10 +188,16 @@ class QgisPluginGeoParquet:
             )
             return
         self.cleanup_thread()
+        self._pop_duckdb_message()
+        # A pip install still running must not call back into this dead instance
+        duckdb_setup.detach()
         # Remove all actions from the toolbar
         self.iface.removeToolBarIcon(self.action)
 
     def run(self, default_source=None):
+        if not self.check_duckdb():
+            return
+
         # Check if a worker is already running
         if self.worker is not None and self.worker_thread is not None and self.worker_thread.isRunning():
             QMessageBox.warning(
@@ -145,7 +280,7 @@ class QgisPluginGeoParquet:
                 layer_name = url.split('/')[-1].replace('.parquet', '')
                 filename = f"osm_{layer_name}_{current_date}.parquet"
             else:
-                filename = f"custom_download_{current_date}.parquet"
+                filename = f"{custom_file_stem(url)}_{current_date}.parquet"
 
             default_save_path = str(self.download_dir / filename)
             
@@ -162,69 +297,17 @@ class QgisPluginGeoParquet:
             else:
                 return
         
+        # `is True` keeps a mocked dialog's truthy MagicMock from enabling clipping
+        clip_checkbox = getattr(dialog, "clip_checkbox", None)
+        self.clip_to_area = clip_checkbox is not None and clip_checkbox.isChecked() is True
+
         # Now process downloads one at a time
         self.process_download_queue(download_queue, extent, aoi_geometry)
 
-    def handle_validation_complete(
-        self, success, message, validation_results, url, extent, dialog
-    ):
-        """Handle validation completion and start download if successful."""
-        if success:
-            # Get current date for filename
-            current_date = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-
-            # Generate the default filename based on dialog selection
-            if dialog.overture_radio.isChecked():
-                theme = dialog.overture_combo.currentText().lower()
-                if theme == "base":
-                    subtype = dialog.base_subtype_combo.currentText()
-                    filename = f"overture_base_{subtype}_{current_date}.parquet"
-                else:
-                    filename = f"overture_{theme}_{current_date}.parquet"
-
-            elif dialog.sourcecoop_radio.isChecked():
-                selection = dialog.sourcecoop_combo.currentText()
-                # Convert display name to safe filename format
-                safe_name = selection.lower().replace(" ", "_").replace("/", "_")
-                filename = f"sourcecoop_{safe_name}_{current_date}.parquet"
-
-            else:  # custom URL
-                filename = f"custom_download_{current_date}.parquet"
-
-            default_save_path = str(self.download_dir / filename)
-
-            # Show save file dialog
-            output_file, selected_filter = QFileDialog.getSaveFileName(
-                self.iface.mainWindow(),
-                "Save Data",
-                default_save_path,
-                "GeoParquet (*.parquet);;DuckDB Database (*.duckdb);;GeoPackage (*.gpkg);;FlatGeobuf (*.fgb);;GeoJSON (*.geojson)",
-            )
-
-            if output_file:
-                self.output_file = output_file
-                self.download_and_save(url, extent, output_file, validation_results)
-        else:
-            QMessageBox.warning(self.iface.mainWindow(), "Validation Error", message)
-
-    def download_and_save(self, dataset_url, extent, output_file, validation_results):
-        # Ensure we start with a fresh worker
-        self.cleanup_thread()
-
-        # Create progress dialog
-        self.progress_dialog = self.create_progress_dialog("Downloading Data")
-
-        # Create worker with validation results
-        self.worker, self.worker_thread = self.setup_worker(
-            dataset_url, extent, output_file, validation_results
-        )
-
-        # Show the progress dialog and start the thread
-        self.progress_dialog.show()
-        self.worker_thread.start()
-
     def handle_error(self, message):
-        self.progress_dialog.close()
+        # The worker emitted error without finished; stop its thread too,
+        # or the plugin refuses new downloads until QGIS restarts
+        self.cleanup_thread()
         QMessageBox.critical(self.iface.mainWindow(), "Error", message)
 
     def update_progress(self, message):
@@ -313,8 +396,14 @@ class QgisPluginGeoParquet:
             'validation_results': self.worker.validation_results,
             'output_file': self.worker.output_file,
             'size_warning_accepted': False,
-            'remaining_queue': getattr(self.worker, 'remaining_queue', [])
+            'remaining_queue': getattr(self.worker, 'remaining_queue', []),
+            'layer_name': getattr(self.worker, 'layer_name', None),
+            'aoi_geometry': getattr(self.worker, 'aoi_geometry', None),
+            'clip_to_area': getattr(self.worker, 'clip_to_area', False),
         }
+        # The worker returned after emitting the warning; stop its thread before
+        # a new worker replaces it
+        self.cleanup_thread()
         
         if hasattr(self, 'progress_dialog') and self.progress_dialog:
             self.progress_dialog.close()
@@ -384,108 +473,74 @@ class QgisPluginGeoParquet:
                 )
                 
                 if output_file:
-                    self.progress_dialog = QProgressDialog("Starting download...", "Cancel", 0, 0, self.iface.mainWindow())
-                    self.progress_dialog.setWindowTitle("Downloading Data")
-                    self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
-                    self.progress_dialog.setMinimumDuration(0)
-                    
                     self.output_file = output_file
-                    
-                    self.worker = Worker(
+                    self._start_worker(
                         worker_info['dataset_url'],
                         worker_info['extent'],
                         output_file,
-                        worker_info['iface'],
-                        worker_info['validation_results']
+                        worker_info['validation_results'],
+                        worker_info['layer_name'],
+                        worker_info['aoi_geometry'],
+                        worker_info['clip_to_area'],
+                        worker_info['remaining_queue'],
                     )
-                    self.worker.remaining_queue = worker_info['remaining_queue']
-                    self.worker_thread = QThread()
-                    self.worker.moveToThread(self.worker_thread)
-                    
-                    self.worker_thread.started.connect(self.worker.run)
-                    self.worker.error.connect(self.handle_error)
-                    self.worker.load_layer.connect(self.load_layer)
-                    self.worker.info.connect(self.show_info)
-                    self.worker.file_size_warning.connect(self.handle_large_file_warning)
-                    self.worker.finished.connect(lambda: self.handle_download_complete(worker_info['remaining_queue'], worker_info['extent']))
-                    self.worker.progress.connect(self.update_progress)
-                    self.progress_dialog.canceled.connect(self.cancel_download)
-                    
-                    self.progress_dialog.show()
-                    self.worker_thread.start()
                     return
                 continue
-            
+
             elif result == 2:
-                self.progress_dialog = QProgressDialog("Starting download...", "Cancel", 0, 0, self.iface.mainWindow())
-                self.progress_dialog.setWindowTitle("Downloading Data")
-                self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
-                self.progress_dialog.setMinimumDuration(0)
-                
-                self.worker = Worker(
+                self._start_worker(
                     worker_info['dataset_url'],
                     worker_info['extent'],
                     worker_info['output_file'],
-                    worker_info['iface'],
-                    worker_info['validation_results']
+                    worker_info['validation_results'],
+                    worker_info['layer_name'],
+                    worker_info['aoi_geometry'],
+                    worker_info['clip_to_area'],
+                    worker_info['remaining_queue'],
+                    size_warning_accepted=True,
                 )
-                self.worker.remaining_queue = worker_info['remaining_queue']
-                self.worker_thread = QThread()
-                self.worker.moveToThread(self.worker_thread)
-                
-                self.worker_thread.started.connect(self.worker.run)
-                self.worker.error.connect(self.handle_error)
-                self.worker.load_layer.connect(self.load_layer)
-                self.worker.info.connect(self.show_info)
-                self.worker.file_size_warning.connect(self.handle_large_file_warning)
-                self.worker.finished.connect(lambda: self.handle_download_complete(worker_info['remaining_queue'], worker_info['extent']))
-                self.worker.progress.connect(self.update_progress)
-                self.progress_dialog.canceled.connect(self.cancel_download)
-                
-                self.worker.size_warning_accepted = True
-                
-                self.progress_dialog.show()
-                self.worker_thread.start()
                 return
             
             else:
                 if worker_info['remaining_queue']:
-                    self.process_download_queue(worker_info['remaining_queue'], worker_info['extent'])
+                    self.process_download_queue(worker_info['remaining_queue'], worker_info['extent'], worker_info['aoi_geometry'])
                 else:
                     self.cleanup_thread()
                 return
 
-    def create_progress_dialog(
-        self, title="Downloading Data", message="Starting download..."
-    ):
-        """Create and return a configured progress dialog"""
-        progress_dialog = QProgressDialog(
-            message, "Cancel", 0, 0, self.iface.mainWindow()
+    def _start_worker(self, url, extent, output_file, validation_results, layer_name,
+                      aoi_geometry, clip_to_area, remaining_queue, size_warning_accepted=False):
+        """Create the progress dialog, worker and thread for one download and start it."""
+        self.progress_dialog = QProgressDialog(
+            f"Starting {layer_name} download..." if layer_name else "Starting download...",
+            "Cancel", 0, 0, self.iface.mainWindow()
         )
-        progress_dialog.setWindowTitle(title)
-        progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
-        progress_dialog.setMinimumDuration(0)
-        return progress_dialog
+        self.progress_dialog.setWindowTitle("Downloading Data")
+        self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
+        self.progress_dialog.setMinimumDuration(0)
 
-    def setup_worker(self, dataset_url, extent, output_file, validation_results, aoi_geometry=None):
-        """Create and setup a worker thread with all connections"""
         self.worker = Worker(
-            dataset_url, extent, output_file, self.iface, validation_results, aoi_geometry=aoi_geometry
+            url, extent, output_file, self.iface, validation_results, layer_name,
+            aoi_geometry=aoi_geometry, clip_to_area=clip_to_area,
         )
+        self.worker.size_warning_accepted = size_warning_accepted
+        self.worker.remaining_queue = remaining_queue
         self.worker_thread = QThread()
         self.worker.moveToThread(self.worker_thread)
 
-        # Connect signals
         self.worker_thread.started.connect(self.worker.run)
         self.worker.error.connect(self.handle_error)
         self.worker.load_layer.connect(self.load_layer)
         self.worker.info.connect(self.show_info)
         self.worker.file_size_warning.connect(self.handle_large_file_warning)
-        self.worker.finished.connect(self.cleanup_thread)
+        self.worker.finished.connect(
+            lambda: self.handle_download_complete(remaining_queue, extent, aoi_geometry)
+        )
         self.worker.progress.connect(self.update_progress)
         self.progress_dialog.canceled.connect(self.cancel_download)
 
-        return self.worker, self.worker_thread
+        self.progress_dialog.show()
+        self.worker_thread.start()
 
     def process_download_queue(self, download_queue, extent, aoi_geometry=None):
         """Process downloads sequentially"""
@@ -508,56 +563,14 @@ class QgisPluginGeoParquet:
                 else:
                     layer_name = f"Overture {theme.title()}"
         
-        # Create validation results (we know Overture URLs are valid)
-        validation_results = {'has_bbox': True, 'bbox_column': 'bbox', 'geometry_column': 'geometry'}
-        
-        # For non-Overture data, try to detect the geometry column name from the URL
-        if 'overture' not in url:
-            from . import logger
-            #logger.log(f"Processing URL: {url}")
-            
-            # Try to extract dataset name from URL for better logging
-            dataset_name = url.split('/')[-1].split('?')[0]
-            #logger.log(f"Dataset name from URL: {dataset_name}")
-            
-            # For specific known datasets, set the geometry column
-            if 'addresses.nobbox.pq' in url or 'addresses.pq' in url:
-                #logger.log("Detected addresses dataset, setting geometry column to 'geom'")
-                validation_results['geometry_column'] = 'geom'
-        
-       #logger.log(f"Initial validation_results: {validation_results}")
-        
-        # Create progress dialog
-        self.progress_dialog = QProgressDialog(
-            "Starting download..." if not layer_name else f"Starting {layer_name} download...",
-            "Cancel", 0, 0, self.iface.mainWindow()
+        # No hints: the Worker reads the file's own GeoParquet metadata and
+        # schema to find the geometry and bbox columns
+        validation_results = {}
+
+        self._start_worker(
+            url, extent, output_file, validation_results, layer_name,
+            aoi_geometry, self.clip_to_area, remaining_queue,
         )
-        self.progress_dialog.setWindowTitle("Downloading Data")
-        self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
-        self.progress_dialog.setMinimumDuration(0)
-        
-        # Create worker with layer name
-        self.worker = Worker(url, extent, output_file, self.iface, validation_results, layer_name)
-        self.worker.aoi_geometry = aoi_geometry  # Pass the aoi_geometry to the worker
-        self.worker.remaining_queue = remaining_queue  # Store remaining queue in worker
-        self.worker_thread = QThread()
-        
-        # Move worker to thread
-        self.worker.moveToThread(self.worker_thread)
-        
-        # Connect signals
-        self.worker_thread.started.connect(self.worker.run)
-        self.worker.error.connect(self.handle_error)
-        self.worker.load_layer.connect(self.load_layer)
-        self.worker.info.connect(self.show_info)
-        self.worker.file_size_warning.connect(self.handle_large_file_warning)
-        self.worker.finished.connect(lambda: self.handle_download_complete(remaining_queue, extent, aoi_geometry))
-        self.worker.progress.connect(self.update_progress)
-        self.progress_dialog.canceled.connect(self.cancel_download)
-        
-        # Show the progress dialog and start the thread
-        self.progress_dialog.show()
-        self.worker_thread.start()
 
     def handle_download_complete(self, remaining_queue, extent, aoi_geometry=None):
         """Handle completion of a download and start the next one if any"""

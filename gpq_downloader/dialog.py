@@ -726,6 +726,15 @@ class DataSourceDialog(QDialog):
             self.resize(self.width() - width, self.height())
 
     def save_checkbox_states(self) -> None:
+        # Saved on accept, like the other checkboxes, so cancelling the dialog
+        # keeps the remembered setting
+        if hasattr(self, "clip_checkbox"):
+            QgsSettings().setValue(
+                "gpq_downloader/clip_to_area",
+                self.clip_checkbox.isChecked(),
+                section=QgsSettings.Plugins,
+            )
+
         # Save main checkboxes
         for key, checkbox in self.overture_checkboxes.items():
             QgsSettings().setValue(
@@ -1013,6 +1022,17 @@ class DataSourceDialog(QDialog):
             "Using current map view. Check the box above to define a custom area of interest."
         )
         container_layout.addWidget(self.extent_display)
+
+        # Outside the group box too: clipping applies to the map view as well
+        self.clip_checkbox = QCheckBox("Clip features to the area")
+        self.clip_checkbox.setToolTip(
+            "Cut features that extend past the area (such as large water or land "
+            "cover polygons) at its edge. Unchecked, they are downloaded whole."
+        )
+        self.clip_checkbox.setChecked(
+            QgsSettings().value("gpq_downloader/clip_to_area", False, type=bool, section=QgsSettings.Plugins)
+        )
+        container_layout.addWidget(self.clip_checkbox)
 
         self.aoi_container.setLayout(container_layout)
         return self.aoi_container
