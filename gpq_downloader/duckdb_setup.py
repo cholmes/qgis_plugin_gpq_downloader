@@ -6,9 +6,12 @@ missing or too old, the user gets a message with an "Install DuckDB" button
 instead of a ModuleNotFoundError at startup.
 """
 
+from __future__ import annotations
+
 import importlib
 import os
 import platform
+import re
 import site
 import subprocess
 import sys
@@ -20,7 +23,7 @@ from . import logger
 MIN_VERSION = (1, 1, 0)
 
 
-def add_user_site_packages():
+def add_user_site_packages() -> None:
     """Put the user site-packages dir, where pip --user installs, on sys.path.
 
     QGIS on Windows and macOS can start Python without it, so a DuckDB that pip
@@ -32,13 +35,19 @@ def add_user_site_packages():
         return
     if user_site and os.path.isdir(user_site) and user_site not in sys.path:
         site.addsitedir(user_site)
+        # addsitedir appends, so a too-old DuckDB bundled in QGIS's own
+        # site-packages would still win over the pip --user upgrade. Move the
+        # user dir ahead of it, matching normal Python's path order.
+        if user_site in sys.path:
+            sys.path.remove(user_site)
+            sys.path.insert(1, user_site)
 
 
-def _parse_version(text):
+def _parse_version(text) -> tuple[int, int, int]:
     parts = []
     for piece in str(text).split(".")[:3]:
-        digits = "".join(ch for ch in piece if ch.isdigit())
-        parts.append(int(digits) if digits else 0)
+        m = re.match(r"\d+", piece)  # "0rc1" counts as 0, not 1
+        parts.append(int(m.group()) if m else 0)
     return tuple(parts + [0] * (3 - len(parts)))
 
 
@@ -49,18 +58,22 @@ def duckdb_status():
         import duckdb
     except ImportError:
         return None, None, False
+    except Exception as e:
+        # A broken install (half-upgraded, corrupt) must not stop plugin load
+        logger.log(f"DuckDB import failed: {e}", 2)
+        return None, None, False
     version = getattr(duckdb, "__version__", "0")
     return duckdb, version, _parse_version(version) >= MIN_VERSION
 
 
-def activate(module):
+def activate(module) -> None:
     """Give the plugin's worker module the DuckDB module, so no restart is needed."""
     from . import utils
 
     utils.duckdb = module
 
 
-def python_executable():
+def python_executable() -> str:
     """The Python interpreter QGIS runs, to call pip with.
 
     Inside QGIS sys.executable is often the QGIS binary itself, not Python.
@@ -92,24 +105,31 @@ def python_executable():
     return sys.executable
 
 
-def pip_command(python):
-    return [python, "-m", "pip", "install", "--user", "--upgrade", "duckdb>=%d.%d.%d" % MIN_VERSION]
+def pip_command(python: str) -> list[str]:
+    # --user fails inside a venv-based QGIS (some Linux distros, conda)
+    in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    user_flag = [] if in_venv else ["--user"]
+    spec = "duckdb>=" + ".".join(str(n) for n in MIN_VERSION)
+    return [python, "-m", "pip", "install", *user_flag, "--upgrade", spec]
 
 
-def failure_advice(output):
+def failure_advice(output: str) -> str:
     """What to tell the user after pip failed, based on what pip printed."""
-    tips = []
     if "externally-managed-environment" in output:
-        tips.append(
+        return (
             "Your system Python is managed by the operating system, so pip may not "
             "install into it. Install the QDuckDB plugin, which bundles DuckDB, or run:\n"
             "    pip install --user --break-system-packages duckdb"
         )
-    elif "No module named pip" in output:
-        tips.append("This QGIS has no pip. Install the QDuckDB plugin, which bundles DuckDB.")
-    else:
-        tips.append("Install the QDuckDB plugin, which bundles DuckDB, then restart QGIS.")
-    return "\n\n".join(tips)
+    if "No module named pip" in output:
+        return "This QGIS has no pip. Install the QDuckDB plugin, which bundles DuckDB."
+    if "not visible in this virtualenv" in output:
+        return (
+            "This QGIS runs Python in a virtual environment that pip --user cannot "
+            "install into. Run 'pip install duckdb' in that environment, or install "
+            "the QDuckDB plugin, which bundles DuckDB."
+        )
+    return "Install the QDuckDB plugin, which bundles DuckDB, then restart QGIS."
 
 
 class DuckDBInstallerTask(QgsTask):
@@ -140,16 +160,38 @@ class DuckDBInstallerTask(QgsTask):
         return result.returncode == 0
 
     def finished(self, result):
+        global _task
         importlib.invalidate_caches()
-        self.on_done(bool(result), self.output, self.command)
+        try:
+            self.on_done(bool(result), self.output, self.command)
+        finally:
+            if _task is self:
+                _task = None
 
 
 _task = None  # keep a reference so the task is not garbage collected while it runs
 
 
+def is_installing() -> bool:
+    """True while an install started by install() is still queued or running."""
+    return _task is not None and _task.isActive()
+
+
 def install(on_done):
-    """Start installing DuckDB; on_done(ok, output, command) runs on the main thread."""
+    """Start installing DuckDB; on_done(ok, output, command) runs on the main thread.
+
+    A second call while an install is running returns the running task instead
+    of racing a second pip process against it.
+    """
     global _task
+    if is_installing():
+        return _task
     _task = DuckDBInstallerTask(on_done)
     QgsApplication.taskManager().addTask(_task)
     return _task
+
+
+def detach() -> None:
+    """Keep a running install from calling back into an unloaded plugin."""
+    if _task is not None:
+        _task.on_done = lambda ok, output, command: None

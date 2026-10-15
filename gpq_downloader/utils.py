@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import math
 import re
@@ -221,11 +223,11 @@ def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
     such a name, only the files overlapping the bbox are passed in.
     Returns a SQL literal, or None when no file overlaps the bbox.
     """
-    default = f"'{url}'"
+    default = sql_str(url)
     if bbox is None or "*" not in url or not url.endswith(".parquet"):
         return default
     try:
-        files = [row[0] for row in conn.execute(f"SELECT file FROM glob('{url}')").fetchall()]
+        files = [row[0] for row in conn.execute(f"SELECT file FROM glob({sql_str(url)})").fetchall()]
     except Exception as e:
         logger.log(f"Could not list files for partition pruning: {e}")
         return default
@@ -256,15 +258,25 @@ def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
     logger.log(f"Partition pruning by file name: reading {len(selected)} of {len(files)} files")
     if not selected:
         return None
-    return "[" + ", ".join(f"'{f}'" for f in sorted(selected)) + "]"
+    return "[" + ", ".join(sql_str(f) for f in sorted(selected)) + "]"
 
 
-def sql_str(value):
+def sql_str(value) -> str:
     """Quote a value as a SQL string literal."""
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def parse_geo_metadata(raw):
+def sql_ident(name) -> str:
+    """Quote a name as a SQL identifier.
+
+    Column names come from the remote file's own schema and GeoParquet
+    metadata, so a name containing a double quote must not be able to
+    terminate the identifier and smuggle SQL into the query.
+    """
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def parse_geo_metadata(raw) -> tuple[str | None, str | None]:
     """Return (primary_column, bbox_column) from a GeoParquet 'geo' metadata value.
 
     bbox_column is the struct column named by the primary column's bbox covering
@@ -288,8 +300,23 @@ def parse_geo_metadata(raw):
     return primary, bbox_column
 
 
-def read_geo_metadata(conn, url):
+def first_parquet_file(conn, url: str) -> str:
+    """One concrete file at url, so metadata reads don't fetch every footer of a glob."""
+    if "*" not in url:
+        return url
+    try:
+        row = conn.execute(f"SELECT file FROM glob({sql_str(url)}) LIMIT 1").fetchone()
+    except Exception as e:
+        if duckdb is not None and isinstance(e, duckdb.InterruptException):
+            raise
+        logger.log(f"Could not list files at {url}: {e}")
+        return url
+    return row[0] if row else url
+
+
+def read_geo_metadata(conn, url: str) -> tuple[str | None, str | None]:
     """(primary_column, bbox_column) from the 'geo' metadata of the first file at url."""
+    url = first_parquet_file(conn, url)
     try:
         row = conn.execute(
             f"SELECT value FROM parquet_kv_metadata({sql_str(url)}) "
@@ -306,13 +333,13 @@ def read_geo_metadata(conn, url):
     return parse_geo_metadata(value.decode("utf-8", "replace") if isinstance(value, bytes) else value)
 
 
-def is_bbox_struct(col_type):
+def is_bbox_struct(col_type: str) -> bool:
     """True for a STRUCT with xmin, ymin, xmax and ymax fields."""
     t = col_type.lower()
     return t.startswith("struct") and all(f in t for f in ("xmin", "ymin", "xmax", "ymax"))
 
 
-def detect_columns(schema, geo_primary=None, geo_bbox=None, hint_geometry=None, hint_bbox=None):
+def detect_columns(schema, geo_primary=None, geo_bbox=None, hint_geometry=None, hint_bbox=None) -> tuple[str, str | None]:
     """Pick the geometry and bbox columns for a schema from DESCRIBE.
 
     The GeoParquet metadata wins when it names a column that exists. Then the
@@ -337,14 +364,14 @@ def detect_columns(schema, geo_primary=None, geo_bbox=None, hint_geometry=None, 
     return geometry, bbox
 
 
-def bbox_polygon_wkt(bbox):
+def bbox_polygon_wkt(bbox) -> str:
     xmin, ymin, xmax, ymax = bbox.xMinimum(), bbox.yMinimum(), bbox.xMaximum(), bbox.yMaximum()
     return f"POLYGON(({xmin} {ymin}, {xmax} {ymin}, {xmax} {ymax}, {xmin} {ymax}, {xmin} {ymin}))"
 
 
-def bbox_overlap_condition(bbox_column, bbox):
+def bbox_overlap_condition(bbox_column: str, bbox) -> str:
     """Rows whose covering bbox overlaps the window, including features larger than it."""
-    col = f'"{bbox_column}"'
+    col = sql_ident(bbox_column)
     return (
         f"{col}.xmin <= {bbox.xMaximum()} AND {col}.xmax >= {bbox.xMinimum()} "
         f"AND {col}.ymin <= {bbox.yMaximum()} AND {col}.ymax >= {bbox.yMinimum()}"
@@ -443,14 +470,8 @@ class Worker(QObject):
                     conn.execute("LOAD spatial;")
 
                 # Get schema early as we need it for both column names and bbox check
-                schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.read_url}')"
+                schema_query = f"DESCRIBE SELECT * FROM read_parquet({sql_str(self.read_url)})"
                 schema_result = conn.execute(schema_query).fetchall()
-                self.validation_results['schema'] = schema_result
-                
-                # Log the schema for debugging
-                #logger.log("Schema in Worker:")
-                #for row in schema_result:
-                    #logger.log(f"Column: {row[0]}, Type: {row[1]}")
 
                 # The caller's validation results are only hints: the download queue
                 # passes preset defaults. The file's own GeoParquet metadata and
@@ -469,7 +490,6 @@ class Worker(QObject):
                 logger.log(f"Geometry column: {geometry_column}; bbox column: {bbox_column}")
 
                 table_name = "download_data"
-                geometry_column = self.validation_results.get('geometry_column', 'geometry')
 
                 self.progress.emit(f"Preparing query{layer_info}...")
                 select_query = "SELECT *"
@@ -481,8 +501,8 @@ class Worker(QObject):
                         col_type = row[1]
                         
                         # Quote the column name to handle special characters
-                        quoted_col_name = f'"{col_name}"'
-                        
+                        quoted_col_name = sql_ident(col_name)
+
                         if 'STRUCT' in col_type.upper() or 'MAP' in col_type.upper():
                             columns.append(f"TO_JSON({quoted_col_name}) AS {quoted_col_name}")
                         elif '[]' in col_type:  # Check for array types like VARCHAR[]
@@ -534,7 +554,7 @@ class Worker(QObject):
                     # A WKB BLOB column is filtered after conversion, below
                     if bbox_column is None or self.aoi_geometry is not None:
                         conditions.append(
-                            f'ST_Intersects("{geometry_column}", ST_GeomFromText({sql_str(area_wkt)}))'
+                            f'ST_Intersects({sql_ident(geometry_column)}, ST_GeomFromText({sql_str(area_wkt)}))'
                         )
                 where_clause = ("WHERE " + "\n AND ".join(conditions)) if conditions else ""
 
@@ -566,16 +586,21 @@ class Worker(QObject):
                     # Build column list for conversion
                     convert_columns = []
                     for col_name, col_type, _, _, _, _ in schema_result:
-                        quoted_col_name = f'"{col_name}"'
+                        quoted_col_name = sql_ident(col_name)
                         if col_name == geometry_column:
                             convert_columns.append(f"ST_GeomFromWKB({quoted_col_name}) AS {quoted_col_name}")
                         else:
                             convert_columns.append(quoted_col_name)
-                    
-                    spatial_filter = (
-                        f'WHERE ST_Intersects(ST_GeomFromWKB("{geometry_column}"), '
-                        f'ST_GeomFromText({sql_str(area_wkt)}))'
-                    )
+
+                    # Mirror the typed-geometry path: the bbox covering column has
+                    # already filtered remotely, so only an AOI needs a real
+                    # geometry test here
+                    spatial_filter = ""
+                    if bbox_column is None or self.aoi_geometry is not None:
+                        spatial_filter = (
+                            f'WHERE ST_Intersects(ST_GeomFromWKB({sql_ident(geometry_column)}), '
+                            f'ST_GeomFromText({sql_str(area_wkt)}))'
+                        )
 
                     convert_query = f"""
                     CREATE TABLE {temp_table} AS
@@ -624,8 +649,8 @@ class Worker(QObject):
                     # Use the geometry column from validation results for the Hilbert sorting
                     # At this point, if we converted BLOB to geometry, it's already a GEOMETRY type
                     # So we don't need ST_GeomFromWKB anymore
-                    geometry_expr = f'"{geometry_column}"'
-                    extent_expr = f'"{geometry_column}"'
+                    geometry_expr = sql_ident(geometry_column)
+                    extent_expr = sql_ident(geometry_column)
                     
                     copy_query = f"""
                     COPY (
@@ -637,7 +662,7 @@ class Worker(QObject):
                         FROM     {table_name} AS t
                                 CROSS JOIN bbox
                         ORDER BY ST_Hilbert(t.{geometry_expr}, bbox.b)
-                    ) TO '{self.output_file}' 
+                    ) TO {sql_str(self.output_file)}
                     """
 
                     if file_extension == "parquet":
@@ -706,10 +731,22 @@ class Worker(QObject):
 
     def clip_table(self, conn, table_name, geometry_column, bbox_column, area_wkt):
         """Cut each feature to the area, dropping those outside it, and refresh the bbox column."""
-        geom = f'"{geometry_column}"'
+        geom = sql_ident(geometry_column)
         area = f"ST_GeomFromText({sql_str(area_wkt)})"
-        conn.execute(f"DELETE FROM {table_name} WHERE NOT ST_Intersects({geom}, {area})")
-        conn.execute(f"UPDATE {table_name} SET {geom} = ST_Intersection({geom}, {area})")
+        # Drop NULL geometries, features outside the area, and features whose
+        # intersection collapses to a lower dimension (a polygon that only
+        # touches the area's edge would otherwise become a line or point).
+        conn.execute(
+            f"DELETE FROM {table_name} WHERE {geom} IS NULL"
+            f" OR NOT ST_Intersects({geom}, {area})"
+            f" OR (NOT ST_CoveredBy({geom}, {area})"
+            f" AND ST_Dimension(ST_Intersection({geom}, {area})) < ST_Dimension({geom}))"
+        )
+        # Only features crossing the area's edge need cutting
+        conn.execute(
+            f"UPDATE {table_name} SET {geom} = ST_Intersection({geom}, {area})"
+            f" WHERE NOT ST_CoveredBy({geom}, {area})"
+        )
         if bbox_column is None:
             return
         columns = {row[0]: row[1].upper() for row in conn.execute(f"DESCRIBE {table_name}").fetchall()}
@@ -722,7 +759,7 @@ class Worker(QObject):
         )
         if not col_type.startswith("STRUCT"):
             new_bbox = f"to_json({new_bbox})"  # exports other than parquet store it as JSON
-        conn.execute(f'UPDATE {table_name} SET "{bbox_column}" = {new_bbox}')
+        conn.execute(f'UPDATE {table_name} SET {sql_ident(bbox_column)} = {new_bbox}')
 
     def kill(self):
         self.killed = True
@@ -735,7 +772,7 @@ class Worker(QObject):
             except Exception as e:
                 logger.log(f"Could not interrupt DuckDB query: {e}")
 
-    def estimate_file_size(self, conn, table_name, geometry_column="geometry"):
+    def estimate_file_size(self, conn, table_name, geometry_column):
         """Estimate the output file size in MB using GeoJSON feature collection structure"""
         try:
             # Get total row count
@@ -746,7 +783,7 @@ class Worker(QObject):
 
             if sample_size > 0:
                 properties = ", ".join(
-                    f"{sql_str(col[0])}, COALESCE(CAST(\"{col[0]}\" AS VARCHAR), 'null')"
+                    f"{sql_str(col[0])}, COALESCE(CAST({sql_ident(col[0])} AS VARCHAR), 'null')"
                     for col in conn.execute(f"DESCRIBE {table_name}").fetchall()
                     if col[0] != geometry_column
                 )
@@ -758,7 +795,7 @@ class Worker(QObject):
                     SELECT AVG(LENGTH(
                         json_object(
                             'type', 'Feature',
-                            'geometry', ST_AsGeoJSON("{geometry_column}"),
+                            'geometry', ST_AsGeoJSON({sql_ident(geometry_column)}),
                             'properties', json_object({properties})
                         )::VARCHAR
                     )) as avg_feature_size
@@ -793,7 +830,7 @@ class Worker(QObject):
         for row in schema_result:
             col_name = row[0]
             col_type = row[1]
-            quoted_col_name = f'"{col_name}"'
+            quoted_col_name = sql_ident(col_name)
 
             if "STRUCT" in col_type.upper() or "MAP" in col_type.upper():
                 columns.append(f"TO_JSON({quoted_col_name}) AS {quoted_col_name}")
@@ -829,14 +866,9 @@ class ValidationWorker(QObject):
         with open(presets_path, "r") as f:
             self.PRESET_DATASETS = json.load(f)
 
-    def check_bbox_metadata(self, conn):
-        """The bbox covering column named in the GeoParquet metadata, or None."""
-        return read_geo_metadata(conn, self.read_url)[1]
-
     def run(self):
         # Initialize validation results with default values
         validation_results = {
-            "schema": None,
             "has_bbox": False,
             "bbox_column": None,
             "geometry_column": "geometry"  # Default fallback
@@ -864,11 +896,8 @@ class ValidationWorker(QObject):
                 return
 
             self.progress.emit("Checking data format...")
-            schema_query = f"DESCRIBE SELECT * FROM read_parquet('{self.read_url}')"
+            schema_query = f"DESCRIBE SELECT * FROM read_parquet({sql_str(self.read_url)})"
             schema_result = conn.execute(schema_query).fetchall()
-
-            # Update validation results with schema
-            validation_results["schema"] = schema_result
             if self.killed:
                 return
 

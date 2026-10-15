@@ -22,6 +22,8 @@ from gpq_downloader.utils import (
     Worker,
     detect_columns,
     parse_geo_metadata,
+    sql_ident,
+    sql_str,
 )
 
 DATA = os.path.join(os.path.dirname(__file__), "data", "geom_bbox_named.parquet")
@@ -67,6 +69,29 @@ def test_parse_geo_metadata():
     assert parse_geo_metadata('{"columns": {"geometry": {"covering": {"bbox": {"xmin": [0]}}}}}') == ("geometry", None)
     assert parse_geo_metadata("not json") == (None, None)
     assert parse_geo_metadata("[]") == (None, None)
+
+
+def test_sql_quoting():
+    assert sql_ident("geom") == '"geom"'
+    assert sql_ident('a"b') == '"a""b"'
+    assert sql_str("O'Brien") == "'O''Brien'"
+
+
+def test_quoted_column_name_cannot_inject_sql(mock_iface, tmp_path):
+    """A geometry column whose name contains a double quote (which a hostile
+    remote file can choose) stays an identifier instead of becoming SQL."""
+    evil = 'g" (SELECT 1); --'
+    src = tmp_path / "quoted.parquet"
+    conn = duckdb.connect()
+    conn.execute("LOAD spatial")
+    conn.execute(
+        f"COPY (SELECT name, geom AS {sql_ident(evil)} FROM read_parquet({sql_str(DATA)})) "
+        f"TO {sql_str(src)} (FORMAT parquet)"
+    )
+    out = tmp_path / "quoted_out.parquet"
+    worker, _ = run_worker(mock_iface, out, url=str(src))
+    assert worker.validation_results["geometry_column"] == evil
+    assert {r[0] for r in read_parquet(out)} == IN_WINDOW
 
 
 def test_detect_columns_prefers_metadata_then_hints_then_schema():

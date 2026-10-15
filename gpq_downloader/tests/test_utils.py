@@ -30,7 +30,7 @@ def test_estimate_file_size(mock_iface, sample_bbox, tmp_path):
     )
     
     # Test size estimation
-    estimated_size = worker.estimate_file_size(mock_conn, "test_table")
+    estimated_size = worker.estimate_file_size(mock_conn, "test_table", "geometry")
     assert estimated_size > 0
     assert isinstance(estimated_size, float)
 
