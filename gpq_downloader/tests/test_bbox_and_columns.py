@@ -83,7 +83,7 @@ def test_quoted_column_name_cannot_inject_sql(mock_iface, tmp_path):
     evil = 'g" (SELECT 1); --'
     src = tmp_path / "quoted.parquet"
     conn = duckdb.connect()
-    conn.execute("LOAD spatial")
+    conn.execute("INSTALL spatial; LOAD spatial")
     conn.execute(
         f"COPY (SELECT name, geom AS {sql_ident(evil)} FROM read_parquet({sql_str(DATA)})) "
         f"TO {sql_str(src)} (FORMAT parquet)"
