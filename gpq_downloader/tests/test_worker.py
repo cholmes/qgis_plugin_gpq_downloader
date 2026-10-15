@@ -78,7 +78,7 @@ def test_worker_run_with_bbox(mock_connect, mock_iface, sample_bbox, tmp_path, s
     # Check queries
     bbox_query_found = False
     for query in mock_conn.executed_queries:
-        if '"bbox".xmin BETWEEN' in query:
+        if '"bbox".xmin <=' in query and '"bbox".xmax >=' in query:
             bbox_query_found = True
     
     assert bbox_query_found, "Should use bbox in the query"

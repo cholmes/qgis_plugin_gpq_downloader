@@ -12,16 +12,42 @@ from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QWidget,
     QLineEdit,
+    QProgressBar,
 )
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtCore import Qt, QThread
-from qgis.core import QgsProject, QgsVectorLayer, QgsSettings
+from qgis.core import Qgis, QgsProject, QgsVectorLayer, QgsSettings
 import os
+import re
 import datetime
 from pathlib import Path
 
+from . import duckdb_setup
 from .dialog import DataSourceDialog
 from .utils import Worker
+
+
+def custom_file_stem(url):
+    """A file name stem for a custom URL: the file's name, or the folder a glob reads.
+
+    https://host/data/rivers.parquet -> rivers
+    s3://bucket/cadastre/ple/**/*.parquet -> ple
+    s3://bucket/places/country=*/part-0.parquet -> part-0
+    """
+    path = url.split("?", 1)[0].split("://", 1)[-1].rstrip("/")
+    for part in reversed(path.split("/")[1:]):  # [0] is the host or bucket
+        if "*" in part or "=" in part:
+            continue  # a glob or a hive partition key says nothing about the data
+        stem = re.sub(r"\.(geo)?parquet$|\.pq$", "", part, flags=re.IGNORECASE)
+        stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")
+        if stem:
+            return stem
+    return "custom_download"
+
+
+def _message_level(name):
+    """Qgis.Warning on QGIS 3, Qgis.MessageLevel.Warning where only the scoped name exists."""
+    return getattr(Qgis, name) if hasattr(Qgis, name) else getattr(Qgis.MessageLevel, name)
 
 
 class QgisPluginGeoParquet:
@@ -31,6 +57,7 @@ class QgisPluginGeoParquet:
         self.worker_thread = None
         self.action = None
         self.output_file = None
+        self.clip_to_area = False  # from the dialog's "Clip features to the area" box
         # Create a default downloads directory in user's home directory
         self.download_dir = Path.home() / "Downloads"
         # Create the directory if it doesn't exist
@@ -48,6 +75,86 @@ class QgisPluginGeoParquet:
 
         # Add the actions to the toolbar
         self.iface.addToolBarIcon(self.action)
+        self.check_duckdb(startup=True)
+
+    def check_duckdb(self, startup=False):
+        """Return True when a usable DuckDB is importable; otherwise offer to install it."""
+        module, version, usable = duckdb_setup.duckdb_status()
+        if usable:
+            duckdb_setup.activate(module)
+            return True
+        if version:
+            problem = (
+                f"DuckDB {version} is installed, but GeoParquet Downloader needs "
+                "DuckDB 1.1.0 or newer."
+            )
+        else:
+            problem = "GeoParquet Downloader needs the DuckDB Python package, which QGIS's Python doesn't have."
+
+        if startup:
+            bar = self.iface.messageBar()
+            message = bar.createMessage("GeoParquet Downloader", problem)
+            button = QPushButton("Install DuckDB")
+            button.clicked.connect(lambda: self.install_duckdb())
+            message.layout().addWidget(button)
+            bar.pushWidget(message, _message_level("Warning"))
+            return False
+
+        box = QMessageBox(self.iface.mainWindow())
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("DuckDB Needed")
+        box.setText(problem)
+        box.setInformativeText(
+            "Install it now? This runs pip in QGIS's Python and takes a minute.\n\n"
+            "Alternatively, install the QDuckDB plugin, which bundles DuckDB, and "
+            "restart QGIS."
+        )
+        install_button = box.addButton("Install DuckDB", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() == install_button:
+            self.install_duckdb()
+        return False
+
+    def install_duckdb(self):
+        bar = self.iface.messageBar()
+        bar.clearWidgets()
+        message = bar.createMessage("GeoParquet Downloader", "Installing DuckDB...")
+        progress = QProgressBar()
+        progress.setRange(0, 0)
+        message.layout().addWidget(progress)
+        bar.pushWidget(message, _message_level("Info"))
+        duckdb_setup.install(self.duckdb_install_finished)
+
+    def duckdb_install_finished(self, ok, output, command):
+        bar = self.iface.messageBar()
+        bar.clearWidgets()
+        module, version, usable = duckdb_setup.duckdb_status()
+        if ok and usable:
+            duckdb_setup.activate(module)
+            bar.pushMessage(
+                "GeoParquet Downloader",
+                f"DuckDB {version} is installed. You can download GeoParquet data now.",
+                _message_level("Success"),
+                10,
+            )
+            return
+        if ok:
+            # pip upgraded DuckDB, but the old version is already imported
+            bar.pushMessage(
+                "GeoParquet Downloader",
+                "DuckDB was installed. Restart QGIS to start using it.",
+                _message_level("Warning"),
+                0,
+            )
+            return
+        box = QMessageBox(self.iface.mainWindow())
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("DuckDB Install Failed")
+        box.setText("GeoParquet Downloader could not install DuckDB.")
+        box.setInformativeText(duckdb_setup.failure_advice(output))
+        box.setDetailedText(" ".join(command) + "\n\n" + output[-8000:])
+        box.exec()
 
     def unload(self):
         # Clean up worker and thread when plugin is unloaded
@@ -63,6 +170,9 @@ class QgisPluginGeoParquet:
         self.iface.removeToolBarIcon(self.action)
 
     def run(self, default_source=None):
+        if not self.check_duckdb():
+            return
+
         # Check if a worker is already running
         if self.worker is not None and self.worker_thread is not None and self.worker_thread.isRunning():
             QMessageBox.warning(
@@ -145,7 +255,7 @@ class QgisPluginGeoParquet:
                 layer_name = url.split('/')[-1].replace('.parquet', '')
                 filename = f"osm_{layer_name}_{current_date}.parquet"
             else:
-                filename = f"custom_download_{current_date}.parquet"
+                filename = f"{custom_file_stem(url)}_{current_date}.parquet"
 
             default_save_path = str(self.download_dir / filename)
             
@@ -162,6 +272,9 @@ class QgisPluginGeoParquet:
             else:
                 return
         
+        clip_checkbox = getattr(dialog, "clip_checkbox", None)
+        self.clip_to_area = clip_checkbox is not None and clip_checkbox.isChecked() is True
+
         # Now process downloads one at a time
         self.process_download_queue(download_queue, extent, aoi_geometry)
 
@@ -189,7 +302,7 @@ class QgisPluginGeoParquet:
                 filename = f"sourcecoop_{safe_name}_{current_date}.parquet"
 
             else:  # custom URL
-                filename = f"custom_download_{current_date}.parquet"
+                filename = f"{custom_file_stem(url)}_{current_date}.parquet"
 
             default_save_path = str(self.download_dir / filename)
 
@@ -313,8 +426,14 @@ class QgisPluginGeoParquet:
             'validation_results': self.worker.validation_results,
             'output_file': self.worker.output_file,
             'size_warning_accepted': False,
-            'remaining_queue': getattr(self.worker, 'remaining_queue', [])
+            'remaining_queue': getattr(self.worker, 'remaining_queue', []),
+            'layer_name': getattr(self.worker, 'layer_name', None),
+            'aoi_geometry': getattr(self.worker, 'aoi_geometry', None),
+            'clip_to_area': getattr(self.worker, 'clip_to_area', False),
         }
+        # The worker returned after emitting the warning; stop its thread before
+        # a new worker replaces it
+        self.cleanup_thread()
         
         if hasattr(self, 'progress_dialog') and self.progress_dialog:
             self.progress_dialog.close()
@@ -396,7 +515,10 @@ class QgisPluginGeoParquet:
                         worker_info['extent'],
                         output_file,
                         worker_info['iface'],
-                        worker_info['validation_results']
+                        worker_info['validation_results'],
+                        worker_info['layer_name'],
+                        aoi_geometry=worker_info['aoi_geometry'],
+                        clip_to_area=worker_info['clip_to_area'],
                     )
                     self.worker.remaining_queue = worker_info['remaining_queue']
                     self.worker_thread = QThread()
@@ -407,7 +529,7 @@ class QgisPluginGeoParquet:
                     self.worker.load_layer.connect(self.load_layer)
                     self.worker.info.connect(self.show_info)
                     self.worker.file_size_warning.connect(self.handle_large_file_warning)
-                    self.worker.finished.connect(lambda: self.handle_download_complete(worker_info['remaining_queue'], worker_info['extent']))
+                    self.worker.finished.connect(lambda: self.handle_download_complete(worker_info['remaining_queue'], worker_info['extent'], worker_info['aoi_geometry']))
                     self.worker.progress.connect(self.update_progress)
                     self.progress_dialog.canceled.connect(self.cancel_download)
                     
@@ -427,7 +549,10 @@ class QgisPluginGeoParquet:
                     worker_info['extent'],
                     worker_info['output_file'],
                     worker_info['iface'],
-                    worker_info['validation_results']
+                    worker_info['validation_results'],
+                    worker_info['layer_name'],
+                    aoi_geometry=worker_info['aoi_geometry'],
+                    clip_to_area=worker_info['clip_to_area'],
                 )
                 self.worker.remaining_queue = worker_info['remaining_queue']
                 self.worker_thread = QThread()
@@ -438,7 +563,7 @@ class QgisPluginGeoParquet:
                 self.worker.load_layer.connect(self.load_layer)
                 self.worker.info.connect(self.show_info)
                 self.worker.file_size_warning.connect(self.handle_large_file_warning)
-                self.worker.finished.connect(lambda: self.handle_download_complete(worker_info['remaining_queue'], worker_info['extent']))
+                self.worker.finished.connect(lambda: self.handle_download_complete(worker_info['remaining_queue'], worker_info['extent'], worker_info['aoi_geometry']))
                 self.worker.progress.connect(self.update_progress)
                 self.progress_dialog.canceled.connect(self.cancel_download)
                 
@@ -450,7 +575,7 @@ class QgisPluginGeoParquet:
             
             else:
                 if worker_info['remaining_queue']:
-                    self.process_download_queue(worker_info['remaining_queue'], worker_info['extent'])
+                    self.process_download_queue(worker_info['remaining_queue'], worker_info['extent'], worker_info['aoi_geometry'])
                 else:
                     self.cleanup_thread()
                 return
@@ -537,8 +662,10 @@ class QgisPluginGeoParquet:
         self.progress_dialog.setMinimumDuration(0)
         
         # Create worker with layer name
-        self.worker = Worker(url, extent, output_file, self.iface, validation_results, layer_name)
-        self.worker.aoi_geometry = aoi_geometry  # Pass the aoi_geometry to the worker
+        self.worker = Worker(
+            url, extent, output_file, self.iface, validation_results, layer_name,
+            aoi_geometry=aoi_geometry, clip_to_area=self.clip_to_area,
+        )
         self.worker.remaining_queue = remaining_queue  # Store remaining queue in worker
         self.worker_thread = QThread()
         

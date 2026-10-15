@@ -5,7 +5,13 @@ import re
 from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsGeometry
 from qgis.PyQt.QtCore import pyqtSignal, QObject
 import os
-import duckdb
+
+try:
+    import duckdb
+except ImportError:
+    # The plugin still loads without DuckDB, so it can offer to install it
+    # (see duckdb_setup.py); nothing here runs until it is present.
+    duckdb = None
 
 from . import logger
 
@@ -253,6 +259,98 @@ def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
     return "[" + ", ".join(f"'{f}'" for f in sorted(selected)) + "]"
 
 
+def sql_str(value):
+    """Quote a value as a SQL string literal."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def parse_geo_metadata(raw):
+    """Return (primary_column, bbox_column) from a GeoParquet 'geo' metadata value.
+
+    bbox_column is the struct column named by the primary column's bbox covering
+    (GeoParquet 1.1), such as "bbox" or "geom_bbox", or None when there is none.
+    """
+    try:
+        geo = json.loads(raw)
+    except (TypeError, ValueError):
+        return None, None
+    if not isinstance(geo, dict):
+        return None, None
+    columns = geo.get("columns") if isinstance(geo.get("columns"), dict) else {}
+    primary = geo.get("primary_column")
+    if primary not in columns:
+        primary = next(iter(columns), primary)
+    column = columns.get(primary) if isinstance(columns.get(primary), dict) else {}
+    covering = column.get("covering") if isinstance(column.get("covering"), dict) else {}
+    bbox = covering.get("bbox") if isinstance(covering.get("bbox"), dict) else {}
+    xmin = bbox.get("xmin")
+    bbox_column = xmin[0] if isinstance(xmin, list) and len(xmin) == 2 else None
+    return primary, bbox_column
+
+
+def read_geo_metadata(conn, url):
+    """(primary_column, bbox_column) from the 'geo' metadata of the first file at url."""
+    try:
+        row = conn.execute(
+            f"SELECT value FROM parquet_kv_metadata({sql_str(url)}) "
+            "WHERE key = 'geo'::BLOB LIMIT 1"
+        ).fetchone()
+    except Exception as e:
+        if duckdb is not None and isinstance(e, duckdb.InterruptException):
+            raise
+        logger.log(f"Could not read GeoParquet metadata: {e}")
+        return None, None
+    if not row:
+        return None, None
+    value = row[0]
+    return parse_geo_metadata(value.decode("utf-8", "replace") if isinstance(value, bytes) else value)
+
+
+def is_bbox_struct(col_type):
+    """True for a STRUCT with xmin, ymin, xmax and ymax fields."""
+    t = col_type.lower()
+    return t.startswith("struct") and all(f in t for f in ("xmin", "ymin", "xmax", "ymax"))
+
+
+def detect_columns(schema, geo_primary=None, geo_bbox=None, hint_geometry=None, hint_bbox=None):
+    """Pick the geometry and bbox columns for a schema from DESCRIBE.
+
+    The GeoParquet metadata wins when it names a column that exists. Then the
+    caller's hint, then a GEOMETRY-typed column or a usual geometry name, and a
+    struct column called bbox. Returns (geometry_column, bbox_column or None).
+    """
+    types = {row[0]: row[1] for row in schema}
+    geometry = next((c for c in (geo_primary, hint_geometry) if c in types), None)
+    if geometry is None:
+        geometry = next(
+            (name for name, t in types.items() if "GEOMETRY" in t.upper() or "GEOGRAPHY" in t.upper()),
+            None,
+        )
+    if geometry is None:
+        geometry = next(
+            (name for name in types if name.lower() in ("geometry", "geom", "the_geom", "wkb_geometry")),
+            "geometry",
+        )
+    bbox = next((c for c in (geo_bbox, hint_bbox) if c in types and is_bbox_struct(types[c])), None)
+    if bbox is None:
+        bbox = next((n for n, t in types.items() if n.lower() == "bbox" and is_bbox_struct(t)), None)
+    return geometry, bbox
+
+
+def bbox_polygon_wkt(bbox):
+    xmin, ymin, xmax, ymax = bbox.xMinimum(), bbox.yMinimum(), bbox.xMaximum(), bbox.yMaximum()
+    return f"POLYGON(({xmin} {ymin}, {xmax} {ymin}, {xmax} {ymax}, {xmin} {ymax}, {xmin} {ymin}))"
+
+
+def bbox_overlap_condition(bbox_column, bbox):
+    """Rows whose covering bbox overlaps the window, including features larger than it."""
+    col = f'"{bbox_column}"'
+    return (
+        f"{col}.xmin <= {bbox.xMaximum()} AND {col}.xmax >= {bbox.xMinimum()} "
+        f"AND {col}.ymin <= {bbox.yMaximum()} AND {col}.ymax >= {bbox.yMinimum()}"
+    )
+
+
 def transform_bbox_to_4326(extent, source_crs):
     """
     Transform a bounding box to EPSG:4326 (WGS84)
@@ -285,7 +383,7 @@ class Worker(QObject):
     percent = pyqtSignal(int)
     file_size_warning = pyqtSignal(float)  # Signal for file size warnings (in MB)
 
-    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None):
+    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None, clip_to_area=False):
         super().__init__()
         self.dataset_url = dataset_url
         self.read_url = dataset_url  # what DuckDB reads; set by resolve_dataset_url()
@@ -297,50 +395,9 @@ class Worker(QObject):
         self.layer_name = layer_name
         self.size_warning_accepted = False
         self.aoi_geometry = aoi_geometry
+        # Cut features that extend past the area of interest (or bbox) at its edge
+        self.clip_to_area = clip_to_area
         self.conn = None  # kept so kill() can interrupt a running query
-
-    def get_bbox_info_from_metadata(self, conn):
-        """Read GeoParquet metadata to find bbox column info"""
-        self.progress.emit("Checking for bbox metadata...")
-        metadata_query = (
-            f"SELECT key, value FROM parquet_kv_metadata('{self.read_url}')"
-        )
-        metadata_results = conn.execute(metadata_query).fetchall()
-
-        for key, value in metadata_results:
-            if key == b"geo":
-                try:
-                    decoded_value = value.decode()
-                    #logger.log("\nRaw metadata value:")
-                    #logger.log(decoded_value)
-
-                    # Parse JSON using DuckDB's JSON functions
-                    json_query = (
-                        f"SELECT json_parse('{decoded_value}'::VARCHAR) as json"
-                    )
-                    #logger.log("\nExecuting JSON query:")
-                    #logger.log(json_query)
-
-                    geo_metadata = conn.execute(json_query).fetchone()[0]
-                    #logger.log("\nParsed metadata:")
-                    #logger.log(geo_metadata)
-
-                    if geo_metadata and "covering" in geo_metadata:
-                        #logger.log("\nFound covering:")
-                        #logger.log(geo_metadata["covering"])
-                        if "bbox" in geo_metadata["covering"]:
-                            bbox_info = geo_metadata["covering"]["bbox"]
-                            #logger.log("\nExtracted bbox info:")
-                            #logger.log(bbox_info)
-                            return bbox_info
-                except Exception as e:
-                    logger.log(f"\nError parsing geo metadata: {str(e)}", 2)
-                    logger.log(f"Exception type: {type(e)}", 2)
-                    import traceback
-
-                    logger.log(traceback.format_exc(), 2)
-                    continue
-        return None
 
     def run(self):
         try:
@@ -395,44 +452,21 @@ class Worker(QObject):
                 #for row in schema_result:
                     #logger.log(f"Column: {row[0]}, Type: {row[1]}")
 
-                # If geometry_column is not in validation_results, detect it now
-                if 'geometry_column' not in self.validation_results:
-                    #logger.log("No geometry_column in validation_results, detecting now")
-                    self.validation_results['geometry_column'] = 'geometry'  # Default
-                    geometry_found = False
-                    
-                    for row in schema_result:
-                        col_name = row[0]
-                        col_type = row[1].upper()
-                        #logger.log(f"Checking column {col_name} with type {col_type} for geometry")
-                        if 'GEOMETRY' in col_type or 'GEOGRAPHY' in col_type:
-                            self.validation_results['geometry_column'] = col_name
-                            logger.log(f"Found geometry column by type: {col_name}")
-                            geometry_found = True
-                            break
-                    
-                    if not geometry_found:
-                        # Try a different approach - look for columns
-                        #logger.log("No standard geometry column found, trying alternative detection")
-                        for row in schema_result:
-                            col_name = row[0].lower()
-                            col_name_orig = row[0]  # Keep original case
-                            col_type = row[1].upper()
-                            
-                            # Check for common geometry column names
-                            if col_name in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
-                                self.validation_results['geometry_column'] = col_name_orig
-                                #logger.log(f"Found likely geometry column by name: {col_name_orig}")
-                                geometry_found = True
-                                break
-                            # Also check for BLOB columns with geometry-like names
-                            elif 'BLOB' in col_type and col_name in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
-                                self.validation_results['geometry_column'] = col_name_orig
-                                logger.log(f"Found WKB BLOB geometry column: {col_name_orig}")
-                                geometry_found = True
-                                break
-                
-               #logger.log(f"Final geometry column detection result: {self.validation_results['geometry_column']}")
+                # The caller's validation results are only hints: the download queue
+                # passes preset defaults. The file's own GeoParquet metadata and
+                # schema decide which columns hold the geometry and the bbox covering.
+                geo_primary, geo_bbox = read_geo_metadata(conn, self.read_url)
+                geometry_column, bbox_column = detect_columns(
+                    schema_result,
+                    geo_primary,
+                    geo_bbox,
+                    hint_geometry=self.validation_results.get('geometry_column'),
+                    hint_bbox=self.validation_results.get('bbox_column'),
+                )
+                self.validation_results['geometry_column'] = geometry_column
+                self.validation_results['bbox_column'] = bbox_column
+                self.validation_results['has_bbox'] = bbox_column is not None
+                logger.log(f"Geometry column: {geometry_column}; bbox column: {bbox_column}")
 
                 table_name = "download_data"
                 geometry_column = self.validation_results.get('geometry_column', 'geometry')
@@ -469,80 +503,40 @@ class Worker(QObject):
                     else:
                         select_query = f'SELECT {", ".join(columns)}'
 
-                # First check: Does the schema actually have a bbox column?
-                has_bbox_in_schema = False
-                if 'schema' in self.validation_results and self.validation_results['schema']:
-                    for row in self.validation_results['schema']:
-                        if row[0].lower() == 'bbox' and 'struct' in row[1].lower():
-                            has_bbox_in_schema = True
-                            #logger.log("Found actual bbox column in schema")
-                            break
-                    
-                    if not has_bbox_in_schema:
-                        #logger.log("No bbox column found in schema, overriding validation_results")
-                        # Force override incorrect bbox settings if schema doesn't have bbox
-                        self.validation_results['has_bbox'] = False
-                        self.validation_results['bbox_column'] = None
-
-                # Now use the corrected validation_results
-                bbox_column = self.validation_results.get('bbox_column')
-                geometry_column = self.validation_results.get('geometry_column', 'geometry')
-                #logger.log(f"Final bbox_column value: {bbox_column}")
-                #logger.log(f"Using geometry column: {geometry_column}")
-
                 # Check if geometry column is a BLOB that needs conversion
                 geometry_col_type = None
                 for row in schema_result:
                     if row[0] == geometry_column:
                         geometry_col_type = row[1].upper()
                         break
-                
-                if bbox_column is not None:
-                    #logger.log(f"Using bbox column for query: {bbox_column}")
-                    where_clause = f"""
-                    WHERE "{bbox_column}".xmin BETWEEN {bbox.xMinimum()} AND {bbox.xMaximum()}
-                    AND "{bbox_column}".ymin BETWEEN {bbox.yMinimum()} AND {bbox.yMaximum()}
-                    """
-                else:
-                    #logger.log("Using spatial filter instead of bbox")
-                    # If it's a BLOB column, we can't use spatial functions in the initial query
-                    # We'll apply the filter after converting the geometry
-                    if geometry_col_type and 'BLOB' in geometry_col_type:
-                        where_clause = ""  # No spatial filter initially for BLOB columns
-                    else:
-                        # For proper geometry columns, we can use spatial filter directly
-                        geometry_expr = f'"{geometry_column}"'
-                        where_clause = f"""
-                        WHERE ST_Intersects(
-                            {geometry_expr},
-                            ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
-                                                {bbox.xMaximum()} {bbox.yMinimum()},
-                                                {bbox.xMaximum()} {bbox.yMaximum()},
-                                                {bbox.xMinimum()} {bbox.yMaximum()},
-                                                {bbox.xMinimum()} {bbox.yMinimum()}))')
-                        )
-                        """
+                is_wkb_blob = bool(geometry_col_type and 'BLOB' in geometry_col_type)
 
-                # Additional filtering with aoi_geometry if available
+                # The area to keep, in EPSG:4326: the drawn or selected AOI if
+                # there is one, otherwise the bbox
+                area_wkt = bbox_polygon_wkt(bbox)
                 if self.aoi_geometry is not None:
-                    # Create a temporary clone for transformation to WGS 1984 (EPSG:4326)
                     dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
                     source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
-                    
-                    # Log the source and destination CRS for debugging
                     logger.log(f"Source CRS: {source_crs.authid()}, Destination CRS: {dest_crs.authid()}")
-                    
                     # Clone and transform only for the SQL query
                     transformed_geom = QgsGeometry(self.aoi_geometry)
                     transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
                     transformed_geom.transform(transform)
-                    
-                    # Use the transformed geometry for the SQL query
-                    aoi_wkt = transformed_geom.asWkt()
-                    where_clause += f" AND ST_Intersects(\"{geometry_column}\", ST_GeomFromText('{aoi_wkt}'))"
-                    
-                    # Log the updated where_clause for debugging
-                    logger.log(f"Applying AOI geometry filter: {aoi_wkt}")
+                    area_wkt = transformed_geom.asWkt()
+                    logger.log(f"Applying AOI geometry filter: {area_wkt}")
+
+                conditions = []
+                if bbox_column is not None:
+                    # Cheap first pass on the covering column, which can use
+                    # row-group statistics to skip data
+                    conditions.append(bbox_overlap_condition(bbox_column, bbox))
+                if not is_wkb_blob:
+                    # A WKB BLOB column is filtered after conversion, below
+                    if bbox_column is None or self.aoi_geometry is not None:
+                        conditions.append(
+                            f'ST_Intersects("{geometry_column}", ST_GeomFromText({sql_str(area_wkt)}))'
+                        )
+                where_clause = ("WHERE " + "\n AND ".join(conditions)) if conditions else ""
 
                 parquet_source = parquet_source_for_bbox(conn, self.read_url, bbox)
                 if parquet_source is None:
@@ -565,7 +559,7 @@ class Worker(QObject):
                 
                 # If we have a BLOB geometry column, we need to convert it after table creation
                 # and apply spatial filter if needed
-                if (geometry_column and geometry_col_type and 'BLOB' in geometry_col_type):
+                if is_wkb_blob:
                     # Create a new table with converted geometry
                     temp_table = f"{table_name}_converted"
                     
@@ -578,20 +572,11 @@ class Worker(QObject):
                         else:
                             convert_columns.append(quoted_col_name)
                     
-                    # Add spatial filter if bbox is available and we didn't filter earlier
-                    spatial_filter = ""
-                    if bbox and not bbox_column:  # Only if we didn't filter with bbox column
-                        spatial_filter = f"""
-                        WHERE ST_Intersects(
-                            ST_GeomFromWKB("{geometry_column}"),
-                            ST_GeomFromText('POLYGON(({bbox.xMinimum()} {bbox.yMinimum()},
-                                                {bbox.xMaximum()} {bbox.yMinimum()},
-                                                {bbox.xMaximum()} {bbox.yMaximum()},
-                                                {bbox.xMinimum()} {bbox.yMaximum()},
-                                                {bbox.xMinimum()} {bbox.yMinimum()}))')
-                        )
-                        """
-                    
+                    spatial_filter = (
+                        f'WHERE ST_Intersects(ST_GeomFromWKB("{geometry_column}"), '
+                        f'ST_GeomFromText({sql_str(area_wkt)}))'
+                    )
+
                     convert_query = f"""
                     CREATE TABLE {temp_table} AS
                     SELECT {', '.join(convert_columns)}
@@ -605,6 +590,10 @@ class Worker(QObject):
                     conn.execute(f"DROP TABLE {table_name}")
                     conn.execute(f"ALTER TABLE {temp_table} RENAME TO {table_name}")
                 
+                if self.clip_to_area:
+                    self.progress.emit(f"Clipping{layer_info} features to the area...")
+                    self.clip_table(conn, table_name, geometry_column, bbox_column, area_wkt)
+
                 # Add check for empty results
                 row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
                 if row_count == 0:
@@ -627,7 +616,7 @@ class Worker(QObject):
                 else:
                     # Check size if exporting to GeoJSON
                     if self.output_file.lower().endswith('.geojson'):
-                        estimated_size = self.estimate_file_size(conn, table_name)
+                        estimated_size = self.estimate_file_size(conn, table_name, geometry_column)
                         if estimated_size > 4096 and not self.size_warning_accepted:  # 4GB warning threshold
                             self.file_size_warning.emit(estimated_size)
                             return
@@ -654,7 +643,7 @@ class Worker(QObject):
                     if file_extension == "parquet":
                         format_options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 22);"
                     elif self.output_file.endswith(".gpkg"):
-                        format_options = "(FORMAT GDAL, DRIVER 'GPKG');"
+                        format_options = "(FORMAT GDAL, DRIVER 'GPKG', SRS 'EPSG:4326');"
                     elif self.output_file.endswith(".fgb"):
                         format_options = "(FORMAT GDAL, DRIVER 'FlatGeobuf', SRS 'EPSG:4326');"
                     elif self.output_file.endswith(".geojson"):
@@ -715,6 +704,26 @@ class Worker(QObject):
             if not self.killed:
                 self.error.emit(str(e))
 
+    def clip_table(self, conn, table_name, geometry_column, bbox_column, area_wkt):
+        """Cut each feature to the area, dropping those outside it, and refresh the bbox column."""
+        geom = f'"{geometry_column}"'
+        area = f"ST_GeomFromText({sql_str(area_wkt)})"
+        conn.execute(f"DELETE FROM {table_name} WHERE NOT ST_Intersects({geom}, {area})")
+        conn.execute(f"UPDATE {table_name} SET {geom} = ST_Intersection({geom}, {area})")
+        if bbox_column is None:
+            return
+        columns = {row[0]: row[1].upper() for row in conn.execute(f"DESCRIBE {table_name}").fetchall()}
+        col_type = columns.get(bbox_column)
+        if col_type is None:
+            return
+        new_bbox = (
+            f"struct_pack(xmin := ST_XMin({geom}), ymin := ST_YMin({geom}), "
+            f"xmax := ST_XMax({geom}), ymax := ST_YMax({geom}))"
+        )
+        if not col_type.startswith("STRUCT"):
+            new_bbox = f"to_json({new_bbox})"  # exports other than parquet store it as JSON
+        conn.execute(f'UPDATE {table_name} SET "{bbox_column}" = {new_bbox}')
+
     def kill(self):
         self.killed = True
         # Stop the running DuckDB query; otherwise cancel waits for it to finish
@@ -726,7 +735,7 @@ class Worker(QObject):
             except Exception as e:
                 logger.log(f"Could not interrupt DuckDB query: {e}")
 
-    def estimate_file_size(self, conn, table_name):
+    def estimate_file_size(self, conn, table_name, geometry_column="geometry"):
         """Estimate the output file size in MB using GeoJSON feature collection structure"""
         try:
             # Get total row count
@@ -736,6 +745,11 @@ class Worker(QObject):
             sample_size = min(100, row_count)
 
             if sample_size > 0:
+                properties = ", ".join(
+                    f"{sql_str(col[0])}, COALESCE(CAST(\"{col[0]}\" AS VARCHAR), 'null')"
+                    for col in conn.execute(f"DESCRIBE {table_name}").fetchall()
+                    if col[0] != geometry_column
+                )
                 # Create a proper GeoJSON FeatureCollection sample with all properties
                 sample_query = f"""
                     WITH sample AS (
@@ -744,14 +758,8 @@ class Worker(QObject):
                     SELECT AVG(LENGTH(
                         json_object(
                             'type', 'Feature',
-                            'geometry', ST_AsGeoJSON(geometry),
-                            'properties', json_object(
-                                {', '.join([
-                    f"'{col[0]}', COALESCE(CAST({col[0]} AS VARCHAR), 'null')"
-                    for col in conn.execute(f"DESCRIBE {table_name}").fetchall()
-                    if col[0] != 'geometry'
-                ])}
-                            )
+                            'geometry', ST_AsGeoJSON("{geometry_column}"),
+                            'properties', json_object({properties})
                         )::VARCHAR
                     )) as avg_feature_size
                     FROM sample;
@@ -822,53 +830,8 @@ class ValidationWorker(QObject):
             self.PRESET_DATASETS = json.load(f)
 
     def check_bbox_metadata(self, conn):
-        """Check for bbox information in GeoParquet metadata"""
-        metadata_query = (
-            f"SELECT key, value FROM parquet_kv_metadata('{self.read_url}')"
-        )
-        metadata_results = conn.execute(metadata_query).fetchall()
-
-        for key, value in metadata_results:
-            if key == b"geo":
-                try:
-                    decoded_value = value.decode()
-                    #logger.log("\nRaw metadata value:")
-                    #logger.log(decoded_value)
-
-                    # Install and load JSON extension
-                    conn.execute("INSTALL json;")
-                    conn.execute("LOAD json;")
-
-                    # Create a table with the JSON string
-                    conn.execute(
-                        f"CREATE TEMP TABLE temp_json AS SELECT '{decoded_value}' as json_str"
-                    )
-
-                    # Extract the bbox column name using JSON path
-                    # First get the geometry column info which contains the covering
-                    result = conn.execute("""
-                        SELECT json_str->'$.columns.geometry.covering.bbox.xmin[0]' as bbox_column
-                        FROM temp_json
-                    """).fetchone()
-
-                    #logger.log("\nExtracted bbox column name:")
-                    #logger.log(result[0] if result else None)
-
-                    if result and result[0]:
-                        # Remove quotes from the result if present
-                        bbox_col = result[0].strip('"')
-                        return bbox_col
-
-                except Exception as e:
-                    logger.log(f"\nError parsing geo metadata: {str(e)}", 2)
-                    logger.log(f"Exception type: {type(e)}", 2)
-                    import traceback
-
-                    logger.log(traceback.format_exc())
-                finally:
-                    # Clean up temporary table
-                    conn.execute("DROP TABLE IF EXISTS temp_json")
-        return None
+        """The bbox covering column named in the GeoParquet metadata, or None."""
+        return read_geo_metadata(conn, self.read_url)[1]
 
     def run(self):
         # Initialize validation results with default values
@@ -909,48 +872,22 @@ class ValidationWorker(QObject):
             if self.killed:
                 return
 
-            # Detect geometry column from schema
-            geometry_found = False
-            for row in schema_result:
-                col_name = row[0]
-                col_type = row[1].upper()
-                if 'GEOMETRY' in col_type or 'GEOGRAPHY' in col_type:
-                    validation_results['geometry_column'] = col_name
-                    geometry_found = True
-                    break
-
-            if not geometry_found:
-                for row in schema_result:
-                    col_name_lower = row[0].lower()
-                    col_name_orig = row[0]
-                    if col_name_lower in ['geometry', 'geom', 'the_geom', 'wkb_geometry']:
-                        validation_results['geometry_column'] = col_name_orig
-                        break
-
-            # Check for standard bbox column first
-            has_bbox = any(
-                row[0].lower() == "bbox" and "struct" in row[1].lower()
-                for row in schema_result
-            )
-            
-            if has_bbox:
+            # The GeoParquet metadata names the primary geometry column and its
+            # bbox covering, whatever they are called (geom, geom_bbox, ...)
+            geo_primary, geo_bbox = read_geo_metadata(conn, self.read_url)
+            if self.killed:  # read_geo_metadata may swallow an interrupt
+                return
+            geometry_column, bbox_column = detect_columns(schema_result, geo_primary, geo_bbox)
+            validation_results["geometry_column"] = geometry_column
+            if bbox_column:
                 validation_results["has_bbox"] = True
-                validation_results["bbox_column"] = "bbox"
+                validation_results["bbox_column"] = bbox_column
                 self.finished.emit(True, "Validation successful", validation_results)
             else:
-                # Check metadata for alternative bbox column
-                bbox_column = self.check_bbox_metadata(conn)
-                if self.killed:  # check_bbox_metadata swallows the interrupt
-                    return
-                if bbox_column:
-                    validation_results["has_bbox"] = True
-                    validation_results["bbox_column"] = bbox_column
-                    self.finished.emit(True, "Validation successful", validation_results)
-                else:
-                    # No bbox column found - emit warning signal first
-                    self.needs_bbox_warning.emit()
-                    # Then emit finished signal with no bbox results
-                    self.finished.emit(True, "Validation with no bbox column", validation_results)
+                # No bbox column found - emit warning signal first
+                self.needs_bbox_warning.emit()
+                # Then emit finished signal with no bbox results
+                self.finished.emit(True, "Validation with no bbox column", validation_results)
 
         except Exception as e:
             logger.log(f"Error in ValidationWorker: {str(e)}")

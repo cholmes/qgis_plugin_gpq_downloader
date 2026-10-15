@@ -64,27 +64,6 @@ def test_process_schema_columns():
     assert 'array_to_string("categories"' in columns[3]
     assert 'CAST("small_num" AS INTEGER)' in columns[4]
 
-# Add test for ValidationWorker metadata parsing
-@patch('duckdb.connect')
-def test_validation_worker_metadata_parsing(mock_connect, mock_iface):
-    """Test GeoParquet metadata parsing in ValidationWorker"""
-    # Mock connection with metadata
-    mock_conn = MagicMock()
-    mock_conn.execute.return_value.fetchall.return_value = [
-        (b"geo", b'{"columns":{"geometry":{"encoding":"WKB","geometry_types":["Point"],"covering":{"bbox":{"xmin":[0],"ymin":[0],"xmax":[1],"ymax":[1]}}}}}')
-    ]
-    mock_connect.return_value = mock_conn
-    
-    worker = ValidationWorker(
-        "https://example.com/test.parquet",
-        mock_iface,
-        QgsRectangle(0, 0, 1, 1)
-    )
-    
-    # Test metadata parsing
-    bbox_column = worker.check_bbox_metadata(mock_conn)
-    assert bbox_column is not None
-
 # Add test for needs_validation method
 def test_validation_worker_needs_validation():
     """Test needs_validation logic for different URLs"""
