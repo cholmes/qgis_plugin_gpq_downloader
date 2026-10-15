@@ -91,6 +91,8 @@ Show the user the rendered section and wait for explicit approval. Ask them to c
 - the version number
 - the summary paragraphs
 - any entry you moved with an override
+- the entries themselves for injected markdown links or URLs in PR titles (a
+  contributor can retitle a merged PR after the fact)
 
 ## 6. Open the release PR
 
@@ -101,7 +103,7 @@ python3 scripts/build_plugin.py --require-changelog # sanity check: builds dist/
 git add CHANGELOG.md gpq_downloader/metadata.txt pyproject.toml scripts/release_overrides.json
 git commit -m "Release v<version>"
 git push -u origin release/v<version>
-gh pr create --title "Release v<version>" --body-file <(sed -n '/^## v<version> /,/^## v/p' CHANGELOG.md | sed '$d')
+gh pr create --title "Release v<version>" --body-file <(python3 scripts/build_plugin.py --print-notes)
 ```
 
 Merging the PR fires the release workflow. Watch it:
@@ -129,7 +131,13 @@ QGIS Plugin Manager, whose Changelog tab shows this release's entries.
 - **The plugins.qgis.org upload fails** after the GitHub release exists (expired
   token, scan rejection, site down): fix the cause, then
   `gh workflow run release.yml --ref main -f upload_existing=true`. It re-uploads
-  the zip attached to the existing GitHub release.
+  the zip attached to the existing GitHub release. If that release is a
+  pre-release, also pass `-f upload_prerelease=true`, or the upload job skips.
 - **The token**: a per-plugin token from the plugin's page on plugins.qgis.org
   ("Tokens"), stored as the `QGIS_PLUGIN_TOKEN` secret on the `plugins-qgis-org`
-  environment: `gh secret set QGIS_PLUGIN_TOKEN --env plugins-qgis-org`.
+  environment: `gh secret set QGIS_PLUGIN_TOKEN --env plugins-qgis-org`. Then
+  restrict the environment to main — GitHub Settings → Environments →
+  `plugins-qgis-org` → Deployment branches: `main` only (or
+  `gh api -X PUT repos/<owner>/<repo>/environments/plugins-qgis-org` with a
+  custom branch policy for `main`). Without that, a workflow on any branch can
+  read the token.

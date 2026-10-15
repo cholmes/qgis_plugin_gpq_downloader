@@ -102,6 +102,7 @@ NEW_CONTRIBUTOR_RE = re.compile(
     r"(?P<url>\S+)"
 )
 ISSUE_RE = re.compile(r"(?<![\w/\[])#(\d+)\b")
+MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 VERSION_HEADING_RE = re.compile(r"^## ", re.MULTILINE)
 
 
@@ -207,8 +208,13 @@ def classify(entry: Entry) -> str:
 
 
 def display_title(title: str) -> str:
-    """Strip a conventional-commit prefix and capitalize, so every line reads alike."""
+    """Strip a conventional-commit prefix and capitalize, so every line reads alike.
+
+    Markdown links are reduced to their text and `<` is escaped, so a retitled
+    pull request cannot plant a link or HTML in the release notes.
+    """
     title = PREFIX_RE.sub("", title).strip()
+    title = MD_LINK_RE.sub(r"\1", title).replace("<", "&lt;")
     return title[:1].upper() + title[1:]
 
 
@@ -220,8 +226,9 @@ def contributor_brief(notes: Notes) -> dict[str, list[tuple[int, str]]]:
     """
     brief: dict[str, list[tuple[int, str]]] = {author: [] for author, _ in notes.new_contributors}
     for entry in notes.entries:
-        if entry.author in brief:
-            brief[entry.author].append((entry.number, entry.title))
+        for name in (entry.author, entry.coauthor):
+            if name in brief:
+                brief[name].append((entry.number, entry.title))
     return {author: sorted(prs) for author, prs in brief.items()}
 
 
@@ -303,13 +310,22 @@ def bump(version: str) -> None:
 
 
 def latest_tag() -> str | None:
-    """The newest published, non-draft release tag, as GitHub ranks them."""
+    """The newest published, non-draft release tag, as GitHub ranks them.
+
+    None means the repository genuinely has no releases yet. Any other failure
+    raises: a wrong baseline would silently fold pre-releases into the range.
+    """
     result = subprocess.run(
         ["gh", "release", "view", "--repo", REPO, "--json", "tagName", "--jq", ".tagName"],
         capture_output=True,
         text=True,
         check=False,
     )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if "release not found" in stderr.lower() or "HTTP 404" in stderr:
+            return None
+        raise ReleaseNotesError(f"gh release view failed: {stderr}")
     return result.stdout.strip() or None
 
 
@@ -338,7 +354,6 @@ def main(argv: list[str] | None = None) -> int:
         help="previous tag (default: the latest GitHub release, so a beta is not the baseline "
         "unless you say so)",
     )
-    parser.add_argument("--date", default=date_cls.today().isoformat())
     parser.add_argument("--write", action="store_true", help="splice into CHANGELOG.md")
     parser.add_argument(
         "--contributors",
@@ -346,7 +361,6 @@ def main(argv: list[str] | None = None) -> int:
         help="list each first-time contributor and every PR they wrote",
     )
     parser.add_argument("--bump", action="store_true", help="set the version in metadata.txt and pyproject.toml")
-    parser.add_argument("--overrides", type=Path, default=OVERRIDES_PATH)
     args = parser.parse_args(argv)
 
     try:
@@ -356,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         previous = args.previous or latest_tag()
-        notes = apply_overrides(generate(args.version, previous), load_overrides(args.overrides))
+        notes = apply_overrides(generate(args.version, previous), load_overrides(OVERRIDES_PATH))
         if args.contributors:
             for author, prs in contributor_brief(notes).items():
                 print(f"@{author}")
@@ -364,16 +378,24 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"  #{number} {title}")
             return 0
 
-        section = render(notes, args.version, args.date)
+        section = render(notes, args.version, date_cls.today().isoformat())
         if not args.write:
             print(section, end="")
+            # So a misfiled user-facing PR is caught in review; never written.
+            internal = [e for e in notes.entries if classify(e) == "Internal"]
+            if internal:
+                print("### Internal (not listed in the changelog)")
+                print()
+                for entry in internal:
+                    print(_render_entry(entry))
             return 0
         CHANGELOG.write_text(splice(CHANGELOG.read_text(), section))
     except ReleaseNotesError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Wrote the v{args.version} section to {CHANGELOG.name} (since {previous}).")
+    since = f"since {previous}" if previous else "first release"
+    print(f"Wrote the v{args.version} section to {CHANGELOG.name} ({since}).")
     print("Now replace the summary placeholder and check each entry's section.")
     return 0
 

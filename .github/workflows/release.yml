@@ -46,6 +46,9 @@ concurrency:
 
 jobs:
   check:
+    # Pushes are already filtered to main by the on: block; this keeps a manual
+    # dispatch on any other ref from tagging and publishing from it.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -95,18 +98,7 @@ jobs:
 
       - name: Extract release notes
         run: |
-          python3 - <<'PY' > notes.md
-          import os, re, pathlib
-          v = os.environ["VERSION"]
-          t = pathlib.Path("CHANGELOG.md").read_text()
-          m = re.search(rf"^## v{re.escape(v)}(?=\s|$).*$", t, re.M)
-          end = t.find("\n## ", m.end())
-          heading = m.group(0)
-          print(t[m.end(): end if end != -1 else None].strip())
-          anchor = re.sub(r"[^a-z0-9 -]", "", heading[3:].lower()).replace(" ", "-")
-          print()
-          print(f"Full changelog entry: https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md#{anchor}")
-          PY
+          python3 scripts/build_plugin.py --print-notes > notes.md
           cat notes.md
 
       - name: Create tag and GitHub release
@@ -121,18 +113,14 @@ jobs:
             --notes-file notes.md \
             "${FLAGS[@]}"
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: plugin-zip
-          path: dist/*.zip
-
   upload:
     needs: [check, release]
     # Runs after a fresh release, or by hand to (re)upload an existing one.
     if: >-
       always() &&
       (needs.release.result == 'success' ||
-       (needs.release.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.upload_existing)) &&
+       (needs.release.result == 'skipped' && github.event_name == 'workflow_dispatch' &&
+        inputs.upload_existing && needs.check.outputs.release_exists == 'true')) &&
       (needs.check.outputs.prerelease == 'false' || inputs.upload_prerelease)
     runs-on: ubuntu-latest
     environment: plugins-qgis-org
@@ -142,7 +130,7 @@ jobs:
       - name: Download the release zip
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern '*.zip' --dir dist
+        run: gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern "qgis_plugin_gpq_downloader-${VERSION}.zip" --dir dist
 
       - name: Upload to plugins.qgis.org
         env:
@@ -152,12 +140,20 @@ jobs:
             echo "::error::QGIS_PLUGIN_TOKEN is not set on the plugins-qgis-org environment"
             exit 1
           fi
-          ZIP=$(ls dist/*.zip)
+          shopt -s nullglob
+          ZIPS=(dist/*.zip)
+          if [[ ${#ZIPS[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one zip in dist/, found ${#ZIPS[@]}: ${ZIPS[*]}"
+            exit 1
+          fi
+          ZIP=${ZIPS[0]}
+          # The token goes to curl on stdin, never in its argv.
           STATUS=$(curl -sS -o response.txt -w '%{http_code}' \
             -A "qgis_plugin_gpq_downloader-release (+https://github.com/$GITHUB_REPOSITORY)" \
-            -H "Authorization: Bearer $QGIS_PLUGIN_TOKEN" \
+            -H @- \
             -F "package=@$ZIP" \
-            https://plugins.qgis.org/plugins/api/qgis_plugin_gpq_downloader/version/add/)
+            https://plugins.qgis.org/plugins/api/qgis_plugin_gpq_downloader/version/add/ \
+            <<< "Authorization: Bearer $QGIS_PLUGIN_TOKEN")
           head -c 2000 response.txt; echo
           if [[ "$STATUS" != 201 ]]; then
             echo "::error::plugins.qgis.org answered HTTP $STATUS"

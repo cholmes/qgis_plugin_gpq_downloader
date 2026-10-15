@@ -2,6 +2,7 @@
 
 import configparser
 import json
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -78,6 +79,46 @@ def test_overrides_reject_unknown_section(tmp_path):
     path.write_text(json.dumps({"1": {"section": "Breaking"}}))
     with pytest.raises(rn.ReleaseNotesError):
         rn.load_overrides(path)
+
+
+def test_display_title_strips_markdown_links_and_escapes_html():
+    assert rn.display_title("fix: add [evil](https://phish.example) link") == "Add evil link"
+    assert rn.display_title("Handle <img src=x onerror=x> input") == "Handle &lt;img src=x onerror=x> input"
+
+
+def test_contributor_brief_includes_coauthored_prs():
+    notes = rn.Notes(
+        entries=[rn.Entry(title="Fix a thing", author="cholmes", number=5, coauthor="newbie")],
+        new_contributors=[("newbie", f"{PR}/5")],
+    )
+    assert rn.contributor_brief(notes) == {"newbie": [(5, "Fix a thing")]}
+
+
+def fake_run(returncode, stdout="", stderr=""):
+    return lambda *a, **k: subprocess.CompletedProcess(a, returncode, stdout, stderr)
+
+
+def test_latest_tag_none_only_when_no_release_exists(monkeypatch):
+    monkeypatch.setattr(rn.subprocess, "run", fake_run(0, stdout="v0.8.6\n"))
+    assert rn.latest_tag() == "v0.8.6"
+    monkeypatch.setattr(rn.subprocess, "run", fake_run(1, stderr="release not found"))
+    assert rn.latest_tag() is None
+    monkeypatch.setattr(rn.subprocess, "run", fake_run(1, stderr="HTTP 404: Not Found"))
+    assert rn.latest_tag() is None
+    monkeypatch.setattr(rn.subprocess, "run", fake_run(1, stderr="HTTP 403: rate limit exceeded"))
+    with pytest.raises(rn.ReleaseNotesError, match="rate limit"):
+        rn.latest_tag()
+
+
+def test_preview_prints_internal_bucket(monkeypatch, capsys):
+    monkeypatch.setattr(rn, "latest_tag", lambda: "v0.8.6")
+    monkeypatch.setattr(rn, "generate", lambda version, previous: rn.parse(GITHUB_NOTES))
+    assert rn.main(["0.9.0"]) == 0
+    out = capsys.readouterr().out
+    assert "### Internal (not listed in the changelog)" in out
+    assert "Bump actions/checkout" in out
+    # the written section itself still omits it
+    assert out.index("**Full Changelog**") < out.index("### Internal (not listed")
 
 
 def test_render(notes):
@@ -197,3 +238,55 @@ def test_build_zip(tmp_path, monkeypatch):
     ]
     meta = zipfile.ZipFile(path).read("qgis_plugin_gpq_downloader/metadata.txt").decode()
     assert "experimental=False" in meta and "- Clear selection" in meta
+
+
+def test_build_zip_from_git_listing_skips_untracked_and_symlinks(tmp_path, monkeypatch):
+    src = tmp_path / "gpq_downloader"
+    src.mkdir()
+    (src / "__init__.py").write_text("")
+    (src / "metadata.txt").write_text("[general]\nname=T\nversion=1.0.0\n")
+    (src / "link.py").symlink_to("__init__.py")
+    (tmp_path / "LICENSE").write_text("GPL")
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(f"# Changelog\n\n## v1.0.0 (2026-10-15)\n\n{SECTION}")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    (src / ".env").write_text("SECRET=1")  # stray untracked file must not ship
+    for name, value in (("ROOT", tmp_path), ("SOURCE", src), ("METADATA", src / "metadata.txt"), ("CHANGELOG", changelog)):
+        monkeypatch.setattr(build_plugin, name, value)
+
+    path = build_plugin.build(tmp_path / "dist", require_changelog=True)
+    assert sorted(zipfile.ZipFile(path).namelist()) == [
+        "qgis_plugin_gpq_downloader/LICENSE",
+        "qgis_plugin_gpq_downloader/__init__.py",
+        "qgis_plugin_gpq_downloader/metadata.txt",
+    ]
+
+
+def test_build_fails_clearly_without_license_or_general_section(tmp_path, monkeypatch):
+    src = tmp_path / "gpq_downloader"
+    src.mkdir()
+    (src / "metadata.txt").write_text("[general]\nname=T\nversion=1.0.0\n")
+    for name, value in (("ROOT", tmp_path), ("SOURCE", src), ("METADATA", src / "metadata.txt"), ("CHANGELOG", tmp_path / "CHANGELOG.md")):
+        monkeypatch.setattr(build_plugin, name, value)
+    with pytest.raises(SystemExit, match="LICENSE"):
+        build_plugin.build(tmp_path / "dist", require_changelog=False)
+    with pytest.raises(SystemExit, match=r"\[general\]"):
+        build_plugin.release_metadata("name=T\nversion=1.0.0\n", "1.0.0", None)
+
+
+def test_print_notes(tmp_path, monkeypatch, capsys):
+    meta = tmp_path / "metadata.txt"
+    meta.write_text("[general]\nname=T\nversion=0.9.0\n")
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(f"# Changelog\n\n## v0.9.0 (2026-10-15)\n\n{SECTION}\n## v0.8.6 (2025-11-19)\n\nOld.\n")
+    monkeypatch.setattr(build_plugin, "METADATA", meta)
+    monkeypatch.setattr(build_plugin, "CHANGELOG", changelog)
+    assert build_plugin.main(["--print-notes"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Summary.")
+    assert "Old." not in out
+    assert "Full changelog: https://github.com/cholmes/qgis_plugin_gpq_downloader/blob/main/CHANGELOG.md" in out
+    changelog.write_text("# Changelog\n")
+    with pytest.raises(SystemExit, match="no '## v0.9.0' section"):
+        build_plugin.main(["--print-notes"])

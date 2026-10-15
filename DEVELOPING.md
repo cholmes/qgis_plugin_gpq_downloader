@@ -113,4 +113,8 @@ To build the zip locally without releasing: `bash make_release.sh` (writes `dist
 
 **One-time setup:** create an upload token on the plugin's page at
 plugins.qgis.org ("Tokens"), then
-`gh secret set QGIS_PLUGIN_TOKEN --env plugins-qgis-org`.
+`gh secret set QGIS_PLUGIN_TOKEN --env plugins-qgis-org`. Then restrict the
+environment to main so no other branch's workflow can read the token: GitHub
+Settings → Environments → `plugins-qgis-org` → Deployment branches: `main` only
+(or `gh api -X PUT repos/<owner>/<repo>/environments/plugins-qgis-org` with a
+custom branch policy for `main`).
