@@ -7,6 +7,7 @@ from qgis.core import QgsRectangle
 from gpq_downloader import utils
 from gpq_downloader.utils import (
     configure_s3_for_url,
+    resolve_dataset_url,
     extent_from_file_name,
     overture_part_extents,
     parquet_source_for_bbox,
@@ -280,3 +281,36 @@ def test_parquet_source_falls_back_when_the_stac_is_unavailable(monkeypatch):
     conn = mock_glob([overture_part(230)])
     source = parquet_source_for_bbox(conn, OVERTURE_GLOB, QgsRectangle(9.1252, 50.2389, 9.1514, 50.2439))
     assert source == f"'{OVERTURE_GLOB}'"
+
+
+SOURCECOOP_PROXY_GLOB = (
+    "https://data.source.coop/ondata/cadastral-italy-geospatial-data/ple/**/*.parquet"
+)
+
+
+def test_sourcecoop_proxy_glob_is_read_over_s3():
+    """A glob has to list, which https cannot do. The proxy speaks S3, but only
+    path-style: virtual-host style looks for a subdomain named after the account
+    and fails to resolve (#133)."""
+    conn = MagicMock()
+    url = resolve_dataset_url(conn, SOURCECOOP_PROXY_GLOB)
+    assert url == "s3://ondata/cadastral-italy-geospatial-data/ple/**/*.parquet"
+    sql = " ".join(executed_sql(conn))
+    assert "SET s3_endpoint='data.source.coop';" in sql
+    assert "SET s3_url_style='path';" in sql
+
+
+def test_sourcecoop_proxy_single_file_stays_on_https():
+    """Without a glob there is nothing to list, so https is left alone — it
+    needs no S3 credentials and no endpoint settings."""
+    conn = MagicMock()
+    url = "https://data.source.coop/cholmes/trimet/rail-lines/rail-lines.parquet"
+    assert resolve_dataset_url(conn, url) == url
+    assert executed_sql(conn) == []
+
+
+def test_a_glob_on_another_host_is_unchanged():
+    conn = MagicMock()
+    url = "https://example.com/data/*.parquet"
+    assert resolve_dataset_url(conn, url) == url
+    assert executed_sql(conn) == []
