@@ -1,5 +1,9 @@
 {
   "_comment": "Per-PR changelog fixes, keyed by PR number: {\"section\": \"Added|Changed|Fixed|Documentation|Internal\", \"title\": \"...\"}. Either key may be left out.",
   "154": {"section": "Internal"},
-  "173": {"section": "Internal"}
+  "161": {"title": "Fix downloads from files whose geometry column is not called \"geometry\""},
+  "169": {"section": "Fixed", "title": "Read Overture's STAC catalog to find the latest release"},
+  "171": {"section": "Fixed"},
+  "173": {"section": "Internal"},
+  "175": {"section": "Internal"}
 }
