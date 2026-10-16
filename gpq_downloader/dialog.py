@@ -262,8 +262,9 @@ class DataSourceDialog(QDialog):
 
         # Create checkboxes for OSM datasets
         self.osm_checkboxes = {}
-        for key in self.PRESET_DATASETS["openstreetmap"].keys():
-            checkbox = QCheckBox(key.title())
+        for key, dataset in self.PRESET_DATASETS["openstreetmap"].items():
+            # key.title() reads wrong for an acronym, so a preset may name itself
+            checkbox = QCheckBox(dataset.get("display_name") or key.title())
             self.osm_checkboxes[key] = checkbox
             osm_checkbox_layout.addWidget(checkbox)
 

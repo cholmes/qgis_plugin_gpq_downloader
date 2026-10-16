@@ -289,3 +289,33 @@ def test_show_extent_menu_opens_the_menu(qgs_app, mock_iface):
 
     menu.exec.assert_called_once()
     assert not menu.exec_.called, "exec_() does not exist in PyQt6"
+
+
+def test_osm_presets_include_layercake_pois():
+    """The LayerCake POIs dataset is offered (#166)."""
+    import json
+    import pathlib
+
+    presets_path = pathlib.Path(__file__).resolve().parent.parent / "data" / "presets.json"
+    pois = json.loads(presets_path.read_text())["openstreetmap"]["pois"]
+    assert pois["url"] == "https://data.openstreetmap.us/layercake/pois.parquet"
+    assert pois["display_name"] == "POIs"
+
+
+def test_osm_checkbox_labels_use_a_preset_display_name(qgs_app, mock_iface):
+    """key.title() turns "pois" into "Pois", so a preset may name itself."""
+    dialog = DataSourceDialog(None, mock_iface)
+    labels = {key: box.text() for key, box in dialog.osm_checkboxes.items()}
+    assert labels["pois"] == "POIs"
+    # The presets without a display_name still fall back to the key
+    assert labels["buildings"] == "Buildings"
+    dialog.close()
+
+
+def test_osm_selection_returns_the_preset_url(qgs_app, mock_iface):
+    dialog = DataSourceDialog(None, mock_iface)
+    dialog.osm_radio.setChecked(True)
+    for key, box in dialog.osm_checkboxes.items():
+        box.setChecked(key == "pois")
+    assert dialog.get_urls() == ["https://data.openstreetmap.us/layercake/pois.parquet"]
+    dialog.close()
