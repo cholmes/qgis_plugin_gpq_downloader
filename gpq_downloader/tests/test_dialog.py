@@ -253,6 +253,31 @@ def test_no_bare_int_message_levels_in_source(module):
     assert not offenders, f"bare int message level at {offenders}"
 
 
+def test_standard_icons_the_dialog_asks_for_exist():
+    """The dialog's icons resolve on this Qt. Qt6 moved QStyle's SP_* names
+    under QStyle.StandardPixmap, and the bare form raised AttributeError
+    before the dialog could open at all (#157)."""
+    from qgis.PyQt.QtWidgets import QStyle
+
+    for name in ("SP_FileDialogListView", "SP_DialogResetButton"):
+        assert hasattr(QStyle.StandardPixmap, name), f"QStyle.StandardPixmap.{name} is missing"
+
+
+def test_no_bare_qstyle_pixmaps_in_source():
+    """QStyle.SP_* without the StandardPixmap scope works on Qt5 and raises on
+    Qt6, so only a QGIS 4 run would catch a reintroduction (#157)."""
+    import pathlib
+    import re
+
+    src = pathlib.Path(__file__).resolve().parent.parent / "dialog.py"
+    offenders = [
+        f"dialog.py:{i}"
+        for i, line in enumerate(src.read_text().splitlines(), 1)
+        if re.search(r"QStyle\.SP_", line)
+    ]
+    assert not offenders, f"unscoped QStyle pixmap at {offenders}"
+
+
 def test_show_extent_menu_opens_the_menu(qgs_app, mock_iface):
     """The extent menu pops up. PyQt6 dropped QMenu.exec_(), so calling it
     raised AttributeError in QGIS 4 (#181 follow-up)."""
