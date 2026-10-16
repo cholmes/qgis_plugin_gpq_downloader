@@ -39,7 +39,8 @@ jobs:
         if pip3 install --help | grep -q break-system-packages; then
           PIP_FLAGS="--break-system-packages"
         fi
-        python3 -m pip install $PIP_FLAGS --upgrade pip
+        # No pip self-upgrade: on the QGIS 4 image pip comes from Debian with
+        # no RECORD file, so pip cannot uninstall it to replace it.
         pip3 install $PIP_FLAGS pytest pytest-qt
         # Install in development mode to ensure data files are available
         pip3 install $PIP_FLAGS -e .[dev]
