@@ -6,6 +6,7 @@ from qgis.core import QgsCoordinateReferenceSystem, QgsFeature, QgsGeometry, Qgs
 from qgis.gui import QgsMapCanvas
 
 from gpq_downloader.dialog import DataSourceDialog
+from gpq_downloader.logger import message_level
 
 @pytest.fixture
 def mock_iface():
@@ -218,3 +219,48 @@ def test_dialog_base_subtypes_visibility(qgs_app, mock_iface):
     # Uncheck should hide
     dialog.base_checkbox.setChecked(False)
     assert dialog.base_subtype_widget.isHidden()
+
+
+def test_message_level_returns_an_enum_not_an_int():
+    """Qt6 rejects a plain int where a Qgis.MessageLevel is expected."""
+    for name in ("Info", "Warning", "Success", "Critical"):
+        level = message_level(name)
+        assert type(level) is not int, f"{name} resolved to a plain int"
+
+
+@pytest.mark.parametrize("module", ["dialog", "plugin"])
+def test_no_bare_int_message_levels_in_source(module):
+    """Every pushMessage/pushWidget passes a real message level. A bare int here
+    raised TypeError in QGIS 4 but worked in QGIS 3, so only Qt6 catches it."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parent.parent / f"{module}.py"
+    tree = ast.parse(src.read_text())
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in ("pushMessage", "pushWidget"):
+            continue
+        # pushMessage(title, text, level, duration); pushWidget(widget, level)
+        index = 2 if node.func.attr == "pushMessage" else 1
+        levels = [node.args[index]] if len(node.args) > index else []
+        levels += [kw.value for kw in node.keywords if kw.arg == "level"]
+        for arg in levels:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, int):
+                offenders.append(f"{module}.py:{node.lineno}")
+    assert not offenders, f"bare int message level at {offenders}"
+
+
+def test_show_extent_menu_opens_the_menu(qgs_app, mock_iface):
+    """The extent menu pops up. PyQt6 dropped QMenu.exec_(), so calling it
+    raised AttributeError in QGIS 4 (#181 follow-up)."""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    menu = MagicMock()
+    with patch.object(dialog.extent_button, "menu", return_value=menu):
+        dialog.show_extent_menu()
+
+    menu.exec.assert_called_once()
+    assert not menu.exec_.called, "exec_() does not exist in PyQt6"
