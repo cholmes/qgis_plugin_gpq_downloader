@@ -1,8 +1,6 @@
-import pytest
 from unittest.mock import MagicMock, patch
 import os
 from qgis.core import QgsRectangle, QgsCoordinateReferenceSystem, QgsVectorLayer
-from pathlib import Path
 
 from gpq_downloader.utils import (
     transform_bbox_to_4326, 

@@ -11,6 +11,19 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    # Unused imports and undefined names only: rules that catch mistakes rather
+    # than express a style. Formatting is not checked (#113).
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - run: pip install ruff==0.17.1
+    - run: ruff check --select F,E9 gpq_downloader/ scripts/
+
   test:
     # Both Qt generations: the plugin supports QGIS 3 and 4, and a Qt6-only
     # break passes a Qt5-only suite and ships (#185).

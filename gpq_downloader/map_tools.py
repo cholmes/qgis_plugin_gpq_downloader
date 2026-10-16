@@ -1,16 +1,11 @@
-import os
-from math import sqrt
 
 from qgis.core import (
-    QgsCircle,
     QgsGeometry,
-    QgsPoint,
-    QgsPointXY,
     QgsRectangle,
     QgsWkbTypes,
 )
 from qgis.gui import QgsMapTool, QgsRubberBand
-from qgis.PyQt.QtCore import QPointF, QRect, Qt, pyqtSignal
+from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtGui import QColor
 
 # Define colors for the rubber band

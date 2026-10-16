@@ -2,7 +2,7 @@ import os
 import sys
 import pytest
 from qgis.core import QgsApplication, QgsCoordinateReferenceSystem, QgsRectangle
-from qgis.PyQt.QtCore import QCoreApplication, QObject
+from qgis.PyQt.QtCore import QObject
 from qgis.PyQt.QtWidgets import QMainWindow
 
 # Add the parent directory to sys.path

@@ -1,4 +1,3 @@
-import pytest
 from gpq_downloader.logger import log
 
 def test_logger_basic():

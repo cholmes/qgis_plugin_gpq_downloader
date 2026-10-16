@@ -1,13 +1,8 @@
-import pytest
-import datetime
-from unittest.mock import MagicMock, patch, call
-from qgis.PyQt.QtWidgets import QAction, QProgressDialog, QMessageBox, QFileDialog, QDialog, QVBoxLayout, QLabel
-from qgis.core import QgsProject, QgsVectorLayer, QgsSettings, QgsCoordinateReferenceSystem, QgsRectangle
+from unittest.mock import MagicMock, patch
+from qgis.PyQt.QtWidgets import QAction
 from pathlib import Path
-from pytestqt import qtbot
 
 from gpq_downloader.plugin import QgisPluginGeoParquet
-from gpq_downloader.dialog import DataSourceDialog
 
 def test_plugin_run_with_active_download(qgs_app, mock_iface):
     """Test run method when a download is already in progress"""
