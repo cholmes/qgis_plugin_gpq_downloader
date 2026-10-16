@@ -50,10 +50,16 @@ additions from [@jcmwinterdal](https://github.com/jcmwinterdal) in
   features, or opened the extent menu.
 - GeoPackage output had the wrong coordinate system, or none. It now uses
   EPSG:4326.
-- Cancel froze QGIS instead of stopping the query.
+- Cancel froze QGIS instead of stopping the query. Fixed by
+  [@ll3an](https://github.com/ll3an) in
+  [#171](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/171).
 - Downloads failed when the geometry column was not named `geometry`.
-- The Source Cooperative presets could not connect.
-- Features stayed selected on the map after you closed the dialog.
+- The Source Cooperative presets could not connect. Fixed by
+  [@ll3an](https://github.com/ll3an) in
+  [#170](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/170).
+- Features stayed selected on the map after you closed the dialog. Fixed by
+  [@mtravis](https://github.com/mtravis) in
+  [#159](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/159).
 
 **Before you upgrade:**
 
