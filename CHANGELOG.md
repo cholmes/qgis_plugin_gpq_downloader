@@ -15,8 +15,10 @@ working. Overture retired the custom release index we were reading, so we
 switched to using their STAC to get the latest. The performance of Overture
 downloads isn't great, but we aim to improve that for the next release.
 
-**More ways to set the download area.** This is
-[@GISAM](https://github.com/GISAM)'s area-of-interest work from
+**More ways to set the download area.**
+
+This work was driven by a couple of great collaborators, first
+[@GISAM](https://github.com/GISAM) in
 [#118](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/118), with
 additions from [@jcmwinterdal](https://github.com/jcmwinterdal) in
 [#153](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/153):
