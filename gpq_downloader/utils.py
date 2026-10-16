@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import urllib.request
 
 from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsGeometry
 from qgis.PyQt.QtCore import pyqtSignal, QObject
@@ -213,6 +214,67 @@ def extent_from_file_name(name):
     return None
 
 
+_OVERTURE_URL_RE = re.compile(
+    r"^s3://overturemaps-us-west-2/release/(?P<release>[^/*]+)/"
+    r"theme=(?P<theme>[^/*]+)/type=(?P<type>[^/*]+)/"
+)
+_OVERTURE_PART_RE = re.compile(r"^part-(\d{5})-")
+_OVERTURE_STAC = "https://stac.overturemaps.org"
+_overture_extent_cache = {}
+
+
+def _stac_bbox(box):
+    """(xmin, ymin, xmax, ymax) from a STAC bbox, which may carry elevations."""
+    if len(box) >= 6:
+        return (box[0], box[1], box[3], box[4])
+    if len(box) >= 4:
+        return (box[0], box[1], box[2], box[3])
+    return None
+
+
+def overture_part_extents(url, timeout=30):
+    """Per-file bounding boxes for an Overture theme and type, keyed by the part
+    number in the file name.
+
+    Overture publishes a STAC collection whose extent.spatial.bbox holds the
+    box for the whole collection followed by one box per file, in the same order
+    as its item links, and item N is the file named part-N. One request of about
+    100KB therefore says which files a window can touch, where a glob makes
+    DuckDB read the footer of all 512 of them.
+
+    None when the url is not an Overture release path, or the collection cannot
+    be read; the caller then falls back to the plain glob.
+    """
+    m = _OVERTURE_URL_RE.match(url or "")
+    if not m:
+        return None
+    key = (m.group("release"), m.group("theme"), m.group("type"))
+    if key in _overture_extent_cache:
+        return _overture_extent_cache[key]
+    collection_url = f"{_OVERTURE_STAC}/{key[0]}/{key[1]}/{key[2]}/collection.json"
+    extents = None
+    try:
+        with urllib.request.urlopen(collection_url, timeout=timeout) as response:
+            collection = json.load(response)
+        boxes = collection["extent"]["spatial"]["bbox"]
+        # boxes[0] covers the collection; the rest are one per file, in item order
+        extents = {}
+        for index, box in enumerate(boxes[1:]):
+            extent = _stac_bbox(box)
+            if extent is None:
+                extents = None
+                break
+            extents[index] = extent
+        if extents:
+            logger.log(f"Overture STAC: {len(extents)} file extents for {'/'.join(key)}")
+        else:
+            extents = None
+    except Exception as e:
+        logger.log(f"Could not read the Overture STAC collection: {e}")
+    _overture_extent_cache[key] = extents
+    return extents
+
+
 def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
     """Build the read_parquet() argument for `url`, pruned to the bbox when possible.
 
@@ -224,7 +286,12 @@ def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
     Returns a SQL literal, or None when no file overlaps the bbox.
     """
     default = sql_str(url)
-    if bbox is None or "*" not in url or not url.endswith(".parquet"):
+    if bbox is None or "*" not in url:
+        return default
+    # Overture's file names carry no extent, but its STAC collection publishes
+    # one bbox per file, so those are looked up by part number instead.
+    overture = overture_part_extents(url)
+    if overture is None and not url.endswith(".parquet"):
         return default
     try:
         files = [row[0] for row in conn.execute(f"SELECT file FROM glob({sql_str(url)})").fetchall()]
@@ -249,15 +316,22 @@ def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
     xmax, ymax = bbox.xMaximum() + buffer_deg, bbox.yMaximum() + buffer_deg
     selected = []
     for f, name in zip(files, names):
-        extent = extent_from_file_name(name)
+        if overture is not None:
+            part = _OVERTURE_PART_RE.match(name)
+            extent = overture.get(int(part.group(1))) if part else None
+        else:
+            extent = extent_from_file_name(name)
         if extent is None:
             return default
         fxmin, fymin, fxmax, fymax = extent
         if fxmin <= xmax and fxmax >= xmin and fymin <= ymax and fymax >= ymin:
             selected.append(f)
-    logger.log(f"Partition pruning by file name: reading {len(selected)} of {len(files)} files")
+    how = "the Overture STAC" if overture is not None else "file name"
+    logger.log(f"Partition pruning by {how}: reading {len(selected)} of {len(files)} files")
     if not selected:
         return None
+    if len(selected) == len(files):
+        return default  # nothing pruned, so let DuckDB glob rather than list every file
     return "[" + ", ".join(sql_str(f) for f in sorted(selected)) + "]"
 
 
