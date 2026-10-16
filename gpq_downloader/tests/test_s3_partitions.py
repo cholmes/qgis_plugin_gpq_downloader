@@ -4,9 +4,11 @@ import pytest
 
 from qgis.core import QgsRectangle
 
+from gpq_downloader import utils
 from gpq_downloader.utils import (
     configure_s3_for_url,
     extent_from_file_name,
+    overture_part_extents,
     parquet_source_for_bbox,
     quadkey_bounds,
     s2_cell_bounds,
@@ -104,11 +106,15 @@ def test_parquet_source_prunes_grid_files():
 
 
 def test_parquet_source_includes_neighbour_within_buffer():
-    # An extent touching the 100° E cell edge also reads the western neighbour
-    names = ["e100_n20_e105_n15", "e095_n20_e100_n15"]
+    # An extent touching the 100° E cell edge also reads the western neighbour.
+    # The third cell is far away, so the two are a real selection rather than
+    # everything the glob matched.
+    names = ["e100_n20_e105_n15", "e095_n20_e100_n15", "w170_n65_w165_n60"]
     conn = mock_glob([GBA_PREFIX + f"{n}.parquet" for n in names])
     source = parquet_source_for_bbox(conn, GBA_GLOB, QgsRectangle(100.005, 18.0, 100.1, 18.1))
-    assert source.count(".parquet") == 2
+    assert source == (
+        f"['{GBA_PREFIX}e095_n20_e100_n15.parquet', '{GBA_PREFIX}e100_n20_e105_n15.parquet']"
+    )
 
 
 def test_parquet_source_falls_back_for_mixed_quadkey_lengths():
@@ -195,3 +201,82 @@ def test_parquet_source_prunes_s2_files():
     ]
     source = parquet_source_for_bbox(mock_glob(files), VIDA_S2_GLOB, QgsRectangle(*NAN_THAILAND))
     assert source == f"['{files[1]}', '{files[0]}']"  # sorted: LAO, THA
+
+
+OVERTURE_GLOB = (
+    "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings/type=building/*"
+)
+OVERTURE_PREFIX = (
+    "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings/type=building/"
+)
+OVERTURE_KEY = ("2026-09-23.1", "buildings", "building")
+
+
+def overture_part(number):
+    """A file name shaped like Overture's, which carries no extent of its own."""
+    return f"{OVERTURE_PREFIX}part-{number:05d}-23bda295-5d48-57ef-aa31-bce815c998ac-c000.zstd.parquet"
+
+
+@pytest.fixture
+def overture_stac(monkeypatch):
+    """Seed the STAC cache so nothing reaches the network.
+
+    Three files: Germany, the Americas, and Japan.
+    """
+    extents = {
+        230: (8.99, 48.69, 11.07, 51.36),
+        0: (-180.0, -84.29, -85.87, 13.99),
+        511: (140.01, 39.66, 179.68, 77.11),
+    }
+    monkeypatch.setattr(utils, "_overture_extent_cache", {OVERTURE_KEY: extents})
+    return extents
+
+
+def test_overture_part_extents_ignores_other_urls():
+    # No network for a url that is not an Overture release path
+    assert overture_part_extents(SOURCE_COOP_GLOB) is None
+    assert overture_part_extents("https://example.com/a.parquet") is None
+    assert overture_part_extents(None) is None
+
+
+def test_overture_part_extents_comes_from_the_cache(overture_stac):
+    assert overture_part_extents(OVERTURE_GLOB) == overture_stac
+
+
+def test_parquet_source_prunes_overture_by_stac(overture_stac):
+    conn = mock_glob([overture_part(n) for n in (0, 230, 511)])
+    # The user's Frankfurt extent, which only the Germany file covers
+    source = parquet_source_for_bbox(conn, OVERTURE_GLOB, QgsRectangle(9.1252, 50.2389, 9.1514, 50.2439))
+    assert source == f"['{overture_part(230)}']"
+
+
+def test_parquet_source_falls_back_when_every_overture_file_matches(overture_stac):
+    conn = mock_glob([overture_part(n) for n in (0, 230, 511)])
+    # The whole world: listing every file gains nothing over the glob
+    source = parquet_source_for_bbox(conn, OVERTURE_GLOB, QgsRectangle(-180, -90, 180, 90))
+    assert source == f"'{OVERTURE_GLOB}'"
+
+
+def test_parquet_source_overture_no_overlap_returns_none(overture_stac):
+    conn = mock_glob([overture_part(n) for n in (0, 230, 511)])
+    # The Indian Ocean, which none of the three cover
+    assert parquet_source_for_bbox(conn, OVERTURE_GLOB, QgsRectangle(70.0, -30.0, 71.0, -29.0)) is None
+
+
+def test_parquet_source_falls_back_for_an_unknown_overture_part(overture_stac):
+    # A file the collection does not describe must not be silently skipped
+    conn = mock_glob([overture_part(230), overture_part(400)])
+    source = parquet_source_for_bbox(conn, OVERTURE_GLOB, QgsRectangle(9.1252, 50.2389, 9.1514, 50.2439))
+    assert source == f"'{OVERTURE_GLOB}'"
+
+
+def test_parquet_source_falls_back_when_the_stac_is_unavailable(monkeypatch):
+    monkeypatch.setattr(utils, "_overture_extent_cache", {})
+
+    def no_network(*args, **kwargs):
+        raise OSError("no network")
+
+    monkeypatch.setattr(utils.urllib.request, "urlopen", no_network)
+    conn = mock_glob([overture_part(230)])
+    source = parquet_source_for_bbox(conn, OVERTURE_GLOB, QgsRectangle(9.1252, 50.2389, 9.1514, 50.2439))
+    assert source == f"'{OVERTURE_GLOB}'"
