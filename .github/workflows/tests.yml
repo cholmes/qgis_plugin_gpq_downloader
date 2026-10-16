@@ -73,8 +73,10 @@ jobs:
 
     - name: Run tests with xvfb
       run: |
-        # Make sure xvfb is installed in container
-        apt-get update && apt-get install -y xvfb
+        # Make sure xvfb is installed in container. git too: the QGIS 4 image
+        # does not ship it, and the release script tests shell out to it to
+        # list the files that go in the zip.
+        apt-get update && apt-get install -y xvfb git
 
         # Run tests with virtual display
         xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" pytest ${{ matrix.pytest_args }}
