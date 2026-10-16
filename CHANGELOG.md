@@ -35,7 +35,9 @@ additions from [@jcmwinterdal](https://github.com/jcmwinterdal) in
   downloading everything that overlaps it. Off by default.
 - **Projected coordinate systems.** Files in a projected CRS, such as state plane
   feet, now download. Before, they returned nothing.
-- **MinIO.** Use self-hosted, S3-compatible storage as a source.
+- **MinIO.** Use self-hosted, S3-compatible storage as a source. From
+  [@nils-grob](https://github.com/nils-grob) in
+  [#122](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/122).
 - **All three Overture divisions types.** Previously only division areas.
 
 **Main fixes:**
