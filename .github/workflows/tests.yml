@@ -12,27 +12,54 @@ permissions:
 
 jobs:
   test:
+    # Both Qt generations: the plugin supports QGIS 3 and 4, and a Qt6-only
+    # break passes a Qt5-only suite and ships (#185).
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: qgis/qgis:release-3_34
+            name: QGIS 3.34 (Qt5)
+            pytest_args: ""
+          - image: qgis/qgis:4.2
+            name: QGIS 4.2 (Qt6)
+            # coverage segfaults tokenizing sources under this image's Python
+            # 3.13, after every test has already run. The Qt5 leg measures
+            # coverage, and it is not Qt-specific.
+            pytest_args: "--no-cov"
     container:
-      image: qgis/qgis:release-3_34  # QGIS docker image with QGIS 3.34
-      
+      image: ${{ matrix.image }}
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install Python dependencies
       run: |
-        python3 -m pip install --upgrade pip
-        pip3 install pytest pytest-qt
+        # The QGIS 4 images are Debian trixie / Ubuntu questing, which enforce
+        # PEP 668. Installing into the system interpreter is what we want here:
+        # the tests need the qgis module, which only it has.
+        PIP_FLAGS=""
+        if pip3 install --help | grep -q break-system-packages; then
+          PIP_FLAGS="--break-system-packages"
+        fi
+        # The 3.34 image's pip is too old for PEP 660, so an editable install
+        # fails without this. On the QGIS 4 image pip comes from Debian with no
+        # RECORD file and cannot replace itself, but it is new enough already.
+        python3 -m pip install $PIP_FLAGS --upgrade pip || echo "keeping the system pip"
+        pip3 install $PIP_FLAGS pytest pytest-qt
         # Install in development mode to ensure data files are available
-        pip3 install -e .[dev]
-        
+        pip3 install $PIP_FLAGS -e .[dev]
+
     - name: Debug package installation
       run: |
+        python3 -c "import qgis.core; from qgis.PyQt.QtCore import QT_VERSION_STR; print('QGIS', qgis.core.Qgis.QGIS_VERSION, 'Qt', QT_VERSION_STR)"
         # Print out installed package location
         python3 -c "import gpq_downloader; print(gpq_downloader.__file__)"
         # Check if data directory exists
         ls -la $(python3 -c "import gpq_downloader; import os; print(os.path.dirname(gpq_downloader.__file__))")/data || echo "Data directory not found"
-        
+
     - name: Create data directory if missing
       run: |
         # Create data directory if it doesn't exist
@@ -43,11 +70,13 @@ jobs:
           echo '{"datasets": {}}' > $PACKAGE_DIR/data/presets.json
           echo "Created minimal presets.json file at $PACKAGE_DIR/data/presets.json"
         fi
-        
+
     - name: Run tests with xvfb
       run: |
-        # Make sure xvfb is installed in container
-        apt-get update && apt-get install -y xvfb
-        
+        # Make sure xvfb is installed in container. git too: the QGIS 4 image
+        # does not ship it, and the release script tests shell out to it to
+        # list the files that go in the zip.
+        apt-get update && apt-get install -y xvfb git
+
         # Run tests with virtual display
-        xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" pytest 
+        xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" pytest ${{ matrix.pytest_args }}
