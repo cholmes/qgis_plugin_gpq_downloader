@@ -62,8 +62,9 @@ regenerate. Do not edit the generated bullets by hand.
 
 ## 4. Write the highlights
 
-Replace the `<!-- TODO ... -->` placeholder with two to four paragraphs, written
-after reading the entries and, where needed, the PRs themselves. Cover, in order:
+Replace the `<!-- TODO ... -->` placeholder with two to four **short** paragraphs,
+written after reading the entries and, where needed, the PRs themselves. Cover, in
+order:
 
 1. What is newly possible: new presets, sources, AOI tools, output options.
 2. The theme of the fixes, named concretely ("the dialog crashed on QGIS 4"), not
@@ -83,6 +84,34 @@ substance of the work in a sentence or two so they can see it was read, thank th
 and invite them back.
 
 Write for a QGIS user deciding whether to upgrade, not for a developer.
+
+### House style
+
+Plain, direct language, in the spirit of the Google developer documentation style
+guide. The whole summary should be short enough to read in under a minute.
+
+- **Describe the improvement; do not explain the mechanism.** One sentence on what
+  changed for the user, one number if there is a good one. The PR is there for
+  anyone who wants the reasoning.
+- **Prose for the main change, bullets only for a genuine list.** A single
+  improvement broken into five bullets is five times too long. Two or three short
+  bullets for unrelated smaller items is right.
+- **One idea per sentence**, active voice, present tense, second person ("your
+  area", not "the user's area").
+- **Concrete over vague**: "downloads failed when the geometry column was not
+  called geometry", not "various bug fixes". Name the symptom a user would
+  recognise, not the internals.
+- **No padding**: cut "much", "dramatically", "significantly", "simply",
+  "powerful", "seamlessly", and anything of the form "we are excited to".
+- **Numbers beat adjectives.** "201 seconds to 5" says more than "much faster",
+  so give the measurement and drop the adjective.
+- **Do not restate the entries.** The generated Added/Changed/Fixed lists sit
+  directly below; the summary says why the release matters, not what is in it.
+- Keep the contributor thanks warm. That is the one place where more words are
+  worth it.
+
+Things a user must do differently are worth a line each, up front. Internal work
+(CI, tests, tooling) gets at most one closing sentence, or none.
 
 ## 5. Human review — STOP HERE
 
