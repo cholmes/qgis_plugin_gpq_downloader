@@ -15,15 +15,18 @@ import os
 
 import duckdb
 import pytest
-from qgis.core import QgsGeometry, QgsRectangle, QgsVectorLayer
+from qgis.core import QgsCoordinateReferenceSystem, QgsGeometry, QgsRectangle, QgsVectorLayer
 
 from gpq_downloader.utils import (
     ValidationWorker,
     Worker,
+    crs_from_geo,
     detect_columns,
+    parse_geo_crs,
     parse_geo_metadata,
     sql_ident,
     sql_str,
+    transform_rect,
 )
 
 DATA = os.path.join(os.path.dirname(__file__), "data", "geom_bbox_named.parquet")
@@ -69,6 +72,72 @@ def test_parse_geo_metadata():
     assert parse_geo_metadata('{"columns": {"geometry": {"covering": {"bbox": {"xmin": [0]}}}}}') == ("geometry", None)
     assert parse_geo_metadata("not json") == (None, None)
     assert parse_geo_metadata("[]") == (None, None)
+
+
+def test_parse_geo_crs():
+    """#182: data in a projected CRS has to be filtered in its own units."""
+    trimet = (
+        '{"primary_column": "geometry", "columns": {"geometry": {"encoding": "WKB", '
+        '"crs": {"id": {"authority": "EPSG", "code": 2913}, "name": "NAD83(HARN) / Oregon North (ft)"}}}}'
+    )
+    assert parse_geo_crs(trimet) == "EPSG:2913"
+    # absent or null means the GeoParquet default, OGC:CRS84
+    assert parse_geo_crs('{"columns": {"geometry": {}}}') is None
+    assert parse_geo_crs('{"columns": {"geometry": {"crs": null}}}') is None
+    assert parse_geo_crs("not json") is None
+    # PROJJSON with no authority id is passed through for PROJ to read
+    assert parse_geo_crs('{"columns": {"geometry": {"crs": {"name": "odd"}}}}') == '{"name": "odd"}'
+
+
+def test_crs_from_geo(qgs_app):
+    assert crs_from_geo("EPSG:2913").authid() == "EPSG:2913"
+    assert crs_from_geo(None) is None
+    assert crs_from_geo("EPSG:4326") is None  # already lon/lat: nothing to do
+    assert crs_from_geo("EPSG:999999") is False  # present but unreadable
+
+
+def test_transform_rect_into_the_files_units(qgs_app):
+    """The Oregon window in degrees has to cover the TriMet file's bbox in feet."""
+    window = QgsRectangle(-123.78146933459826, 45.229451024481, -121.65289549498178, 45.67616962908521)
+    wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
+    feet = transform_rect(window, wgs84, QgsCoordinateReferenceSystem("EPSG:2913"))
+    file_bbox = QgsRectangle(7563739.96, 607778.18, 7710256.64, 714400.32)
+    assert feet.contains(file_bbox)
+
+
+def projected_table(conn):
+    conn.execute("INSTALL spatial; LOAD spatial")
+    conn.execute(
+        "CREATE TABLE t AS SELECT 'rail' AS name, ST_Point(7600000, 650000) AS geom, "
+        "struct_pack(xmin := 7600000.0, ymin := 650000.0, xmax := 7600000.0, ymax := 650000.0) AS geom_bbox"
+    )
+
+
+def test_reproject_table_converts_to_4326(mock_iface, tmp_path):
+    """#182: after filtering in the file's own units the table is converted, and
+    the stale bbox covering is rebuilt from the new geometry."""
+    conn = duckdb.connect()
+    projected_table(conn)
+    worker = Worker(DATA, WINDOW, str(tmp_path / "o.parquet"), mock_iface, dict(QUEUE_DEFAULTS))
+
+    assert worker.reproject_table(conn, "t", "geom", "geom_bbox", "EPSG:2913")
+
+    x, y, bx, by = conn.execute(
+        "SELECT ST_X(geom), ST_Y(geom), geom_bbox.xmin, geom_bbox.ymin FROM t"
+    ).fetchone()
+    assert -123 < x < -122 and 45 < y < 46, "expected lon/lat near Portland, not lat/lon"
+    assert (bx, by) == pytest.approx((x, y))
+
+
+def test_reproject_table_reports_a_crs_duckdb_cannot_use(mock_iface, tmp_path):
+    conn = duckdb.connect()
+    projected_table(conn)
+    worker = Worker(DATA, WINDOW, str(tmp_path / "o.parquet"), mock_iface, dict(QUEUE_DEFAULTS))
+    errors = []
+    worker.error.connect(errors.append)
+
+    assert worker.reproject_table(conn, "t", "geom", "geom_bbox", "EPSG:NOPE") is False
+    assert errors and "EPSG:NOPE" in errors[0]
 
 
 def test_sql_quoting():
