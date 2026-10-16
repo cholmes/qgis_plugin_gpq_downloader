@@ -121,6 +121,12 @@
             "info_url": "https://data.openstreetmap.us/",
             "needs_validation": false
         },
+        "pois": {
+            "display_name": "POIs",
+            "url": "https://data.openstreetmap.us/layercake/pois.parquet",
+            "info_url": "https://data.openstreetmap.us/",
+            "needs_validation": false
+        },
         "settlements": {
             "url": "https://data.openstreetmap.us/layercake/settlements.parquet",
             "info_url": "https://data.openstreetmap.us/",
