@@ -61,6 +61,10 @@ def configure_s3_for_url(conn, url):
         conn.execute("SET s3_url_style='path';")
 
 
+# The Source Cooperative data proxy, which serves the same objects over https
+# and over S3. Reading over S3 is only needed to expand a glob.
+_SOURCECOOP_PROXY_PREFIX = "https://data.source.coop/"
+
 # host or host:port of an S3-compatible server in a minio:// URL
 _MINIO_HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?$")
 MINIO_URL_FORMAT = "minio://host[:port]/bucket/path (or minio+http:// for a server without TLS)"
@@ -71,9 +75,19 @@ def resolve_dataset_url(conn, url):
 
     minio://host[:port]/bucket/key reads s3://bucket/key from that S3-compatible
     server (MinIO or similar) anonymously, with path-style URLs. It uses https,
-    except on port 80 or with minio+http://. Other s3:// URLs get the
+    except on port 80 or with minio+http://. A glob on the Source Cooperative
+    proxy is read over S3 instead of https. Other s3:// URLs get the
     configure_s3_for_url() settings; everything else is returned unchanged.
     """
+    if url and "*" in url and url.startswith(_SOURCECOOP_PROXY_PREFIX):
+        # Expanding a glob means listing, which plain https cannot do. The proxy
+        # speaks S3, so the same path is read that way instead. It only answers
+        # path-style requests: virtual-host style would look for a subdomain
+        # named after the account and fail to resolve (#133).
+        conn.execute("SET s3_endpoint='data.source.coop';")
+        conn.execute("SET s3_use_ssl=true;")
+        conn.execute("SET s3_url_style='path';")
+        return "s3://" + url[len(_SOURCECOOP_PROXY_PREFIX):]
     for scheme, use_ssl in (("minio://", True), ("minio+http://", False)):
         if url.startswith(scheme):
             host, _, key = url[len(scheme):].partition("/")
