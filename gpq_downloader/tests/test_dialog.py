@@ -317,3 +317,31 @@ def test_osm_selection_returns_the_preset_url(qgs_app, mock_iface):
         box.setChecked(key == "pois")
     assert dialog.get_urls() == ["https://data.openstreetmap.us/layercake/pois.parquet"]
     dialog.close()
+
+
+@pytest.mark.parametrize(
+    "key,url",
+    [
+        ("addresses", "https://data.openstreetmap.us/layercake/addresses.parquet"),
+        ("waterways", "https://data.openstreetmap.us/layercake/waterways.parquet"),
+        ("wetlands", "https://data.openstreetmap.us/layercake/wetlands.parquet"),
+    ],
+)
+def test_osm_presets_include_the_newer_layercake_datasets(key, url):
+    """#193 asked for addresses, waterways and wetlands."""
+    import json
+    import pathlib
+
+    presets_path = pathlib.Path(__file__).resolve().parent.parent / "data" / "presets.json"
+    assert json.loads(presets_path.read_text())["openstreetmap"][key]["url"] == url
+
+
+def test_osm_checkboxes_wrap_instead_of_widening_the_dialog(qgs_app, mock_iface):
+    """All the presets on one row set the dialog's minimum width: nine of them
+    demanded 825px, where six had demanded 536px. A grid keeps the page within
+    the width the dialog already asks for (#193)."""
+    dialog = DataSourceDialog(None, mock_iface)
+    assert len(dialog.osm_checkboxes) >= 9
+    osm_page = next(iter(dialog.osm_checkboxes.values())).parentWidget()
+    assert osm_page.minimumSizeHint().width() <= dialog.minimumWidth()
+    dialog.close()
