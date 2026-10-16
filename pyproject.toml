@@ -27,6 +27,9 @@ packages = ["gpq_downloader"]
 testpaths = ["gpq_downloader/tests", "scripts/tests"]
 python_files = "test_*.py"
 addopts = "--cov=gpq_downloader"
+markers = [
+    "integration: needs network access or real remote data",
+]
 
 [tool.coverage.run]
 source = ["gpq_downloader"]

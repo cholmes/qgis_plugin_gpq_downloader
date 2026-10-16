@@ -1,7 +1,6 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 import os
-from qgis.PyQt.QtCore import QObject
 
 from gpq_downloader.utils import Worker
 

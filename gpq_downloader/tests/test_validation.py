@@ -1,7 +1,4 @@
-import pytest
 from unittest.mock import MagicMock, patch
-import json
-import os
 
 from gpq_downloader.utils import ValidationWorker
 

@@ -2,13 +2,13 @@
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import pyarrow.parquet as pq
 import duckdb
 import tempfile
 import os
 
-from gpq_downloader.utils import Worker, ValidationWorker
+from gpq_downloader.utils import Worker
 
 
 class TestNonGeoParquetHandling:
@@ -111,9 +111,9 @@ class TestNonGeoParquetHandling:
         worker.run()
         
         # Verify spatial extension was loaded
-        execute_calls = [call[0][0] for call in mock_conn.execute.call_args_list]
-        assert any("INSTALL spatial" in call for call in execute_calls)
-        assert any("LOAD spatial" in call for call in execute_calls)
+        execute_calls = [c[0][0] for c in mock_conn.execute.call_args_list]
+        assert any("INSTALL spatial" in sql for sql in execute_calls)
+        assert any("LOAD spatial" in sql for sql in execute_calls)
         
         # Verify no errors
         worker.error.emit.assert_not_called()

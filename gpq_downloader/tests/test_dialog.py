@@ -1,7 +1,5 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from qgis.PyQt.QtWidgets import QDialog
-from qgis.PyQt.QtCore import Qt
 from qgis.core import QgsCoordinateReferenceSystem, QgsFeature, QgsGeometry, QgsVectorLayer
 from qgis.gui import QgsMapCanvas
 
