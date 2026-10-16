@@ -10,10 +10,16 @@ Releases before 0.9.0 are described on the
 
 ## v0.9.0 (2026-10-16)
 
-Overture downloads work again. In 0.8.6, every Overture preset fails with a JSON
-error, because Overture retired the release index that the plugin read.
+Overture downloads work again. Apologies to everyone for the delay on this not
+working. Overture retired the custom release index we were reading, so we
+switched to using their STAC to get the latest. The performance of Overture
+downloads isn't great, but we aim to improve that for the next release.
 
-**More ways to set the download area:**
+**More ways to set the download area.** This is
+[@GISAM](https://github.com/GISAM)'s area-of-interest work from
+[#118](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/118), with
+additions from [@jcmwinterdal](https://github.com/jcmwinterdal) in
+[#153](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/153):
 
 - Type bbox coordinates.
 - Drag a rectangle on the map.
@@ -43,6 +49,7 @@ error, because Overture retired the release index that the plugin read.
 - Cancel froze QGIS instead of stopping the query.
 - Downloads failed when the geometry column was not named `geometry`.
 - The Source Cooperative presets could not connect.
+- Features stayed selected on the map after you closed the dialog.
 
 **Before you upgrade:**
 
@@ -53,22 +60,38 @@ error, because Overture retired the release index that the plugin read.
 - The VIDA buildings preset reads an S2-partitioned copy of the data, which is
   faster. If you saved the old URL by hand, use the preset instead.
 
-**First-time contributors:**
+**Thanks to:**
 
-- [@lubosmato](https://github.com/lubosmato) pointed the plugin at Overture's
-  STAC catalog after Overture retired the release endpoint
+- [@GISAM](https://github.com/GISAM), who built the area-of-interest system that
+  most of the new download-area tools come from
+  ([#118](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/118)), and
+  [@jcmwinterdal](https://github.com/jcmwinterdal), who added the bbox entry
+  panel, the rectangle drag and the keyboard shortcuts
+  ([#153](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/153)).
+  Between them they are most of what is new here.
+- [@mtravis](https://github.com/mtravis), who stopped features staying selected
+  on the map after the dialog closed
+  ([#159](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/159)), and
+  who has been contributing to this plugin since the DuckDB install prompt and
+  the export filename fixes.
+- [@lubosmato](https://github.com/lubosmato), on a first contribution, who
+  pointed the plugin at Overture's STAC catalog after Overture retired the
+  release endpoint
   ([#169](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/169)).
   Without this fix, no Overture download works.
-- [@ll3an](https://github.com/ll3an) sent two changes: Cancel now stops the
-  running DuckDB query instead of freezing QGIS
+- [@ll3an](https://github.com/ll3an), also a first contribution, who sent two
+  changes: Cancel now stops the running DuckDB query instead of freezing QGIS
   ([#171](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/171)), and
   the Source Cooperative presets work again, after an S3 certificate error on
   dotted bucket names, slow globbing of partitioned data, and a Roads path that
   had moved ([#170](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/170)).
-- [@nils-grob](https://github.com/nils-grob) added MinIO support
+- [@nils-grob](https://github.com/nils-grob), on a first contribution, who added
+  MinIO support
   ([#122](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/122)).
 
-Thank you all three. Please come back.
+Thanks for all your great contributions! Hope to see you in the future, and
+we're welcoming [@mtravis](https://github.com/mtravis) as a co-maintainer for
+the next release.
 
 ### Added
 
