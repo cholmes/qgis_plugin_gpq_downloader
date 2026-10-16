@@ -13,7 +13,7 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtCore import Qt, QThread
-from qgis.core import Qgis, QgsProject, QgsVectorLayer, QgsSettings
+from qgis.core import QgsProject, QgsVectorLayer, QgsSettings
 import os
 import re
 import datetime
@@ -21,6 +21,7 @@ from pathlib import Path
 
 from . import duckdb_setup
 from .dialog import DataSourceDialog
+from .logger import message_level
 from .utils import Worker
 
 
@@ -42,11 +43,6 @@ def custom_file_stem(url):
         if stem:
             return stem
     return "custom_download"
-
-
-def _message_level(name):
-    """Qgis.Warning on QGIS 3, Qgis.MessageLevel.Warning where only the scoped name exists."""
-    return getattr(Qgis, name) if hasattr(Qgis, name) else getattr(Qgis.MessageLevel, name)
 
 
 class QgisPluginGeoParquet:
@@ -87,7 +83,7 @@ class QgisPluginGeoParquet:
             self.iface.messageBar().pushMessage(
                 "GeoParquet Downloader",
                 "DuckDB is being installed; this takes a minute.",
-                _message_level("Info"),
+                message_level("Info"),
                 5,
             )
             return False
@@ -105,7 +101,7 @@ class QgisPluginGeoParquet:
             button = QPushButton("Install DuckDB")
             button.clicked.connect(lambda: self.install_duckdb())
             message.layout().addWidget(button)
-            bar.pushWidget(message, _message_level("Warning"))
+            bar.pushWidget(message, message_level("Warning"))
             self._duckdb_message = message
             return False
 
@@ -144,7 +140,7 @@ class QgisPluginGeoParquet:
         progress = QProgressBar()
         progress.setRange(0, 0)
         message.layout().addWidget(progress)
-        bar.pushWidget(message, _message_level("Info"))
+        bar.pushWidget(message, message_level("Info"))
         self._duckdb_message = message
         duckdb_setup.install(self.duckdb_install_finished)
 
@@ -157,7 +153,7 @@ class QgisPluginGeoParquet:
             bar.pushMessage(
                 "GeoParquet Downloader",
                 f"DuckDB {version} is installed. You can download GeoParquet data now.",
-                _message_level("Success"),
+                message_level("Success"),
                 10,
             )
             return
@@ -166,7 +162,7 @@ class QgisPluginGeoParquet:
             bar.pushMessage(
                 "GeoParquet Downloader",
                 "DuckDB was installed. Restart QGIS to start using it.",
-                _message_level("Warning"),
+                message_level("Warning"),
                 0,
             )
             return

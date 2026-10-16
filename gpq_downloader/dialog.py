@@ -27,6 +27,8 @@ from qgis.PyQt.QtWidgets import (
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread, QPoint, QObject, QEvent
 from qgis.PyQt.QtGui import QIcon
 from qgis.core import QgsSettings, QgsRectangle, QgsGeometry, QgsApplication, QgsMapLayerType
+
+from .logger import message_level
 import os
 from .utils import MINIO_URL_FORMAT, ValidationWorker
 from .map_tools import PolygonMapTool, AoiHighlighter, RectangleMapTool
@@ -1089,8 +1091,8 @@ class DataSourceDialog(QDialog):
         self.iface.messageBar().pushMessage(
             "Draw BBox",
             "Click and drag to draw a bounding box. Release to confirm.",
-            level=0,
-            duration=5,
+            message_level("Info"),
+            5,
         )
 
     def on_bbox_drawn(self, rect):
@@ -1427,8 +1429,8 @@ class DataSourceDialog(QDialog):
             self.iface.messageBar().pushMessage(
                 "Draw Polygon",
                 "Click to add vertices. Press Enter or right-click to finish (Esc to cancel).",
-                level=0,
-                duration=10
+                message_level("Info"),
+                10,
             )
 
             # Update button states
@@ -1495,8 +1497,8 @@ class DataSourceDialog(QDialog):
                     self.iface.messageBar().pushMessage(
                         "Draw Polygon",
                         "Need at least 3 points to create a polygon. Keep clicking to add more points.",
-                        level=1,  # Warning level
-                        duration=3
+                        message_level("Warning"),
+                        3,
                     )
 
     def cancel_polygon_draw(self):
@@ -1701,8 +1703,8 @@ class DataSourceDialog(QDialog):
             self.iface.messageBar().pushMessage(
                 "Select Features",
                 "Select one or more features (Shift=add). Press Enter when done (Esc to cancel).",
-                level=0,  # Info level
-                duration=10
+                message_level("Info"),
+                10,
             )
 
             # Update button states
@@ -1803,7 +1805,7 @@ class DataSourceDialog(QDialog):
             # Get the button's position in global coordinates
             button_pos = self.extent_button.mapToGlobal(QPoint(0, 20))
             # Show the menu below the button
-            menu.exec_(button_pos)
+            menu.exec(button_pos)
 
     def populate_layer_combo(self):
         """Populate the layer combo box with available layers"""
