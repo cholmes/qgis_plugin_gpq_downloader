@@ -300,6 +300,66 @@ def parse_geo_metadata(raw) -> tuple[str | None, str | None]:
     return primary, bbox_column
 
 
+def parse_geo_crs(raw) -> str | None:
+    """The primary column's CRS from 'geo' metadata, as "EPSG:2913" when the
+    PROJJSON names an authority, else the PROJJSON itself.
+
+    None means the GeoParquet default, OGC:CRS84, which is EPSG:4326 in
+    longitude/latitude order. A null crs also means no reprojection: the spec
+    uses it for data that is not in a known CRS.
+    """
+    try:
+        geo = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(geo, dict):
+        return None
+    columns = geo.get("columns") if isinstance(geo.get("columns"), dict) else {}
+    primary = geo.get("primary_column")
+    if primary not in columns:
+        primary = next(iter(columns), primary)
+    column = columns.get(primary) if isinstance(columns.get(primary), dict) else {}
+    crs = column.get("crs")
+    if crs is None:  # absent (CRS84 by default) or explicitly null
+        return None
+    if isinstance(crs, str):
+        return crs
+    if isinstance(crs, dict):
+        ident = crs.get("id")
+        if isinstance(ident, dict):
+            authority, code = ident.get("authority"), ident.get("code")
+            if authority and code is not None:
+                return f"{authority}:{code}"
+        return json.dumps(crs)  # PROJJSON without an id; PROJ can still read it
+    return None
+
+
+def crs_from_geo(crs_text: str | None):
+    """A QgsCoordinateReferenceSystem for a parse_geo_crs() value, or None when
+    the data is already in longitude/latitude. False when the CRS cannot be read."""
+    if not crs_text:
+        return None
+    crs = QgsCoordinateReferenceSystem(crs_text)
+    if not crs.isValid():
+        crs = QgsCoordinateReferenceSystem()
+        crs.createFromUserInput(crs_text)
+    if not crs.isValid():
+        return False
+    if crs == QgsCoordinateReferenceSystem("EPSG:4326"):
+        return None  # already lon/lat; nothing to transform
+    return crs
+
+
+def transform_rect(rect, source_crs, dest_crs):
+    """rect from source_crs to dest_crs, or None if the transform fails."""
+    try:
+        transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
+        return transform.transformBoundingBox(rect)
+    except Exception as e:
+        logger.log(f"Could not transform the query window: {e}")
+        return None
+
+
 def first_parquet_file(conn, url: str) -> str:
     """One concrete file at url, so metadata reads don't fetch every footer of a glob."""
     if "*" not in url:
@@ -314,8 +374,8 @@ def first_parquet_file(conn, url: str) -> str:
     return row[0] if row else url
 
 
-def read_geo_metadata(conn, url: str) -> tuple[str | None, str | None]:
-    """(primary_column, bbox_column) from the 'geo' metadata of the first file at url."""
+def read_geo_metadata(conn, url: str) -> tuple[str | None, str | None, str | None]:
+    """(primary_column, bbox_column, crs) from the 'geo' metadata of the first file at url."""
     url = first_parquet_file(conn, url)
     try:
         row = conn.execute(
@@ -326,11 +386,13 @@ def read_geo_metadata(conn, url: str) -> tuple[str | None, str | None]:
         if duckdb is not None and isinstance(e, duckdb.InterruptException):
             raise
         logger.log(f"Could not read GeoParquet metadata: {e}")
-        return None, None
+        return None, None, None
     if not row:
-        return None, None
+        return None, None, None
     value = row[0]
-    return parse_geo_metadata(value.decode("utf-8", "replace") if isinstance(value, bytes) else value)
+    raw = value.decode("utf-8", "replace") if isinstance(value, bytes) else value
+    primary, bbox_column = parse_geo_metadata(raw)
+    return primary, bbox_column, parse_geo_crs(raw)
 
 
 def is_bbox_struct(col_type: str) -> bool:
@@ -476,7 +538,7 @@ class Worker(QObject):
                 # The caller's validation results are only hints: the download queue
                 # passes preset defaults. The file's own GeoParquet metadata and
                 # schema decide which columns hold the geometry and the bbox covering.
-                geo_primary, geo_bbox = read_geo_metadata(conn, self.read_url)
+                geo_primary, geo_bbox, geo_crs = read_geo_metadata(conn, self.read_url)
                 geometry_column, bbox_column = detect_columns(
                     schema_result,
                     geo_primary,
@@ -488,6 +550,20 @@ class Worker(QObject):
                 self.validation_results['bbox_column'] = bbox_column
                 self.validation_results['has_bbox'] = bbox_column is not None
                 logger.log(f"Geometry column: {geometry_column}; bbox column: {bbox_column}")
+
+                # Data that is not in longitude/latitude has to be filtered in its
+                # own units: the window and any AOI are in EPSG:4326, the file's
+                # bbox covering is not
+                data_crs = crs_from_geo(geo_crs)
+                if data_crs is False:
+                    self.error.emit(
+                        f"This file says it is in {geo_crs}, which QGIS does not recognise, "
+                        "so the area you asked for cannot be matched against it. "
+                        "Reproject the data to EPSG:4326 and try again."
+                    )
+                    return
+                if data_crs is not None:
+                    logger.log(f"Data CRS: {data_crs.authid() or geo_crs}; filtering in its units")
 
                 table_name = "download_data"
 
@@ -545,16 +621,34 @@ class Worker(QObject):
                     area_wkt = transformed_geom.asWkt()
                     logger.log(f"Applying AOI geometry filter: {area_wkt}")
 
+                # The same area in the file's own CRS, which is what its
+                # coordinates and bbox covering are measured in
+                filter_bbox, filter_area_wkt = bbox, area_wkt
+                if data_crs is not None:
+                    wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
+                    filter_bbox = transform_rect(bbox, wgs84, data_crs)
+                    area_geom = QgsGeometry.fromWkt(area_wkt)
+                    transform = QgsCoordinateTransform(wgs84, data_crs, QgsProject.instance())
+                    if filter_bbox is None or area_geom.transform(transform) != 0:
+                        self.error.emit(
+                            f"This file is in {data_crs.authid() or geo_crs}, and the area you "
+                            "asked for could not be converted into it. Reproject the data to "
+                            "EPSG:4326 and try again."
+                        )
+                        return
+                    filter_area_wkt = area_geom.asWkt()
+                    logger.log(f"Query window in {data_crs.authid()}: {filter_bbox.toString()}")
+
                 conditions = []
                 if bbox_column is not None:
                     # Cheap first pass on the covering column, which can use
                     # row-group statistics to skip data
-                    conditions.append(bbox_overlap_condition(bbox_column, bbox))
+                    conditions.append(bbox_overlap_condition(bbox_column, filter_bbox))
                 if not is_wkb_blob:
                     # A WKB BLOB column is filtered after conversion, below
                     if bbox_column is None or self.aoi_geometry is not None:
                         conditions.append(
-                            f'ST_Intersects({sql_ident(geometry_column)}, ST_GeomFromText({sql_str(area_wkt)}))'
+                            f'ST_Intersects({sql_ident(geometry_column)}, ST_GeomFromText({sql_str(filter_area_wkt)}))'
                         )
                 where_clause = ("WHERE " + "\n AND ".join(conditions)) if conditions else ""
 
@@ -599,7 +693,7 @@ class Worker(QObject):
                     if bbox_column is None or self.aoi_geometry is not None:
                         spatial_filter = (
                             f'WHERE ST_Intersects(ST_GeomFromWKB({sql_ident(geometry_column)}), '
-                            f'ST_GeomFromText({sql_str(area_wkt)}))'
+                            f'ST_GeomFromText({sql_str(filter_area_wkt)}))'
                         )
 
                     convert_query = f"""
@@ -615,6 +709,16 @@ class Worker(QObject):
                     conn.execute(f"DROP TABLE {table_name}")
                     conn.execute(f"ALTER TABLE {temp_table} RENAME TO {table_name}")
                 
+                # Everything downstream (clipping, the GDAL exports, QGIS) treats
+                # the table as EPSG:4326, so convert it now that it is local
+                if data_crs is not None:
+                    self.progress.emit(f"Reprojecting{layer_info} to EPSG:4326...")
+                    if not self.reproject_table(
+                        conn, table_name, geometry_column, bbox_column,
+                        data_crs.authid() or geo_crs,
+                    ):
+                        return
+
                 if self.clip_to_area:
                     self.progress.emit(f"Clipping{layer_info} features to the area...")
                     self.clip_table(conn, table_name, geometry_column, bbox_column, area_wkt)
@@ -728,6 +832,45 @@ class Worker(QObject):
         except Exception as e:
             if not self.killed:
                 self.error.emit(str(e))
+
+    def reproject_table(self, conn, table_name, geometry_column, bbox_column, source_crs):
+        """Convert the downloaded table to EPSG:4326 in place. False on failure,
+        having emitted an error naming the CRS."""
+        geom = sql_ident(geometry_column)
+        transformed = (
+            f"ST_Transform({geom}, {sql_str(source_crs)}, 'EPSG:4326', always_xy := true)"
+        )
+        columns = []
+        for name, *_ in conn.execute(f"DESCRIBE {table_name}").fetchall():
+            quoted = sql_ident(name)
+            if name == geometry_column:
+                columns.append(f"{transformed} AS {quoted}")
+            elif name == bbox_column:
+                # The covering is in the old units, so rebuild it from the new geometry
+                columns.append(
+                    f"struct_pack(xmin := ST_XMin({transformed}), ymin := ST_YMin({transformed}), "
+                    f"xmax := ST_XMax({transformed}), ymax := ST_YMax({transformed})) AS {quoted}"
+                )
+            else:
+                columns.append(quoted)
+
+        temp_table = f"{table_name}_4326"
+        try:
+            conn.execute(
+                f"CREATE TABLE {temp_table} AS SELECT {', '.join(columns)} FROM {table_name}"
+            )
+        except Exception as e:
+            if duckdb is not None and isinstance(e, duckdb.InterruptException):
+                raise
+            logger.log(f"ST_Transform from {source_crs} failed: {e}")
+            self.error.emit(
+                f"This data is in {source_crs} and DuckDB could not convert it to "
+                f"EPSG:4326 ({e}). Reproject the data to EPSG:4326 and try again."
+            )
+            return False
+        conn.execute(f"DROP TABLE {table_name}")
+        conn.execute(f"ALTER TABLE {temp_table} RENAME TO {table_name}")
+        return True
 
     def clip_table(self, conn, table_name, geometry_column, bbox_column, area_wkt):
         """Cut each feature to the area, dropping those outside it, and refresh the bbox column."""
@@ -903,11 +1046,12 @@ class ValidationWorker(QObject):
 
             # The GeoParquet metadata names the primary geometry column and its
             # bbox covering, whatever they are called (geom, geom_bbox, ...)
-            geo_primary, geo_bbox = read_geo_metadata(conn, self.read_url)
+            geo_primary, geo_bbox, geo_crs = read_geo_metadata(conn, self.read_url)
             if self.killed:  # read_geo_metadata may swallow an interrupt
                 return
             geometry_column, bbox_column = detect_columns(schema_result, geo_primary, geo_bbox)
             validation_results["geometry_column"] = geometry_column
+            validation_results["crs"] = geo_crs
             if bbox_column:
                 validation_results["has_bbox"] = True
                 validation_results["bbox_column"] = bbox_column
