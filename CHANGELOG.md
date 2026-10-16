@@ -8,6 +8,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases before 0.9.0 are described on the
 [GitHub releases page](https://github.com/cholmes/qgis_plugin_gpq_downloader/releases).
 
+## v0.9.1 (2026-10-16)
+
+Overture downloads are faster, as promised in 0.9.0. The plugin reads
+Overture's STAC catalog to find which files cover your area, and opens only
+those. Counting buildings in a small Frankfurt window went from 201 seconds to
+5. Large areas gain less, and an area covering the world still reads everything,
+so no download is slower than before.
+
+Two smaller additions:
+
+- LayerCake's 62 million OpenStreetMap points of interest are now a preset.
+- Custom URLs with a glob work on Source Cooperative, where they used to fail
+  with an HTTP 400.
+
+The rest is test coverage. The suite now runs on QGIS 4 and Qt6 as well as Qt5,
+which is how the QGIS 4 breaks fixed in 0.9.0 reached users.
+
+### Added
+
+- Add the LayerCake POIs dataset to the OpenStreetMap presets by [@cholmes](https://github.com/cholmes) in [#190](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/190)
+
+### Changed
+
+- Prune Overture downloads to the files the area touches by [@cholmes](https://github.com/cholmes) in [#187](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/187)
+
+### Fixed
+
+- Read a glob on the Source Cooperative proxy over S3 by [@cholmes](https://github.com/cholmes) in [#191](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/191)
+
+_3 internal changes are not listed here; the full changelog has them._
+
+**Full Changelog**: https://github.com/cholmes/qgis_plugin_gpq_downloader/compare/v0.9.0...v0.9.1
+
 ## v0.9.0 (2026-10-16)
 
 Overture downloads work again. Apologies to everyone for the delay on this not

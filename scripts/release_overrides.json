@@ -5,5 +5,8 @@
   "169": {"section": "Fixed", "title": "Read Overture's STAC catalog to find the latest release"},
   "171": {"section": "Fixed"},
   "173": {"section": "Internal"},
-  "175": {"section": "Internal"}
+  "175": {"section": "Internal"},
+  "188": {"section": "Internal"},
+  "191": {"section": "Fixed", "title": "Read a glob on the Source Cooperative proxy over S3"},
+  "192": {"section": "Internal"}
 }
