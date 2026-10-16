@@ -22,8 +22,13 @@ jobs:
         include:
           - image: qgis/qgis:release-3_34
             name: QGIS 3.34 (Qt5)
+            pytest_args: ""
           - image: qgis/qgis:4.2
             name: QGIS 4.2 (Qt6)
+            # coverage segfaults tokenizing sources under this image's Python
+            # 3.13, after every test has already run. The Qt5 leg measures
+            # coverage, and it is not Qt-specific.
+            pytest_args: "--no-cov"
     container:
       image: ${{ matrix.image }}
 
@@ -39,8 +44,10 @@ jobs:
         if pip3 install --help | grep -q break-system-packages; then
           PIP_FLAGS="--break-system-packages"
         fi
-        # No pip self-upgrade: on the QGIS 4 image pip comes from Debian with
-        # no RECORD file, so pip cannot uninstall it to replace it.
+        # The 3.34 image's pip is too old for PEP 660, so an editable install
+        # fails without this. On the QGIS 4 image pip comes from Debian with no
+        # RECORD file and cannot replace itself, but it is new enough already.
+        python3 -m pip install $PIP_FLAGS --upgrade pip || echo "keeping the system pip"
         pip3 install $PIP_FLAGS pytest pytest-qt
         # Install in development mode to ensure data files are available
         pip3 install $PIP_FLAGS -e .[dev]
@@ -70,4 +77,4 @@ jobs:
         apt-get update && apt-get install -y xvfb
 
         # Run tests with virtual display
-        xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" pytest
+        xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" pytest ${{ matrix.pytest_args }}
