@@ -5,6 +5,10 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_call:  # release.yml runs the suite before it publishes
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -13,7 +17,7 @@ jobs:
       image: qgis/qgis:release-3_34  # QGIS docker image with QGIS 3.34
       
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     
     - name: Install Python dependencies
       run: |

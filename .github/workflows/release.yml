@@ -1,0 +1,162 @@
+# Publish a release when the version in gpq_downloader/metadata.txt changes.
+#
+# Developer workflow (see .claude/skills/release/SKILL.md):
+# 1. Open a PR that sets the new version (scripts/release_notes.py <v> --bump)
+#    and adds its CHANGELOG.md section (scripts/release_notes.py <v> --write).
+# 2. Merge it. This workflow then runs the tests, builds the zip, tags v<version>,
+#    creates the GitHub release with the CHANGELOG section as its notes, and
+#    uploads the zip to plugins.qgis.org.
+#
+# A push whose metadata.txt version already has a GitHub release does nothing,
+# so ordinary merges are no-ops.
+#
+# A pre-release version (one with a hyphen, e.g. 0.9.0-beta.1) is a GitHub
+# pre-release and is not uploaded to plugins.qgis.org, unless the manual run's
+# "upload_prerelease" box is ticked; it then goes up flagged experimental.
+#
+# Recovery: if the plugins.qgis.org upload fails after the GitHub release was
+# made, fix the cause and run this workflow by hand with "upload_existing" ticked.
+#
+# Needs the QGIS_PLUGIN_TOKEN secret on the "plugins-qgis-org" environment: a
+# token created on https://plugins.qgis.org/plugins/qgis_plugin_gpq_downloader/
+# under "Tokens".
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: [gpq_downloader/metadata.txt]
+  workflow_dispatch:
+    inputs:
+      upload_existing:
+        description: Upload the zip of an already-published GitHub release to plugins.qgis.org
+        type: boolean
+        default: false
+      upload_prerelease:
+        description: Also upload a pre-release version to plugins.qgis.org (as experimental)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    # Pushes are already filtered to main by the on: block; this keeps a manual
+    # dispatch on any other ref from tagging and publishing from it.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      release_exists: ${{ steps.version.outputs.release_exists }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version and release status
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(python3 scripts/build_plugin.py --print-version)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *-* ]]; then PRE=true; else PRE=false; fi
+          echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "release_exists=true" >> "$GITHUB_OUTPUT"
+            echo "v$VERSION is already released"
+          else
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+            echo "v$VERSION is new (pre-release: $PRE)"
+          fi
+
+  test:
+    needs: check
+    if: needs.check.outputs.release_exists == 'false'
+    uses: ./.github/workflows/tests.yml
+
+  release:
+    needs: [check, test]
+    if: needs.check.outputs.release_exists == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # tag and GitHub release
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      PRERELEASE: ${{ needs.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Fails before anything is tagged if CHANGELOG.md has no section for VERSION.
+      - name: Build plugin zip
+        run: python3 scripts/build_plugin.py --require-changelog
+
+      - name: Extract release notes
+        run: |
+          python3 scripts/build_plugin.py --print-notes > notes.md
+          cat notes.md
+
+      - name: Create tag and GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS=()
+          [[ "$PRERELEASE" == true ]] && FLAGS+=(--prerelease)
+          gh release create "v$VERSION" dist/*.zip \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
+            --notes-file notes.md \
+            "${FLAGS[@]}"
+
+  upload:
+    needs: [check, release]
+    # Runs after a fresh release, or by hand to (re)upload an existing one.
+    if: >-
+      always() &&
+      (needs.release.result == 'success' ||
+       (needs.release.result == 'skipped' && github.event_name == 'workflow_dispatch' &&
+        inputs.upload_existing && needs.check.outputs.release_exists == 'true')) &&
+      (needs.check.outputs.prerelease == 'false' || inputs.upload_prerelease)
+    runs-on: ubuntu-latest
+    environment: plugins-qgis-org
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - name: Download the release zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern "qgis_plugin_gpq_downloader-${VERSION}.zip" --dir dist
+
+      - name: Upload to plugins.qgis.org
+        env:
+          QGIS_PLUGIN_TOKEN: ${{ secrets.QGIS_PLUGIN_TOKEN }}
+        run: |
+          if [[ -z "$QGIS_PLUGIN_TOKEN" ]]; then
+            echo "::error::QGIS_PLUGIN_TOKEN is not set on the plugins-qgis-org environment"
+            exit 1
+          fi
+          shopt -s nullglob
+          ZIPS=(dist/*.zip)
+          if [[ ${#ZIPS[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one zip in dist/, found ${#ZIPS[@]}: ${ZIPS[*]}"
+            exit 1
+          fi
+          ZIP=${ZIPS[0]}
+          # The token goes to curl on stdin, never in its argv.
+          STATUS=$(curl -sS -o response.txt -w '%{http_code}' \
+            -A "qgis_plugin_gpq_downloader-release (+https://github.com/$GITHUB_REPOSITORY)" \
+            -H @- \
+            -F "package=@$ZIP" \
+            https://plugins.qgis.org/plugins/api/qgis_plugin_gpq_downloader/version/add/ \
+            <<< "Authorization: Bearer $QGIS_PLUGIN_TOKEN")
+          head -c 2000 response.txt; echo
+          if [[ "$STATUS" != 201 ]]; then
+            echo "::error::plugins.qgis.org answered HTTP $STATUS"
+            exit 1
+          fi
+          echo "Uploaded $ZIP. plugins.qgis.org runs a security scan before the version is approved and listed."

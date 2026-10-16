@@ -73,7 +73,10 @@ qgis_plugin_gpq_downloader/       # repo root
 │   ├── icons/                    # plugin icons
 │   └── tests/                    # test suite
 ├── scripts/setup-dev.sh          # dev environment setup
-├── make_release.sh               # build release zip
+├── make_release.sh               # build the release zip into dist/
+├── scripts/build_plugin.py       # zip builder used by the release workflow
+├── scripts/release_notes.py      # CHANGELOG section generator
+├── CHANGELOG.md                  # release notes
 ├── pyproject.toml                # Python project config
 └── DEVELOPING.md                 # this file
 ```
@@ -82,8 +85,36 @@ qgis_plugin_gpq_downloader/       # repo root
 
 ## Making a Release
 
-```bash
-bash make_release.sh
-```
+Releases are published by `.github/workflows/release.yml` whenever a change to the
+`version=` line in `gpq_downloader/metadata.txt` lands on `main`. It runs the tests,
+builds the zip, tags `v<version>`, creates the GitHub release with that version's
+`CHANGELOG.md` section as the notes, and uploads the zip to plugins.qgis.org.
 
-This creates a zip with the version from `metadata.txt`, ready to upload to the QGIS Plugin Repository.
+1. Generate the changelog section from the merged PRs, then replace its summary
+   placeholder with a few paragraphs of highlights (and thank new contributors):
+   ```bash
+   python3 scripts/release_notes.py 0.10.0 --write
+   ```
+   If an entry lands in the wrong section, fix it in `scripts/release_overrides.json`
+   and regenerate.
+2. Set the version and open a PR titled `Release v0.10.0`:
+   ```bash
+   python3 scripts/release_notes.py 0.10.0 --bump
+   ```
+3. Merge it. A version with a hyphen (`0.10.0-beta.1`) becomes a GitHub pre-release
+   and is not sent to plugins.qgis.org unless you run the workflow by hand with
+   `upload_prerelease`.
+
+The full checklist, including recovery steps, is in
+[`.claude/skills/release/SKILL.md`](.claude/skills/release/SKILL.md); with Claude Code,
+ask it to "cut a release".
+
+To build the zip locally without releasing: `bash make_release.sh` (writes `dist/`).
+
+**One-time setup:** create an upload token on the plugin's page at
+plugins.qgis.org ("Tokens"), then
+`gh secret set QGIS_PLUGIN_TOKEN --env plugins-qgis-org`. Then restrict the
+environment to main so no other branch's workflow can read the token: GitHub
+Settings → Environments → `plugins-qgis-org` → Deployment branches: `main` only
+(or `gh api -X PUT repos/<owner>/<repo>/environments/plugins-qgis-org` with a
+custom branch policy for `main`).

@@ -1,0 +1,5 @@
+{
+  "_comment": "Per-PR changelog fixes, keyed by PR number: {\"section\": \"Added|Changed|Fixed|Documentation|Internal\", \"title\": \"...\"}. Either key may be left out.",
+  "154": {"section": "Internal"},
+  "173": {"section": "Internal"}
+}
