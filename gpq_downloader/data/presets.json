@@ -101,6 +101,11 @@
         }
     },
     "openstreetmap": {
+        "addresses": {
+            "url": "https://data.openstreetmap.us/layercake/addresses.parquet",
+            "info_url": "https://data.openstreetmap.us/",
+            "needs_validation": false
+        },
         "buildings": {
             "url": "https://data.openstreetmap.us/layercake/buildings.parquet",
             "info_url": "https://data.openstreetmap.us/",
@@ -129,6 +134,16 @@
         },
         "settlements": {
             "url": "https://data.openstreetmap.us/layercake/settlements.parquet",
+            "info_url": "https://data.openstreetmap.us/",
+            "needs_validation": false
+        },
+        "waterways": {
+            "url": "https://data.openstreetmap.us/layercake/waterways.parquet",
+            "info_url": "https://data.openstreetmap.us/",
+            "needs_validation": false
+        },
+        "wetlands": {
+            "url": "https://data.openstreetmap.us/layercake/wetlands.parquet",
             "info_url": "https://data.openstreetmap.us/",
             "needs_validation": false
         }

@@ -33,6 +33,9 @@ import os
 from .utils import MINIO_URL_FORMAT, ValidationWorker
 from .map_tools import PolygonMapTool, AoiHighlighter, RectangleMapTool
 
+# How many OpenStreetMap preset checkboxes go on a row before wrapping.
+OSM_CHECKBOX_COLUMNS = 5
+
 
 class DataSourceDialog(QDialog):
     validation_complete = pyqtSignal(bool, str, dict)
@@ -257,18 +260,21 @@ class DataSourceDialog(QDialog):
         osm_page = QWidget()
         osm_layout = QVBoxLayout()
 
-        # Create horizontal layout for checkboxes
-        osm_checkbox_layout = QHBoxLayout()
+        # A grid, not a row: LayerCake keeps publishing datasets, and one row of
+        # them set the dialog's minimum width (#193)
+        osm_checkbox_layout = QGridLayout()
 
         # Create checkboxes for OSM datasets
         self.osm_checkboxes = {}
-        for key, dataset in self.PRESET_DATASETS["openstreetmap"].items():
+        for index, (key, dataset) in enumerate(self.PRESET_DATASETS["openstreetmap"].items()):
             # key.title() reads wrong for an acronym, so a preset may name itself
             checkbox = QCheckBox(dataset.get("display_name") or key.title())
             self.osm_checkboxes[key] = checkbox
-            osm_checkbox_layout.addWidget(checkbox)
+            osm_checkbox_layout.addWidget(
+                checkbox, index // OSM_CHECKBOX_COLUMNS, index % OSM_CHECKBOX_COLUMNS
+            )
 
-        # Add the horizontal checkbox layout to main layout
+        # Add the checkbox grid to main layout
         osm_layout.addLayout(osm_checkbox_layout)
 
         # Add link label for LayerCake info
