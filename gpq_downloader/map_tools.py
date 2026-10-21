@@ -32,10 +32,10 @@ class AoiHighlighter:
         """
         # Clear any existing rubber band
         if self.rubber_band:
-            self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+            self.rubber_band.reset(QgsWkbTypes.GeometryType.PolygonGeometry)
         else:
             # Create a new rubber band if needed
-            self.rubber_band = QgsRubberBand(self.canvas, QgsWkbTypes.PolygonGeometry)
+            self.rubber_band = QgsRubberBand(self.canvas, QgsWkbTypes.GeometryType.PolygonGeometry)
         
         # Configure the rubber band
         self.rubber_band.setFillColor(HIGHLIGHT_FILL)
@@ -60,7 +60,7 @@ class AoiHighlighter:
     def clear(self):
         """Clear the highlighted area"""
         if self.rubber_band:
-            self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+            self.rubber_band.reset(QgsWkbTypes.GeometryType.PolygonGeometry)
             self.rubber_band.hide()
             # Remove rubber band from scene and delete it
             self.canvas.scene().removeItem(self.rubber_band)
@@ -78,7 +78,7 @@ class PolygonMapTool(QgsMapTool):
 
         self.canvas = canvas
         self.extent = None
-        self.rubber_band = QgsRubberBand(self.canvas, QgsWkbTypes.PolygonGeometry)
+        self.rubber_band = QgsRubberBand(self.canvas, QgsWkbTypes.GeometryType.PolygonGeometry)
         self.rubber_band.setFillColor(RB_FILL)
         self.rubber_band.setStrokeColor(RB_STROKE)
         self.rubber_band.setWidth(1)
@@ -95,7 +95,7 @@ class PolygonMapTool(QgsMapTool):
             # Validate geometry before firing signal
             self.extent.removeDuplicateNodes()
             self.polygonSelected.emit(self.extent)
-            self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+            self.rubber_band.reset(QgsWkbTypes.GeometryType.PolygonGeometry)
             del self.rubber_band
             self.rubber_band = None
             self.vertex_count = 1  # two points are dropped initially
@@ -103,7 +103,7 @@ class PolygonMapTool(QgsMapTool):
         elif event.button() == Qt.MouseButton.LeftButton:
             if self.rubber_band is None:
                 self.rubber_band = QgsRubberBand(
-                    self.canvas, QgsWkbTypes.PolygonGeometry
+                    self.canvas, QgsWkbTypes.GeometryType.PolygonGeometry
                 )
                 self.rubber_band.setFillColor(RB_FILL)
                 self.rubber_band.setStrokeColor(RB_STROKE)
@@ -139,7 +139,7 @@ class PolygonMapTool(QgsMapTool):
         # Validate geometry before firing signal
         self.extent.removeDuplicateNodes()
         self.polygonSelected.emit(self.extent)
-        self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+        self.rubber_band.reset(QgsWkbTypes.GeometryType.PolygonGeometry)
         del self.rubber_band
         self.rubber_band = None
         self.vertex_count = 1
@@ -148,7 +148,7 @@ class PolygonMapTool(QgsMapTool):
     def cancelPolygon(self):
         """Cancel polygon drawing and clean up"""
         if self.rubber_band:
-            self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+            self.rubber_band.reset(QgsWkbTypes.GeometryType.PolygonGeometry)
             del self.rubber_band
             self.rubber_band = None
         self.extent = None
@@ -169,7 +169,7 @@ class RectangleMapTool(QgsMapTool):
         self.canvas = canvas
         self.start_point = None
 
-        self.rubber_band = QgsRubberBand(canvas, QgsWkbTypes.PolygonGeometry)
+        self.rubber_band = QgsRubberBand(canvas, QgsWkbTypes.GeometryType.PolygonGeometry)
         self.rubber_band.setFillColor(RB_FILL)
         self.rubber_band.setStrokeColor(RB_STROKE)
         self.rubber_band.setWidth(1)
@@ -178,7 +178,7 @@ class RectangleMapTool(QgsMapTool):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         self.start_point = event.mapPoint()
-        self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+        self.rubber_band.reset(QgsWkbTypes.GeometryType.PolygonGeometry)
 
     def canvasMoveEvent(self, event):
         if not self.start_point:
@@ -198,13 +198,13 @@ class RectangleMapTool(QgsMapTool):
         rect = QgsRectangle(self.start_point, end_point)
 
         self.start_point = None
-        self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+        self.rubber_band.reset(QgsWkbTypes.GeometryType.PolygonGeometry)
 
         # Emit the rectangle
         self.rectangleSelected.emit(rect)
 
     def deactivate(self):
         QgsMapTool.deactivate(self)
-        self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+        self.rubber_band.reset(QgsWkbTypes.GeometryType.PolygonGeometry)
         self.start_point = None
         self.deactivated.emit()
