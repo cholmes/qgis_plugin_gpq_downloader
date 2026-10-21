@@ -9,7 +9,7 @@ import io
 import json
 
 from core_support import FakeIface, RecordingConnection, Rect
-from gpq_downloader import utils
+from gpq_downloader.core import overture
 from gpq_downloader.utils import Worker
 
 WINDOW = Rect(10, 10, 11, 11)
@@ -156,7 +156,7 @@ def serve_stac(monkeypatch, body):
         requests.append(url)
         return FakeResponse(json.dumps(body).encode())
 
-    monkeypatch.setattr(utils.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(overture.urllib.request, "urlopen", urlopen)
     return requests
 
 

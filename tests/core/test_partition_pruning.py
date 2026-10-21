@@ -10,6 +10,7 @@ import pytest
 
 from core_support import RecordingConnection, Rect
 from gpq_downloader import utils
+from gpq_downloader.core import overture
 from gpq_downloader.utils import parquet_source_for_bbox
 
 WINDOW = Rect(10, 10, 11, 11)
@@ -58,7 +59,7 @@ def listing(*files):
 @pytest.fixture
 def overture_stac():
     """The STAC result for the buildings collection, already cached."""
-    utils._overture_extent_cache[OVERTURE_KEY] = dict(OVERTURE_EXTENTS)
+    overture._overture_extent_cache[OVERTURE_KEY] = dict(OVERTURE_EXTENTS)
 
 
 # --- When nothing is listed -------------------------------------------------
@@ -84,7 +85,7 @@ def test_overture_without_stac_falls_back_without_listing(monkeypatch):
     def unreachable(url, timeout=None):
         raise OSError("no network")
 
-    monkeypatch.setattr(utils.urllib.request, "urlopen", unreachable)
+    monkeypatch.setattr(overture.urllib.request, "urlopen", unreachable)
     conn = lister([part(1)])
     assert parquet_source_for_bbox(conn, OVERTURE_GLOB, FRANKFURT) == quoted(OVERTURE_GLOB)
     assert conn.statements == []
