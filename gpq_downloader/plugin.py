@@ -12,7 +12,8 @@ from qgis.PyQt.QtWidgets import (
     QProgressBar,
 )
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtCore import Qt, QThread
+from qgis.PyQt.QtCore import Qt
+import dataclasses
 import os
 import datetime
 from pathlib import Path
@@ -21,20 +22,30 @@ from .qgis_io import duckdb_setup, layers
 from .gui.dialog import DataSourceDialog
 from .gui import settings_store
 from .logger import message_level
+from .qgis_io.manager import DownloadManager
 from .qgis_io.worker import Worker
-from .core.plan import custom_file_stem, overture_file_stem, overture_layer_name
+from .core.plan import DownloadJob, custom_file_stem, overture_file_stem, overture_layer_name
 
 
 class QgisPluginGeoParquet:
     def __init__(self, iface):
         self.iface = iface
-        self.worker = None
-        self.worker_thread = None
         self.action = None
         self.output_file = None
         self.clip_to_area = False  # from the dialog's "Clip features to the area" box
         self.where_fragment = None  # from the dialog's attribute filter; None is no filter
         self._duckdb_message = None  # our widget on the shared QGIS message bar
+        # One download runs at a time; the rest wait in the manager's queue (#197)
+        self.downloads = DownloadManager(self._make_worker)
+        self.downloads.job_started.connect(self._show_job)
+        self.downloads.progress.connect(self.update_progress)
+        self.downloads.info.connect(self.show_info)
+        self.downloads.load_layer.connect(self.load_layer)
+        self.downloads.error.connect(self.handle_error)
+        self.downloads.file_size_warning.connect(self.handle_large_file_warning)
+        self.downloads.idle.connect(self._close_progress_dialog)
+        self._progress_open = False  # progress_dialog belongs to the downloads running now
+        self._closing_progress = False
         # Create a default downloads directory in user's home directory
         self.download_dir = Path.home() / "Downloads"
         # Create the directory if it doesn't exist
@@ -156,9 +167,13 @@ class QgisPluginGeoParquet:
         box.setDetailedText(" ".join(command) + "\n\n" + output[-8000:])
         box.exec()
 
+    @property
+    def worker(self):
+        """The running download's Worker, None between downloads."""
+        return self.downloads.worker
+
     def unload(self):
-        # Clean up worker and thread when plugin is unloaded
-        if self.worker_thread and self.worker_thread.isRunning():
+        if self.downloads.is_busy:
             QMessageBox.warning(
                 self.iface.mainWindow(),
                 "Download in Progress",
@@ -176,19 +191,8 @@ class QgisPluginGeoParquet:
         if not self.check_duckdb():
             return
 
-        # Check if a worker is already running
-        if self.worker is not None and self.worker_thread is not None and self.worker_thread.isRunning():
-            QMessageBox.warning(
-                self.iface.mainWindow(),
-                "Download in Progress",
-                "A download is already in progress. Please wait for it to complete before starting a new download."
-            )
-            return
-
-        # Reset any existing worker
-        self.worker = None
-        self.worker_thread = None
-        
+        # A download already running is no reason to refuse: what this dialog
+        # asks for is queued behind it
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
 
         # Restore last radio selection
@@ -281,9 +285,10 @@ class QgisPluginGeoParquet:
         self.process_download_queue(download_queue, extent, aoi_geometry)
 
     def handle_error(self, message):
-        # The worker emitted error without finished; stop its thread too,
-        # or the plugin refuses new downloads until QGIS restarts
-        self.cleanup_thread()
+        # The download that failed has ended; the progress dialog stays only
+        # for one still waiting, which starts once this box is closed
+        if not self.downloads.waiting:
+            self._close_progress_dialog()
         QMessageBox.critical(self.iface.mainWindow(), "Error", message)
 
     def update_progress(self, message):
@@ -291,20 +296,19 @@ class QgisPluginGeoParquet:
             self.progress_dialog.setLabelText(message)
 
     def cancel_download(self):
-        if self.worker:
-            self.worker.kill()
-        self.cleanup_thread()
+        """Cancel: stop the running download and drop every one waiting."""
+        if self._closing_progress:
+            return  # QProgressDialog emits canceled when it is closed, not only on Cancel
+        self.downloads.cancel_all()
+        self._close_progress_dialog()
 
     def cleanup_thread(self):
-        if self.worker_thread is not None:
-            if self.worker:
-                self.worker.kill()
-            self.worker_thread.quit()
-            self.worker_thread.wait()
-            self.worker_thread = None
-            self.worker = None
-        if hasattr(self, "progress_dialog"):
-            self.progress_dialog.close()
+        """Stop all downloads and close the progress dialog.
+
+        The name is from when each download ran on a QThread this stopped;
+        the downloads now run on QgsTasks the manager owns.
+        """
+        self.cancel_download()
 
     def load_layer(self, output_file):
         """Load the layer into QGIS if GeoParquet is supported"""
@@ -316,30 +320,17 @@ class QgisPluginGeoParquet:
 
     def handle_large_file_warning(self, estimated_size):
         """Handle warning about large GeoJSON file size with a more streamlined UI"""
-        if not hasattr(self, 'worker') or self.worker is None:
+        # The manager holds the job that stopped at the warning until this
+        # retries or skips it, so the downloads waiting behind it wait on
+        job = self.downloads.active_job
+        if job is None:
             QMessageBox.critical(self.iface.mainWindow(), "Error", "Download session lost. Please try again.")
             return
 
-        worker_info = {
-            'dataset_url': self.worker.dataset_url,
-            'extent': self.worker.extent,
-            'iface': self.worker.iface,
-            'validation_results': self.worker.validation_results,
-            'output_file': self.worker.output_file,
-            'size_warning_accepted': False,
-            'remaining_queue': getattr(self.worker, 'remaining_queue', []),
-            'layer_name': getattr(self.worker, 'layer_name', None),
-            'aoi_geometry': getattr(self.worker, 'aoi_geometry', None),
-            'clip_to_area': getattr(self.worker, 'clip_to_area', False),
-            'where_fragment': getattr(self.worker, 'where_fragment', None),
-        }
-        # The worker returned after emitting the warning; stop its thread before
-        # a new worker replaces it
-        self.cleanup_thread()
-        
-        if hasattr(self, 'progress_dialog') and self.progress_dialog:
-            self.progress_dialog.close()
-        
+        # Hidden, not closed: closing it would cancel the downloads
+        if getattr(self, "progress_dialog", None) is not None and self._progress_open:
+            self.progress_dialog.hide()
+
         dialog = QDialog(self.iface.mainWindow())
         dialog.setWindowTitle("Large File Warning")
         dialog.setMinimumWidth(400)
@@ -395,7 +386,7 @@ class QgisPluginGeoParquet:
                 selected_format = format_combo.currentText()
                 extension = selected_format.split("*")[1].rstrip(")")
                 
-                new_output_file = os.path.splitext(worker_info['output_file'])[0] + extension
+                new_output_file = os.path.splitext(job.output_file)[0] + extension
                 
                 output_file, _ = QFileDialog.getSaveFileName(
                     self.iface.mainWindow(),
@@ -406,108 +397,100 @@ class QgisPluginGeoParquet:
                 
                 if output_file:
                     self.output_file = output_file
-                    self._start_worker(
-                        worker_info['dataset_url'],
-                        worker_info['extent'],
-                        output_file,
-                        worker_info['validation_results'],
-                        worker_info['layer_name'],
-                        worker_info['aoi_geometry'],
-                        worker_info['clip_to_area'],
-                        worker_info['remaining_queue'],
-                        where_fragment=worker_info['where_fragment'],
-                    )
+                    self.downloads.retry(dataclasses.replace(job, output_file=output_file))
                     return
                 continue
 
             elif result == 2:
-                self._start_worker(
-                    worker_info['dataset_url'],
-                    worker_info['extent'],
-                    worker_info['output_file'],
-                    worker_info['validation_results'],
-                    worker_info['layer_name'],
-                    worker_info['aoi_geometry'],
-                    worker_info['clip_to_area'],
-                    worker_info['remaining_queue'],
-                    size_warning_accepted=True,
-                    where_fragment=worker_info['where_fragment'],
-                )
+                self.downloads.retry(dataclasses.replace(job, size_warning_accepted=True))
                 return
             
             else:
-                if worker_info['remaining_queue']:
-                    self.process_download_queue(worker_info['remaining_queue'], worker_info['extent'], worker_info['aoi_geometry'])
-                else:
-                    self.cleanup_thread()
+                self.downloads.skip()
                 return
 
-    def _start_worker(self, url, extent, output_file, validation_results, layer_name,
-                      aoi_geometry, clip_to_area, remaining_queue, size_warning_accepted=False,
-                      where_fragment=None):
-        """Create the progress dialog, worker and thread for one download and start it."""
-        self.progress_dialog = QProgressDialog(
-            f"Starting {layer_name} download..." if layer_name else "Starting download...",
-            "Cancel", 0, 0, self.iface.mainWindow()
+    def _make_worker(self, job):
+        """The Worker for one DownloadJob; the manager runs it on a QgsTask."""
+        worker = Worker(
+            job.url, job.extent, job.output_file, self.iface, job.validation_results, job.layer_name,
+            aoi_geometry=job.aoi_geometry, clip_to_area=job.clip_to_area,
+            where_fragment=job.where_fragment,
         )
-        self.progress_dialog.setWindowTitle("Downloading Data")
-        self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
-        self.progress_dialog.setMinimumDuration(0)
+        worker.size_warning_accepted = job.size_warning_accepted
+        return worker
 
-        self.worker = Worker(
-            url, extent, output_file, self.iface, validation_results, layer_name,
-            aoi_geometry=aoi_geometry, clip_to_area=clip_to_area,
-            where_fragment=where_fragment,
-        )
-        self.worker.size_warning_accepted = size_warning_accepted
-        self.worker.remaining_queue = remaining_queue
-        self.worker_thread = QThread()
-        self.worker.moveToThread(self.worker_thread)
+    def _show_job(self, job):
+        """Show the job that just started in the progress dialog.
 
-        self.worker_thread.started.connect(self.worker.run)
-        self.worker.error.connect(self.handle_error)
-        self.worker.load_layer.connect(self.load_layer)
-        self.worker.info.connect(self.show_info)
-        self.worker.file_size_warning.connect(self.handle_large_file_warning)
-        self.worker.finished.connect(
-            lambda: self.handle_download_complete(remaining_queue, extent, aoi_geometry)
-        )
-        self.worker.progress.connect(self.update_progress)
-        self.progress_dialog.canceled.connect(self.cancel_download)
-
+        One dialog lasts from the first job to the last: a job started from
+        the queue, or rerun after the size warning, reuses it.
+        """
+        label = f"Starting {job.layer_name} download..." if job.layer_name else "Starting download..."
+        if not self._progress_open:
+            previous = getattr(self, "progress_dialog", None)
+            if previous is not None:
+                try:
+                    previous.deleteLater()
+                except RuntimeError:
+                    pass  # Qt already deleted it, with its parent
+            self.progress_dialog = QProgressDialog(label, "Cancel", 0, 0, self.iface.mainWindow())
+            self.progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
+            self.progress_dialog.setMinimumDuration(0)
+            self.progress_dialog.canceled.connect(self.cancel_download)
+            self._progress_open = True
+        else:
+            self.progress_dialog.setLabelText(label)
+        self._update_progress_title()
         self.progress_dialog.show()
-        self.worker_thread.start()
+
+    def _update_progress_title(self):
+        if self._progress_open:
+            waiting = self.downloads.waiting
+            self.progress_dialog.setWindowTitle(
+                f"Downloading Data ({waiting} waiting)" if waiting else "Downloading Data"
+            )
+
+    def _close_progress_dialog(self):
+        self._progress_open = False
+        if hasattr(self, "progress_dialog"):
+            self._closing_progress = True
+            try:
+                self.progress_dialog.close()
+            except RuntimeError:
+                pass  # Qt already deleted it, with its parent
+            finally:
+                self._closing_progress = False
 
     def process_download_queue(self, download_queue, extent, aoi_geometry=None):
-        """Process downloads sequentially"""
-        if not download_queue:
+        """Queue the (url, output_file) pairs of one OK as jobs; the first starts if nothing runs."""
+        jobs = [
+            DownloadJob(
+                url=url,
+                output_file=output_file,
+                # Overture data is named after its theme and type
+                layer_name=overture_layer_name(url) if 'overture' in url else None,
+                extent=extent,
+                aoi_geometry=aoi_geometry,
+                clip_to_area=self.clip_to_area,
+                where_fragment=self.where_fragment,
+                # No hints: the Worker reads the file's own GeoParquet metadata
+                # and schema to find the geometry and bbox columns
+                validation_results={},
+            )
+            for url, output_file in download_queue
+        ]
+        if not jobs:
             return
-        
-        # Get the next download
-        url, output_file = download_queue[0]
-        remaining_queue = download_queue[1:]
-        
-        # Extract layer name from URL for Overture data
-        layer_name = None
-        if 'overture' in url:
-            layer_name = overture_layer_name(url)
-
-        # No hints: the Worker reads the file's own GeoParquet metadata and
-        # schema to find the geometry and bbox columns
-        validation_results = {}
-
-        self._start_worker(
-            url, extent, output_file, validation_results, layer_name,
-            aoi_geometry, self.clip_to_area, remaining_queue,
-            where_fragment=self.where_fragment,
-        )
-
-    def handle_download_complete(self, remaining_queue, extent, aoi_geometry=None):
-        """Handle completion of a download and start the next one if any"""
-        self.cleanup_thread()
-        if remaining_queue:
-            # Start the next download
-            self.process_download_queue(remaining_queue, extent, aoi_geometry)
+        was_busy = self.downloads.is_busy
+        waiting = self.downloads.enqueue(jobs)
+        if was_busy:
+            self._update_progress_title()
+            self.iface.messageBar().pushMessage(
+                "GeoParquet Downloader",
+                f"Added to download queue ({waiting} waiting).",
+                message_level("Info"),
+                5,
+            )
 
 
 def classFactory(iface):

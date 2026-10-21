@@ -23,7 +23,7 @@ def test_plugin_unload(qgs_app, mock_iface):
 
     # Check that cleanup was successful
     assert plugin.worker is None
-    assert plugin.worker_thread is None
+    assert not plugin.downloads.is_busy
 
 
 def test_plugin_download_dir(qgs_app, mock_iface):
