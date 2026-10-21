@@ -22,6 +22,13 @@ from . import logger
 
 MIN_VERSION = (1, 1, 0)
 
+# DuckDB 2.0, out since 2026-10-21, segfaults the QGIS 4 test run at shutdown
+# once the plugin has used it, so an install started from here stays on 1.x
+# until that is understood (#203). A DuckDB the user already has is still used
+# whatever its version -- 2.0 works, as far as anything before shutdown goes --
+# so this caps what the plugin installs, not what it accepts.
+BELOW_VERSION = (2, 0)
+
 
 def add_user_site_packages() -> None:
     """Put the user site-packages dir, where pip --user installs, on sys.path.
@@ -109,7 +116,10 @@ def pip_command(python: str) -> list[str]:
     # --user fails inside a venv-based QGIS (some Linux distros, conda)
     in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
     user_flag = [] if in_venv else ["--user"]
-    spec = "duckdb>=" + ".".join(str(n) for n in MIN_VERSION)
+    spec = (
+        "duckdb>=" + ".".join(str(n) for n in MIN_VERSION)
+        + ",<" + ".".join(str(n) for n in BELOW_VERSION)
+    )
     return [python, "-m", "pip", "install", *user_flag, "--upgrade", spec]
 
 

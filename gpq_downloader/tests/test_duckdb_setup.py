@@ -67,7 +67,7 @@ def test_pip_command_upgrades_into_user_site(monkeypatch):
     monkeypatch.setattr(sys, "base_prefix", "/qgis", raising=False)
     cmd = duckdb_setup.pip_command("/x/python3")
     assert cmd[:6] == ["/x/python3", "-m", "pip", "install", "--user", "--upgrade"]
-    assert cmd[-1] == "duckdb>=1.1.0"
+    assert cmd[-1] == "duckdb>=1.1.0,<2.0"
 
 
 def test_pip_command_drops_user_flag_in_venv(monkeypatch):
@@ -75,7 +75,7 @@ def test_pip_command_drops_user_flag_in_venv(monkeypatch):
     monkeypatch.setattr(sys, "base_prefix", "/usr", raising=False)
     cmd = duckdb_setup.pip_command("/x/python3")
     assert "--user" not in cmd
-    assert cmd[-1] == "duckdb>=1.1.0"
+    assert cmd[-1] == "duckdb>=1.1.0,<2.0"
 
 
 def test_failure_advice():
