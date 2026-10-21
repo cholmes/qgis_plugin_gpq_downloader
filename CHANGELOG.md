@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases before 0.9.0 are described on the
 [GitHub releases page](https://github.com/cholmes/qgis_plugin_gpq_downloader/releases).
 
+## v0.9.3 (2026-10-21)
+
+Every version of the plugin uploaded to plugins.qgis.org now gets an automated
+Qt6 compatibility check, and v0.9.2 failed it: 37 places in the code still used
+the short Qt5-era enum spellings. This release switches them all to the fully
+scoped names, which work the same on QGIS 3 and QGIS 4, so the plugin's Qt6
+check comes up green. Nothing changes in how the plugin behaves or what you
+need to do to use it.
+
+### Fixed
+
+- Scope the Qt and QGIS enums the plugins.qgis.org Qt6 check flags by [@cholmes](https://github.com/cholmes) in [#206](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/206)
+
+**Full Changelog**: https://github.com/cholmes/qgis_plugin_gpq_downloader/compare/v0.9.2...v0.9.3
+
 ## v0.9.2 (2026-10-21)
 
 Three more OpenStreetMap datasets from LayerCake: addresses (186 million
