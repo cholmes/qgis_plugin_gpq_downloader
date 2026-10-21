@@ -1,15 +1,45 @@
 {
   "_comment": "Per-PR changelog fixes, keyed by PR number: {\"section\": \"Added|Changed|Fixed|Documentation|Internal\", \"title\": \"...\"}. Either key may be left out.",
-  "154": {"section": "Internal"},
-  "161": {"title": "Fix downloads from files whose geometry column is not called \"geometry\""},
-  "169": {"section": "Fixed", "title": "Read Overture's STAC catalog to find the latest release"},
-  "171": {"section": "Fixed"},
-  "173": {"section": "Internal"},
-  "175": {"section": "Internal"},
-  "188": {"section": "Internal"},
-  "191": {"section": "Fixed", "title": "Read a glob on the Source Cooperative proxy over S3"},
-  "192": {"section": "Internal"},
-  "200": {"title": "Add LayerCake addresses, waterways and wetlands to the OpenStreetMap presets"},
-  "201": {"title": "Clear the findings on the plugins.qgis.org security scan"},
-  "202": {"section": "Fixed", "title": "Fix GeoPackage, FlatGeobuf and GeoJSON downloads failing on DuckDB 2.0"}
+  "154": {
+    "section": "Internal"
+  },
+  "161": {
+    "title": "Fix downloads from files whose geometry column is not called \"geometry\""
+  },
+  "169": {
+    "section": "Fixed",
+    "title": "Read Overture's STAC catalog to find the latest release"
+  },
+  "171": {
+    "section": "Fixed"
+  },
+  "173": {
+    "section": "Internal"
+  },
+  "175": {
+    "section": "Internal"
+  },
+  "188": {
+    "section": "Internal"
+  },
+  "191": {
+    "section": "Fixed",
+    "title": "Read a glob on the Source Cooperative proxy over S3"
+  },
+  "192": {
+    "section": "Internal"
+  },
+  "200": {
+    "title": "Add LayerCake addresses, waterways and wetlands to the OpenStreetMap presets"
+  },
+  "201": {
+    "title": "Clear the findings on the plugins.qgis.org security scan"
+  },
+  "202": {
+    "section": "Fixed",
+    "title": "Fix GeoPackage, FlatGeobuf and GeoJSON downloads failing on DuckDB 2.0"
+  },
+  "206": {
+    "section": "Fixed"
+  }
 }
