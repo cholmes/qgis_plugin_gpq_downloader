@@ -385,3 +385,35 @@ def test_osm_checkboxes_wrap_instead_of_widening_the_dialog(qgs_app, mock_iface)
     osm_page = next(iter(dialog.osm_checkboxes.values())).parentWidget()
     assert osm_page.minimumSizeHint().width() <= dialog.minimumWidth()
     dialog.close()
+
+
+def test_building_parts_checkbox(qgs_app, mock_iface):
+    """#80: Building Parts is its own Overture checkbox, off by default."""
+    dialog = DataSourceDialog(None, mock_iface)
+    checkbox = dialog.overture_checkboxes["building_parts"]
+    assert checkbox.text() == "Building Parts"
+    assert not checkbox.isChecked()
+    assert list(dialog.overture_checkboxes)[:2] == ["buildings", "building_parts"]
+    dialog.close()
+
+
+def test_overture_checkboxes_wrap_instead_of_widening_the_dialog(qgs_app, mock_iface):
+    """Six presets on one row would set the dialog's minimum width (#80)."""
+    dialog = DataSourceDialog(None, mock_iface)
+    overture_page = dialog.overture_checkboxes["buildings"].parentWidget()
+    assert overture_page.minimumSizeHint().width() <= dialog.minimumWidth()
+    dialog.close()
+
+
+def test_buildings_and_building_parts_are_two_urls(qgs_app, mock_iface):
+    """Checking both downloads two datasets, one URL each, not a type=building* glob."""
+    dialog = DataSourceDialog(None, mock_iface)
+    dialog.overture_radio.setChecked(True)
+    dialog.overture_checkboxes["buildings"].setChecked(True)
+    dialog.overture_checkboxes["building_parts"].setChecked(True)
+    with patch("gpq_downloader.gui.dialog.requests.get") as get:
+        get.return_value.json.return_value = {"latest": "2026-09-23.1"}
+        urls = dialog.get_urls()
+    base = "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings"
+    assert urls == [f"{base}/type=building/*", f"{base}/type=building_part/*"]
+    dialog.close()
