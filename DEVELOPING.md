@@ -49,11 +49,14 @@ Since the symlink points to your repo, switching branches instantly updates what
 # Install dev dependencies
 pip install -e ".[dev]"
 
-# Run tests
-pytest gpq_downloader/tests/
+# The headless tests (no QGIS needed)
+pytest tests/core --no-cov
+
+# The in-QGIS tests
+pytest tests/qgis
 
 # With coverage
-pytest --cov=gpq_downloader gpq_downloader/tests/
+pytest --cov=gpq_downloader tests/qgis
 ```
 
 Tests require a QGIS environment. The CI runs them inside a QGIS Docker container (see `.github/workflows/tests.yml`).
@@ -64,12 +67,12 @@ CI runs two checks besides the tests, both quick to reproduce locally:
 
 ```bash
 # Unused imports, undefined names, bare excepts
-pip install ruff==0.17.1 && ruff check --select F,E9,E722 gpq_downloader/ scripts/
+pip install ruff==0.17.1 && ruff check --select F,E9,E722 gpq_downloader/ scripts/ tests/
 
 # The same bandit scan plugins.qgis.org runs on an uploaded plugin, over what
 # the zip ships. Its result is published on the plugin's security tab, so a
 # finding that lands on main is public before a release is even cut.
-pip install bandit==1.9.4 && bandit -r gpq_downloader/ -x gpq_downloader/tests
+pip install bandit==1.9.4 && bandit -r gpq_downloader/
 ```
 
 Bandit cannot see that the queries in `utils.py` and `qgis_io/worker.py` quote
@@ -92,8 +95,10 @@ qgis_plugin_gpq_downloader/       # repo root
 │   ├── logger.py                 # logging utility
 │   ├── metadata.txt              # QGIS plugin metadata & version
 │   ├── data/presets.json         # pre-configured data sources
-│   ├── icons/                    # plugin icons
-│   └── tests/                    # test suite
+│   └── icons/                    # plugin icons
+├── tests/
+│   ├── core/                     # headless tests, plain Python
+│   └── qgis/                     # tests that need the real QGIS
 ├── scripts/setup-dev.sh          # dev environment setup
 ├── make_release.sh               # build the release zip into dist/
 ├── scripts/build_plugin.py       # zip builder used by the release workflow

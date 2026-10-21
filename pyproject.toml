@@ -25,7 +25,7 @@ dependencies = [
 packages = ["gpq_downloader", "gpq_downloader.core", "gpq_downloader.gui", "gpq_downloader.qgis_io"]
 
 [tool.pytest.ini_options]
-testpaths = ["gpq_downloader/tests", "scripts/tests", "tests"]
+testpaths = ["tests", "scripts/tests"]
 python_files = "test_*.py"
 addopts = "--cov=gpq_downloader"
 markers = [
@@ -34,7 +34,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["gpq_downloader"]
-omit = ["gpq_downloader/tests/*"]
+omit = ["tests/*"]
 
 [tool.coverage.report]
 exclude_lines = [

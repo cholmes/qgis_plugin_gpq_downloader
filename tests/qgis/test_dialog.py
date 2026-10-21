@@ -272,7 +272,7 @@ def test_no_bare_int_message_levels_in_source(module):
     import ast
     import pathlib
 
-    src = pathlib.Path(__file__).resolve().parent.parent / f"{module}.py"
+    src = pathlib.Path(__file__).resolve().parents[2] / "gpq_downloader" / f"{module}.py"
     tree = ast.parse(src.read_text())
     offenders = []
     for node in ast.walk(tree):
@@ -306,7 +306,7 @@ def test_no_bare_qstyle_pixmaps_in_source():
     import pathlib
     import re
 
-    root = pathlib.Path(__file__).resolve().parent.parent
+    root = pathlib.Path(__file__).resolve().parents[2] / "gpq_downloader"
     offenders = [
         f"{name}:{i}"
         for name in ("gui/dialog.py", "gui/extent.py")
@@ -334,7 +334,7 @@ def test_osm_presets_include_layercake_pois():
     import json
     import pathlib
 
-    presets_path = pathlib.Path(__file__).resolve().parent.parent / "data" / "presets.json"
+    presets_path = pathlib.Path(__file__).resolve().parents[2] / "gpq_downloader" / "data" / "presets.json"
     pois = json.loads(presets_path.read_text())["openstreetmap"]["pois"]
     assert pois["url"] == "https://data.openstreetmap.us/layercake/pois.parquet"
     assert pois["display_name"] == "POIs"
@@ -372,7 +372,7 @@ def test_osm_presets_include_the_newer_layercake_datasets(key, url):
     import json
     import pathlib
 
-    presets_path = pathlib.Path(__file__).resolve().parent.parent / "data" / "presets.json"
+    presets_path = pathlib.Path(__file__).resolve().parents[2] / "gpq_downloader" / "data" / "presets.json"
     assert json.loads(presets_path.read_text())["openstreetmap"][key]["url"] == url
 
 
