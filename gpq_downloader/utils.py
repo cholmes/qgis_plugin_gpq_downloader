@@ -349,6 +349,24 @@ def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
     return "[" + ", ".join(sql_str(f) for f in sorted(selected)) + "]"
 
 
+def use_lon_lat_axis_order(conn):
+    """Tell DuckDB the geometries are in [longitude, latitude] order.
+
+    Since DuckDB 2.0 a `COPY ... TO (FORMAT GDAL, SRS ...)` is an error until
+    geometry_always_xy says which order the coordinates are in, so without this
+    every .gpkg, .fgb and .geojson export fails outright. GDAL would otherwise
+    read EPSG:4326 in the authority's [latitude, longitude] order and write
+    them transposed, and the data is in lon/lat by the time it is exported.
+
+    DuckDB 2.1 makes this the default and DuckDB 1.x has no such setting, so a
+    version that does not recognise it is not a problem.
+    """
+    try:
+        conn.execute("SET geometry_always_xy = true;")
+    except Exception as e:
+        logger.log(f"This DuckDB does not take geometry_always_xy: {e}")
+
+
 def sql_str(value) -> str:
     """Quote a value as a SQL string literal."""
     return "'" + str(value).replace("'", "''") + "'"
@@ -609,6 +627,7 @@ class Worker(QObject):
                 conn.execute("INSTALL spatial;")
                 conn.execute("LOAD httpfs;")
                 conn.execute("LOAD spatial;")
+                use_lon_lat_axis_order(conn)
                 self.read_url = resolve_dataset_url(conn, self.dataset_url)
 
                 # Verify spatial extension is loaded by testing a spatial function

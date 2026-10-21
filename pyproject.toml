@@ -13,7 +13,8 @@ authors = [
     {name = "Chris Holmes", email = "cholmes@9eo.org"}
 ]
 dependencies = [
-    "duckdb>=1.1.0",
+    # Capped below 2.0 while #203 is open; see duckdb_setup.BELOW_VERSION
+    "duckdb>=1.1.0,<2.0",
 ]
 
 [project.urls]

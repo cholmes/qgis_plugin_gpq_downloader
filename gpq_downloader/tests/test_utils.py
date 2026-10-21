@@ -4,6 +4,7 @@ from qgis.core import QgsRectangle, QgsCoordinateReferenceSystem, QgsVectorLayer
 
 from gpq_downloader.utils import (
     transform_bbox_to_4326, 
+    use_lon_lat_axis_order,
     Worker, 
     ValidationWorker
 )
@@ -313,3 +314,20 @@ def test_download_with_wkb_geometry_column_named_the_geom(qgs_app, mock_iface, t
     layer = QgsVectorLayer(str(output), "out", "ogr")
     assert layer.isValid()
     assert layer.featureCount() == 21  # points 0..20 fall inside the extent
+
+
+def test_use_lon_lat_axis_order_sets_it():
+    """Without this, a GDAL export is an error on DuckDB 2.0 and later."""
+    conn = MagicMock()
+
+    use_lon_lat_axis_order(conn)
+
+    assert "geometry_always_xy = true" in conn.execute.call_args[0][0]
+
+
+def test_use_lon_lat_axis_order_tolerates_an_older_duckdb():
+    """DuckDB 1.x has no such setting and does not need one."""
+    conn = MagicMock()
+    conn.execute.side_effect = Exception("unrecognized configuration parameter")
+
+    use_lon_lat_axis_order(conn)  # must not raise
