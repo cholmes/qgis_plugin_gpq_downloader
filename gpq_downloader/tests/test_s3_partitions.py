@@ -4,7 +4,7 @@ import pytest
 
 from qgis.core import QgsRectangle
 
-from gpq_downloader import utils
+from gpq_downloader.core import overture
 from gpq_downloader.utils import (
     configure_s3_for_url,
     resolve_dataset_url,
@@ -229,7 +229,7 @@ def overture_stac(monkeypatch):
         0: (-180.0, -84.29, -85.87, 13.99),
         511: (140.01, 39.66, 179.68, 77.11),
     }
-    monkeypatch.setattr(utils, "_overture_extent_cache", {OVERTURE_KEY: extents})
+    monkeypatch.setattr(overture, "_overture_extent_cache", {OVERTURE_KEY: extents})
     return extents
 
 
@@ -272,12 +272,12 @@ def test_parquet_source_falls_back_for_an_unknown_overture_part(overture_stac):
 
 
 def test_parquet_source_falls_back_when_the_stac_is_unavailable(monkeypatch):
-    monkeypatch.setattr(utils, "_overture_extent_cache", {})
+    monkeypatch.setattr(overture, "_overture_extent_cache", {})
 
     def no_network(*args, **kwargs):
         raise OSError("no network")
 
-    monkeypatch.setattr(utils.urllib.request, "urlopen", no_network)
+    monkeypatch.setattr(overture.urllib.request, "urlopen", no_network)
     conn = mock_glob([overture_part(230)])
     source = parquet_source_for_bbox(conn, OVERTURE_GLOB, QgsRectangle(9.1252, 50.2389, 9.1514, 50.2439))
     assert source == f"'{OVERTURE_GLOB}'"
