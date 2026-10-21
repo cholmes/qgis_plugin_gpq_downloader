@@ -19,7 +19,7 @@ from gpq_downloader.plugin import QgisPluginGeoParquet
 
 PREFIXES = ("plugins/gpq_downloader/", "gpq_downloader/")
 
-OVERTURE_KEYS = ["buildings", "places", "transportation", "addresses", "divisions", "base"]
+OVERTURE_KEYS = ["buildings", "building_parts", "places", "transportation", "addresses", "divisions", "base"]
 BASE_SUBTYPES = ["infrastructure", "land", "land_cover", "land_use", "water", "bathymetry"]
 DIVISIONS_SUBTYPES = ["division", "division_area", "division_boundary"]
 OSM_KEYS = [
@@ -99,6 +99,19 @@ def test_toggling_a_checkbox_saves_every_state(clean_settings, dialogs):
     assert flag("plugins/gpq_downloader/checkbox_buildings") is False
     # ...including clip_to_area and aoi_enabled
     assert our_keys() == ALL_SAVED_KEYS
+
+
+def test_the_building_parts_checkbox_is_remembered(clean_settings, dialogs):
+    """#80: a new key, saved and restored like the other Overture checkboxes."""
+    first = dialogs()
+    assert not first.overture_checkboxes["building_parts"].isChecked()
+    first.overture_checkboxes["building_parts"].setChecked(True)
+    first.save_checkbox_states()
+    assert flag("plugins/gpq_downloader/checkbox_building_parts") is True
+    assert flag("plugins/gpq_downloader/checkbox_buildings") is False
+
+    second = dialogs()
+    assert {k for k, c in second.overture_checkboxes.items() if c.isChecked()} == {"building_parts"}
 
 
 def test_the_values_saved(clean_settings, dialogs):

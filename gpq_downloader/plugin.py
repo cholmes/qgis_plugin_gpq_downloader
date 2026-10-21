@@ -22,7 +22,7 @@ from .gui.dialog import DataSourceDialog
 from .gui import settings_store
 from .logger import message_level
 from .qgis_io.worker import Worker
-from .core.plan import custom_file_stem
+from .core.plan import custom_file_stem, overture_file_stem, overture_layer_name
 
 
 class QgisPluginGeoParquet:
@@ -241,14 +241,7 @@ class QgisPluginGeoParquet:
             if dialog.overture_radio.isChecked():
                 # Extract theme from URL
                 theme = url.split('theme=')[1].split('/')[0]
-                if 'type=' in url:
-                    type_str = url.split('type=')[1].split('/')[0]
-                    if theme == 'base':
-                        filename = f"overture_base_{type_str}_{current_date}.parquet"
-                    else:
-                        filename = f"overture_{theme}_{current_date}.parquet"
-                else:
-                    filename = f"overture_{theme}_{current_date}.parquet"
+                filename = f"{overture_file_stem(url)}_{current_date}.parquet"
             elif dialog.sourcecoop_radio.isChecked():
                 dataset_name = dialog.sourcecoop_combo.currentText()
                 clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
@@ -497,15 +490,8 @@ class QgisPluginGeoParquet:
         # Extract layer name from URL for Overture data
         layer_name = None
         if 'overture' in url:
-            if 'theme=' in url:
-                theme = url.split('theme=')[1].split('/')[0]
-                if theme == 'base':
-                    # For base layers, include the subtype
-                    subtype = url.split('type=')[1].split('/')[0]
-                    layer_name = f"Overture {theme.title()} - {subtype.title()}"
-                else:
-                    layer_name = f"Overture {theme.title()}"
-        
+            layer_name = overture_layer_name(url)
+
         # No hints: the Worker reads the file's own GeoParquet metadata and
         # schema to find the geometry and bbox columns
         validation_results = {}

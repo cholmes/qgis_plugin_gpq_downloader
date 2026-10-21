@@ -71,6 +71,54 @@ def test_plugin_handle_dialog_accepted(mock_dialog, mock_save_dialog, mock_setti
 
     mock_save_dialog.assert_called_once()
 
+@patch('gpq_downloader.gui.settings_store.QgsSettings')
+@patch('gpq_downloader.plugin.QFileDialog.getSaveFileName')
+@patch('gpq_downloader.plugin.DataSourceDialog')
+def test_plugin_queues_buildings_and_building_parts_separately(
+    mock_dialog, mock_save_dialog, mock_settings, qgs_app, mock_iface, tmp_path
+):
+    """#80: two checked presets are two queue entries with distinct file names."""
+    plugin = QgisPluginGeoParquet(mock_iface)
+    plugin.download_dir = tmp_path
+
+    base = "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings"
+    dialog_instance = MagicMock()
+    dialog_instance.get_urls.return_value = [f"{base}/type=building/*", f"{base}/type=building_part/*"]
+    dialog_instance.overture_radio.isChecked.return_value = True
+    dialog_instance.get_current_extent.return_value = None
+    dialog_instance.aoi_geometry = None
+    dialog_instance.aoi_geometry_crs = None
+    mock_dialog.return_value = dialog_instance
+
+    # Accept the default path each time
+    mock_save_dialog.side_effect = lambda parent, title, path, filters: (path, "GeoParquet (*.parquet)")
+
+    with patch('gpq_downloader.plugin.datetime') as mock_datetime:
+        mock_datetime.datetime.now.return_value.strftime.return_value = "20230101_120000"
+        with patch.object(plugin, 'process_download_queue') as process:
+            plugin.handle_dialog_accepted(dialog_instance)
+
+    queue = process.call_args[0][0]
+    assert [url for url, _ in queue] == dialog_instance.get_urls.return_value
+    assert [Path(output).name for _, output in queue] == [
+        "overture_buildings_20230101_120000.parquet",
+        "overture_building_parts_20230101_120000.parquet",
+    ]
+
+
+@patch('gpq_downloader.plugin.QgisPluginGeoParquet._start_worker')
+def test_plugin_names_the_building_parts_layer_apart_from_buildings(start_worker, qgs_app, mock_iface):
+    plugin = QgisPluginGeoParquet(mock_iface)
+    plugin.where_fragment = None
+    plugin.clip_to_area = False
+    base = "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings"
+    names = []
+    for type_str in ("building", "building_part"):
+        plugin.process_download_queue([(f"{base}/type={type_str}/*", "out.parquet")], None)
+        names.append(start_worker.call_args[0][4])
+    assert names == ["Overture Buildings", "Overture Building Parts"]
+
+
 def test_plugin_handle_error(qgs_app, mock_iface):
     """Test error handling"""
     plugin = QgisPluginGeoParquet(mock_iface)
