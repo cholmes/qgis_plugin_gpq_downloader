@@ -22,7 +22,7 @@ dependencies = [
 "Bug Tracker" = "https://github.com/yourusername/qgis_plugin_gpq_downloader/issues"
 
 [tool.setuptools]
-packages = ["gpq_downloader"]
+packages = ["gpq_downloader", "gpq_downloader.core"]
 
 [tool.pytest.ini_options]
 testpaths = ["gpq_downloader/tests", "scripts/tests", "tests"]
@@ -46,6 +46,17 @@ exclude_lines = [
     "raise ImportError",
 ]
 
+[tool.importlinter]
+root_package = "gpq_downloader"
+# The forbidden modules are external, so they have to be in the import graph.
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "core stays QGIS-free"
+type = "forbidden"
+source_modules = ["gpq_downloader.core"]
+forbidden_modules = ["qgis", "PyQt5", "PyQt6", "osgeo"]
+
 [tool.black]
 line-length = 88
 target-version = ['py37', 'py38', 'py39', 'py310']
@@ -59,6 +70,7 @@ dev = [
     "pytest-cov>=4.1.0",
     "pyarrow>=10.0.0",
     "black>=23.3.0",
+    "import-linter>=2.0",
 ]
 
 [tool.setuptools.package-data]

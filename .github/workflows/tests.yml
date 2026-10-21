@@ -49,6 +49,28 @@ jobs:
     # code is what fails the job.
     - run: bandit -r gpq_downloader/ -x gpq_downloader/tests
 
+  core-headless:
+    # The core suite has to run on plain Python: macOS devs cannot import qgis
+    # locally, and the QGIS images below are the only place it would otherwise
+    # run. The same job guards the other direction. gpq_downloader/core is
+    # where presets, download planning and partition pruning are moving, and
+    # it must stay free of qgis, PyQt and osgeo, so lint-imports fails the
+    # build the moment something there reaches for them. No QGIS, no Qt, no
+    # xvfb here on purpose: an import that only works inside the QGIS images
+    # fails this job.
+    name: Core (headless Python, no QGIS)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - run: pip install -e .[dev]
+    - run: lint-imports
+    # --no-cov: pyproject's addopts measures the whole package, and this job
+    # runs only tests/core. The test job reports coverage.
+    - run: pytest tests/core --no-cov -q
+
   test:
     # Both Qt generations: the plugin supports QGIS 3 and 4, and a Qt6-only
     # break passes a Qt5-only suite and ships (#185).
