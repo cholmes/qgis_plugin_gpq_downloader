@@ -411,8 +411,7 @@ def test_buildings_and_building_parts_are_two_urls(qgs_app, mock_iface):
     dialog.overture_radio.setChecked(True)
     dialog.overture_checkboxes["buildings"].setChecked(True)
     dialog.overture_checkboxes["building_parts"].setChecked(True)
-    with patch("gpq_downloader.gui.dialog.requests.get") as get:
-        get.return_value.json.return_value = {"latest": "2026-09-23.1"}
+    with patch("gpq_downloader.gui.dialog.latest_overture_release", return_value="2026-09-23.1"):
         urls = dialog.get_urls()
     base = "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings"
     assert urls == [f"{base}/type=building/*", f"{base}/type=building_part/*"]

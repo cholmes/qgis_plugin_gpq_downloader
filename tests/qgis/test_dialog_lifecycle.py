@@ -1,8 +1,12 @@
-"""The dialog's background work (#197): a custom URL's validation runs on a
-QgsTask that Cancel stops.
+"""The dialog's background work (#197): the Overture release lookup goes
+through QGIS's network stack, and a custom URL's validation runs on a QgsTask
+that Cancel stops.
 """
 
 import gc
+import socket
+import subprocess
+import sys
 import threading
 import time
 import weakref
@@ -10,10 +14,12 @@ from unittest.mock import MagicMock, patch
 
 import duckdb
 import pytest
-from qgis.core import QgsApplication
-from qgis.PyQt.QtCore import QCoreApplication, QEvent, QObject, pyqtSignal
+from qgis.core import QgsApplication, QgsBlockingNetworkRequest
+from qgis.PyQt.QtCore import QByteArray, QCoreApplication, QEvent, QObject, pyqtSignal
 
+import gpq_downloader.gui.dialog as dialog_module
 from gpq_downloader.dialog import DataSourceDialog
+from gpq_downloader.gui.dialog import OVERTURE_CATALOG_URL, ReleaseLookupError, latest_overture_release
 from gpq_downloader.qgis_io import manager as manager_module
 
 URL = "https://example.com/data/places.parquet"
@@ -53,6 +59,91 @@ def wait_for(condition, timeout=30):
             return True
         time.sleep(0.02)
     return condition()
+
+
+# The release lookup
+
+
+def test_the_release_lookup_does_not_use_requests():
+    """requests ignores QGIS's proxy and authentication settings."""
+    assert "requests" not in vars(dialog_module)
+
+
+def fake_fetch(code, content=b"", message=""):
+    fetch = MagicMock()
+    fetch.get.return_value = code
+    fetch.errorMessage.return_value = message
+    fetch.reply.return_value.content.return_value = QByteArray(content)
+    cls = MagicMock(return_value=fetch)
+    cls.ErrorCode = QgsBlockingNetworkRequest.ErrorCode
+    return cls, fetch
+
+
+def test_the_latest_release_comes_from_the_stac_catalog():
+    cls, fetch = fake_fetch(QgsBlockingNetworkRequest.ErrorCode.NoError, b'{"latest": "2026-09-23.1"}')
+    with patch("gpq_downloader.gui.dialog.QgsBlockingNetworkRequest", cls):
+        assert latest_overture_release() == "2026-09-23.1"
+    request = fetch.get.call_args[0][0]
+    assert request.url().toString() == OVERTURE_CATALOG_URL == "https://stac.overturemaps.org/catalog.json"
+    assert request.transferTimeout() == 30000  # requests.get's timeout=30
+
+
+@pytest.mark.parametrize("code, content, message, expected", [
+    (QgsBlockingNetworkRequest.ErrorCode.NetworkError, b"", "Host stac.overturemaps.org not found",
+     "Could not look up the latest Overture release: Host stac.overturemaps.org not found"),
+    (QgsBlockingNetworkRequest.ErrorCode.TimeoutError, b"", "Operation canceled",
+     "Could not look up the latest Overture release: Operation canceled"),
+    (QgsBlockingNetworkRequest.ErrorCode.NoError, b"<html>", "", "Could not read the latest Overture release"),
+    (QgsBlockingNetworkRequest.ErrorCode.NoError, b"{}", "", "Could not read the latest Overture release"),
+])
+def test_a_failed_lookup_raises(code, content, message, expected):
+    cls, _ = fake_fetch(code, content, message)
+    with patch("gpq_downloader.gui.dialog.QgsBlockingNetworkRequest", cls):
+        with pytest.raises(ReleaseLookupError, match=expected):
+            latest_overture_release()
+
+
+def test_a_failed_lookup_keeps_the_dialog_open(dialog):
+    dialog.overture_radio.setChecked(True)
+    dialog.overture_checkboxes["buildings"].setChecked(True)
+    with patch("gpq_downloader.gui.dialog.latest_overture_release",
+               side_effect=ReleaseLookupError("Could not look up the latest Overture release: offline")), \
+            patch("gpq_downloader.gui.dialog.QMessageBox.warning") as warning:
+        dialog.validate_and_accept()
+    warning.assert_called_once_with(
+        dialog, "Validation Error", "Could not look up the latest Overture release: offline"
+    )
+    assert dialog.accepted_count == 0
+
+
+@pytest.fixture
+def catalog_server(tmp_path):
+    """A local HTTP server, in its own process, serving a STAC catalog."""
+    (tmp_path / "catalog.json").write_text('{"type": "Catalog", "latest": "2026-10-15.0"}')
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    server = subprocess.Popen(
+        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1", "--directory", str(tmp_path)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.05)
+        yield f"http://127.0.0.1:{port}/catalog.json"
+    finally:
+        server.terminate()
+        server.wait(10)
+
+
+def test_the_lookup_through_the_real_network_stack(qgs_app, catalog_server):
+    with patch("gpq_downloader.gui.dialog.OVERTURE_CATALOG_URL", catalog_server):
+        assert latest_overture_release() == "2026-10-15.0"
 
 
 # Validation on a QgsTask
