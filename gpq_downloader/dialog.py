@@ -274,7 +274,7 @@ class DataSourceDialog(QDialog):
                 checkbox, index // OSM_CHECKBOX_COLUMNS, index % OSM_CHECKBOX_COLUMNS
             )
 
-        # Add the horizontal checkbox layout to main layout
+        # Add the checkbox grid to main layout
         osm_layout.addLayout(osm_checkbox_layout)
 
         # Add link label for LayerCake info
