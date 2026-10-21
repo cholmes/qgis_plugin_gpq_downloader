@@ -15,7 +15,6 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtCore import Qt, QThread
 from qgis.core import QgsProject, QgsVectorLayer, QgsSettings
 import os
-import re
 import datetime
 from pathlib import Path
 
@@ -23,26 +22,7 @@ from . import duckdb_setup
 from .dialog import DataSourceDialog
 from .logger import message_level
 from .utils import Worker
-
-
-def custom_file_stem(url):
-    """A file name stem for a custom URL: the file's name, or the folder a glob reads.
-
-    https://host/data/rivers.parquet -> rivers
-    s3://bucket/cadastre/ple/**/*.parquet -> ple
-    s3://bucket/places/country=*/part-0.parquet -> part-0
-    """
-    path = url.split("?", 1)[0].split("#", 1)[0].split("://", 1)[-1].rstrip("/")
-    for part in reversed(path.split("/")[1:]):  # [0] is the host or bucket
-        if "*" in part:
-            continue  # a glob says nothing about the data
-        if "=" in part and not re.search(r"\.(geo)?parquet$|\.pq$", part, flags=re.IGNORECASE):
-            continue  # a hive partition key like country=US, unless it is a file name
-        stem = re.sub(r"\.(geo)?parquet$|\.pq$", "", part, flags=re.IGNORECASE)
-        stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")
-        if stem:
-            return stem
-    return "custom_download"
+from .core.plan import custom_file_stem
 
 
 class QgisPluginGeoParquet:
