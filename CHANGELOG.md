@@ -8,6 +8,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases before 0.9.0 are described on the
 [GitHub releases page](https://github.com/cholmes/qgis_plugin_gpq_downloader/releases).
 
+## v0.9.2 (2026-10-21)
+
+Three more OpenStreetMap datasets from LayerCake: addresses (186 million
+rows), waterways (39 million) and wetlands (4.8 million). The OpenStreetMap
+checkboxes now wrap onto a second row, so the list can keep growing without
+widening the dialog.
+
+DuckDB 2.0 came out on 21 October and broke every download except Parquet:
+saving to GeoPackage, FlatGeobuf or GeoJSON failed with an error about
+coordinate axis order. Those downloads work again, on DuckDB 2.0 and 1.x alike.
+
+If you let the plugin install DuckDB for you, it now installs a 1.x version
+rather than 2.0. A DuckDB 2.0 you already have is still used as before — the cap
+is on what the plugin installs, not on what it accepts — while a crash on QGIS
+shutdown under 2.0 is investigated
+([#203](https://github.com/cholmes/qgis_plugin_gpq_downloader/issues/203)).
+
+The plugin's security scan on plugins.qgis.org is clean again. Most of the 25
+findings against 0.9.1 were false positives, now marked as such with the reason
+alongside; nine were exception handlers that caught everything, including errors
+worth seeing, and those now catch only what they meant to.
+
+### Added
+
+- Add LayerCake addresses, waterways and wetlands to the OpenStreetMap presets by [@cholmes](https://github.com/cholmes) in [#200](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/200)
+
+### Fixed
+
+- Fix GeoPackage, FlatGeobuf and GeoJSON downloads failing on DuckDB 2.0 by [@cholmes](https://github.com/cholmes) in [#202](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/202)
+- Clear the findings on the plugins.qgis.org security scan by [@cholmes](https://github.com/cholmes) in [#201](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/201)
+
+**Full Changelog**: https://github.com/cholmes/qgis_plugin_gpq_downloader/compare/v0.9.1...v0.9.2
+
 ## v0.9.1 (2026-10-16)
 
 Overture downloads are faster, as promised in 0.9.0. The plugin reads

@@ -8,5 +8,8 @@
   "175": {"section": "Internal"},
   "188": {"section": "Internal"},
   "191": {"section": "Fixed", "title": "Read a glob on the Source Cooperative proxy over S3"},
-  "192": {"section": "Internal"}
+  "192": {"section": "Internal"},
+  "200": {"title": "Add LayerCake addresses, waterways and wetlands to the OpenStreetMap presets"},
+  "201": {"title": "Clear the findings on the plugins.qgis.org security scan"},
+  "202": {"section": "Fixed", "title": "Fix GeoPackage, FlatGeobuf and GeoJSON downloads failing on DuckDB 2.0"}
 }
