@@ -18,7 +18,7 @@ import os
 import datetime
 from pathlib import Path
 
-from . import duckdb_setup
+from .qgis_io import duckdb_setup
 from .gui.dialog import DataSourceDialog
 from .gui import settings_store
 from .logger import message_level

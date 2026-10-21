@@ -74,10 +74,11 @@ pip install bandit==1.9.4 && bandit -r gpq_downloader/ -x gpq_downloader/tests
 
 Bandit cannot see that the queries in `utils.py` and `qgis_io/worker.py` quote
 everything through `sql_str()`/`sql_ident()`, or that the pip command in
-`duckdb_setup.py` never touches a shell, so those lines carry a `# nosec <id>`
-comment with the reason directly above. Waive a finding that way, in the source, rather than by
-configuring bandit: plugins.qgis.org scans with its own config and will only
-honour the comments. Check what the line actually interpolates first.
+`qgis_io/duckdb_setup.py` never touches a shell, so those lines carry a
+`# nosec <id>` comment with the reason directly above. Waive a finding that
+way, in the source, rather than by configuring bandit: plugins.qgis.org scans
+with its own config and will only honour the comments. Check what the line
+actually interpolates first.
 
 ## Project Structure
 
