@@ -63,7 +63,7 @@ def test_dialog_radio_buttons(qgs_app, mock_iface):
     assert dialog.sourcecoop_radio.isChecked()
     assert not dialog.osm_radio.isChecked()
 
-@patch('gpq_downloader.dialog.QgsSettings')
+@patch('gpq_downloader.gui.settings_store.QgsSettings')
 def test_dialog_settings_saved(mock_settings, qgs_app, mock_iface):
     """Test that settings are saved"""
     dialog = DataSourceDialog(None, mock_iface)
@@ -93,7 +93,7 @@ def test_dialog_aoi_checkbox_toggle(qgs_app, mock_iface):
     assert not dialog.extent_group.isChecked()
 
 
-@patch('gpq_downloader.dialog.QgsSettings')
+@patch('gpq_downloader.gui.settings_store.QgsSettings')
 def test_dialog_aoi_checkbox_state_saved(mock_settings, qgs_app, mock_iface):
     """Test that AOI checkbox state is saved"""
     mock_settings_instance = MagicMock()
@@ -265,7 +265,7 @@ def test_message_level_returns_an_enum_not_an_int():
         assert type(level) is not int, f"{name} resolved to a plain int"
 
 
-@pytest.mark.parametrize("module", ["dialog", "plugin"])
+@pytest.mark.parametrize("module", ["gui/dialog", "gui/extent", "plugin"])
 def test_no_bare_int_message_levels_in_source(module):
     """Every pushMessage/pushWidget passes a real message level. A bare int here
     raised TypeError in QGIS 4 but worked in QGIS 3, so only Qt6 catches it."""
@@ -306,10 +306,11 @@ def test_no_bare_qstyle_pixmaps_in_source():
     import pathlib
     import re
 
-    src = pathlib.Path(__file__).resolve().parent.parent / "dialog.py"
+    root = pathlib.Path(__file__).resolve().parent.parent
     offenders = [
-        f"dialog.py:{i}"
-        for i, line in enumerate(src.read_text().splitlines(), 1)
+        f"{name}:{i}"
+        for name in ("gui/dialog.py", "gui/extent.py")
+        for i, line in enumerate((root / name).read_text().splitlines(), 1)
         if re.search(r"QStyle\.SP_", line)
     ]
     assert not offenders, f"unscoped QStyle pixmap at {offenders}"
