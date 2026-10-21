@@ -13,13 +13,14 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtCore import Qt, QThread
-from qgis.core import QgsProject, QgsVectorLayer, QgsSettings
+from qgis.core import QgsProject, QgsVectorLayer
 import os
 import datetime
 from pathlib import Path
 
 from . import duckdb_setup
 from .dialog import DataSourceDialog
+from .gui import settings_store
 from .logger import message_level
 from .utils import Worker
 from .core.plan import custom_file_stem
@@ -191,7 +192,7 @@ class QgisPluginGeoParquet:
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
 
         # Restore last radio selection
-        selected_name = QgsSettings().value("gpq_downloader/radio_selection", section=QgsSettings.Section.Plugins)
+        selected_name = settings_store.load_radio_selection()
         for button in [dialog.overture_radio, dialog.sourcecoop_radio, dialog.osm_radio, dialog.custom_radio]:
             if button.text() == selected_name:
                 button.setChecked(True)

@@ -32,7 +32,7 @@ def test_plugin_run_dialog_shown(mock_dialog, qgs_app, mock_iface):
     assert plugin.worker is None
     assert plugin.worker_thread is None
 
-@patch('gpq_downloader.plugin.QgsSettings')
+@patch('gpq_downloader.gui.settings_store.QgsSettings')
 @patch('gpq_downloader.plugin.QFileDialog.getSaveFileName')
 @patch('gpq_downloader.plugin.DataSourceDialog')
 def test_plugin_handle_dialog_accepted(mock_dialog, mock_save_dialog, mock_settings, qgs_app, mock_iface, tmp_path):

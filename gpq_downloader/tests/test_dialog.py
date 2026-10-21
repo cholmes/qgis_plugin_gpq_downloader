@@ -63,7 +63,7 @@ def test_dialog_radio_buttons(qgs_app, mock_iface):
     assert dialog.sourcecoop_radio.isChecked()
     assert not dialog.osm_radio.isChecked()
 
-@patch('gpq_downloader.dialog.QgsSettings')
+@patch('gpq_downloader.gui.settings_store.QgsSettings')
 def test_dialog_settings_saved(mock_settings, qgs_app, mock_iface):
     """Test that settings are saved"""
     dialog = DataSourceDialog(None, mock_iface)
@@ -93,7 +93,7 @@ def test_dialog_aoi_checkbox_toggle(qgs_app, mock_iface):
     assert not dialog.extent_group.isChecked()
 
 
-@patch('gpq_downloader.dialog.QgsSettings')
+@patch('gpq_downloader.gui.settings_store.QgsSettings')
 def test_dialog_aoi_checkbox_state_saved(mock_settings, qgs_app, mock_iface):
     """Test that AOI checkbox state is saved"""
     mock_settings_instance = MagicMock()

@@ -24,13 +24,14 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread, QPoint, QObject, QEvent
 from qgis.PyQt.QtGui import QIcon
-from qgis.core import QgsSettings, QgsRectangle, QgsGeometry, QgsApplication, QgsMapLayerType
+from qgis.core import QgsRectangle, QgsGeometry, QgsApplication, QgsMapLayerType
 
 from .logger import message_level
 import os
 from .utils import MINIO_URL_FORMAT, ValidationWorker
 from .core.presets import load_presets
 from .map_tools import PolygonMapTool, AoiHighlighter, RectangleMapTool
+from .gui import settings_store
 
 # How many OpenStreetMap preset checkboxes go on a row before wrapping.
 OSM_CHECKBOX_COLUMNS = 5
@@ -445,11 +446,7 @@ class DataSourceDialog(QDialog):
         else:
             button_name = self.custom_radio.text()
 
-        QgsSettings().setValue(
-            "gpq_downloader/radio_selection",
-            button_name,
-            section=QgsSettings.Section.Plugins,
-        )
+        settings_store.save_value(settings_store.RADIO_SELECTION, button_name)
 
     def handle_overture_selection(self, text):
         """Show/hide base subtype combo based on selection"""
@@ -734,90 +731,46 @@ class DataSourceDialog(QDialog):
         # Saved on accept, like the other checkboxes, so cancelling the dialog
         # keeps the remembered setting
         if hasattr(self, "clip_checkbox"):
-            QgsSettings().setValue(
-                "gpq_downloader/clip_to_area",
-                self.clip_checkbox.isChecked(),
-                section=QgsSettings.Section.Plugins,
-            )
+            settings_store.save_value(settings_store.CLIP_TO_AREA, self.clip_checkbox.isChecked())
 
         # Save main checkboxes
         for key, checkbox in self.overture_checkboxes.items():
-            QgsSettings().setValue(
-                f"gpq_downloader/checkbox_{key}",
-                checkbox.isChecked(),
-                section=QgsSettings.Section.Plugins,
-            )
+            settings_store.save_value(settings_store.CHECKBOX.format(key=key), checkbox.isChecked())
 
         # Save base subtype checkboxes
         for key, checkbox in self.base_subtype_checkboxes.items():
-            QgsSettings().setValue(
-                f"gpq_downloader/base_subtype_checkbox_{key}",
-                checkbox.isChecked(),
-                section=QgsSettings.Section.Plugins,
-            )
+            settings_store.save_value(settings_store.BASE_SUBTYPE_CHECKBOX.format(key=key), checkbox.isChecked())
 
         # Save divisions subtype checkboxes
         for key, checkbox in self.divisions_subtype_checkboxes.items():
-            QgsSettings().setValue(
-                f"gpq_downloader/divisions_subtype_checkbox_{key}",
-                checkbox.isChecked(),
-                section=QgsSettings.Section.Plugins,
-            )
+            settings_store.save_value(settings_store.DIVISIONS_SUBTYPE_CHECKBOX.format(key=key), checkbox.isChecked())
 
         # Save OSM checkboxes
         for key, checkbox in self.osm_checkboxes.items():
-            QgsSettings().setValue(
-                f"gpq_downloader/osm_checkbox_{key}",
-                checkbox.isChecked(),
-                section=QgsSettings.Section.Plugins,
-            )
+            settings_store.save_value(settings_store.OSM_CHECKBOX.format(key=key), checkbox.isChecked())
 
         # Save AOI checkbox state
-        QgsSettings().setValue(
-            "gpq_downloader/aoi_enabled",
-            self.extent_group.isChecked(),
-            section=QgsSettings.Section.Plugins,
-        )
+        settings_store.save_value(settings_store.AOI_ENABLED, self.extent_group.isChecked())
 
     def load_checkbox_states(self) -> None:
         # Load main checkboxes
         for key, checkbox in self.overture_checkboxes.items():
-            checked = QgsSettings().value(
-                f"gpq_downloader/checkbox_{key}",
-                False,
-                type=bool,
-                section=QgsSettings.Section.Plugins,
-            )
+            checked = settings_store.load_flag(settings_store.CHECKBOX.format(key=key))
             checkbox.setChecked(checked)
 
         # Load base subtype checkboxes
         for key, checkbox in self.base_subtype_checkboxes.items():
-            checked = QgsSettings().value(
-                f"gpq_downloader/base_subtype_checkbox_{key}",
-                False,
-                type=bool,
-                section=QgsSettings.Section.Plugins,
-            )
+            checked = settings_store.load_flag(settings_store.BASE_SUBTYPE_CHECKBOX.format(key=key))
             checkbox.setChecked(checked)
 
         # Load divisions subtype checkboxes
         for key, checkbox in self.divisions_subtype_checkboxes.items():
-            checked = QgsSettings().value(
-                f"gpq_downloader/divisions_subtype_checkbox_{key}",
-                False,
-                type=bool,
-                section=QgsSettings.Section.Plugins,
-            )
+            checked = settings_store.load_flag(settings_store.DIVISIONS_SUBTYPE_CHECKBOX.format(key=key))
             checkbox.setChecked(checked)
 
         # Load OSM checkboxes
         for key, checkbox in self.osm_checkboxes.items():
-            checked = QgsSettings().value(
-                f"gpq_downloader/osm_checkbox_{key}",
-                False,
-                type=bool,
-                section=QgsSettings.Section.Plugins,
-            )
+            checked = settings_store.load_flag(settings_store.OSM_CHECKBOX.format(key=key))
             checkbox.setChecked(checked)
 
         # Update base subtype widget visibility based on base checkbox state
@@ -827,12 +780,7 @@ class DataSourceDialog(QDialog):
         self.divisions_subtype_widget.setVisible(self.divisions_checkbox.isChecked())
 
         # Load AOI checkbox state
-        aoi_enabled = QgsSettings().value(
-            "gpq_downloader/aoi_enabled",
-            False,
-            type=bool,
-            section=QgsSettings.Section.Plugins,
-        )
+        aoi_enabled = settings_store.load_flag(settings_store.AOI_ENABLED)
         self.extent_group.setChecked(aoi_enabled)
 
     def on_validation_finished(self, success, message, results):
@@ -1035,7 +983,7 @@ class DataSourceDialog(QDialog):
             "cover polygons) at its edge. Unchecked, they are downloaded whole."
         )
         self.clip_checkbox.setChecked(
-            QgsSettings().value("gpq_downloader/clip_to_area", False, type=bool, section=QgsSettings.Section.Plugins)
+            settings_store.load_flag(settings_store.CLIP_TO_AREA)
         )
         container_layout.addWidget(self.clip_checkbox)
 
@@ -1309,11 +1257,7 @@ class DataSourceDialog(QDialog):
         """Override accept to store the current extent"""
         # Store the extent to be used by the plugin
         if hasattr(self, 'current_extent') and self.current_extent:
-            QgsSettings().setValue(
-                "gpq_downloader/last_used_extent",
-                self.current_extent.toString(),
-                section=QgsSettings.Section.Plugins,
-            )
+            settings_store.save_last_used_extent(self.current_extent.toString())
 
         # Reset the map tool to default when accepting dialog
         if self.polygon_tool and self.iface and self.iface.mapCanvas():
@@ -1351,7 +1295,7 @@ class DataSourceDialog(QDialog):
 
     def load_last_extent(self):
         """Load the last used extent from QgsSettings if available"""
-        last_extent_str = QgsSettings().value("gpq_downloader/last_used_extent", "", type=str)
+        last_extent_str = settings_store.load_last_used_extent()
         if last_extent_str:
             try:
                 self.current_extent = QgsRectangle.fromString(last_extent_str)
