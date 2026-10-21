@@ -31,6 +31,10 @@ from .core.overture import (  # noqa: F401
 )
 from .core.sql import sql_ident, sql_str
 
+# Moved to gpq_downloader.qgis_io (#195) and re-exported here the same way;
+# import from qgis_io instead.
+from .qgis_io.crs import crs_from_geo, transform_bbox_to_4326, transform_rect
+
 
 class CancellableConnection:
     """DuckDB connection whose execute() raises once the worker is killed.
@@ -210,32 +214,6 @@ def parse_geo_crs(raw) -> str | None:
     return None
 
 
-def crs_from_geo(crs_text: str | None):
-    """A QgsCoordinateReferenceSystem for a parse_geo_crs() value, or None when
-    the data is already in longitude/latitude. False when the CRS cannot be read."""
-    if not crs_text:
-        return None
-    crs = QgsCoordinateReferenceSystem(crs_text)
-    if not crs.isValid():
-        crs = QgsCoordinateReferenceSystem()
-        crs.createFromUserInput(crs_text)
-    if not crs.isValid():
-        return False
-    if crs == QgsCoordinateReferenceSystem("EPSG:4326"):
-        return None  # already lon/lat; nothing to transform
-    return crs
-
-
-def transform_rect(rect, source_crs, dest_crs):
-    """rect from source_crs to dest_crs, or None if the transform fails."""
-    try:
-        transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
-        return transform.transformBoundingBox(rect)
-    except Exception as e:
-        logger.log(f"Could not transform the query window: {e}")
-        return None
-
-
 def first_parquet_file(conn, url: str) -> str:
     """One concrete file at url, so metadata reads don't fetch every footer of a glob."""
     if "*" not in url:
@@ -314,29 +292,6 @@ def bbox_overlap_condition(bbox_column: str, bbox) -> str:
         f"{col}.xmin <= {bbox.xMaximum()} AND {col}.xmax >= {bbox.xMinimum()} "
         f"AND {col}.ymin <= {bbox.yMaximum()} AND {col}.ymax >= {bbox.yMinimum()}"
     )
-
-
-def transform_bbox_to_4326(extent, source_crs):
-    """
-    Transform a bounding box to EPSG:4326 (WGS84)
-
-    Args:
-        extent (QgsRectangle): The input extent to transform
-        source_crs (QgsCoordinateReferenceSystem): The source CRS of the extent
-
-    Returns:
-        QgsRectangle: The transformed extent in EPSG:4326, or None if inputs are invalid
-    """
-    if extent is None or source_crs is None:
-        return None
-        
-    dest_crs = QgsCoordinateReferenceSystem("EPSG:4326")
-
-    if source_crs != dest_crs:
-        transform = QgsCoordinateTransform(source_crs, dest_crs, QgsProject.instance())
-        extent = transform.transformBoundingBox(extent)
-    
-    return extent
 
 
 class Worker(QObject):
