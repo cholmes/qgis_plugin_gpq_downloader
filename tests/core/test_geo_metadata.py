@@ -16,7 +16,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from core_support import RecordingConnection, Rect
-from gpq_downloader import utils
+from gpq_downloader.qgis_io.crs import QgsCoordinateReferenceSystem
 from gpq_downloader.utils import (
     bbox_overlap_condition,
     bbox_polygon_wkt,
@@ -253,7 +253,7 @@ def test_use_lon_lat_axis_order_tolerates_a_duckdb_without_the_setting():
 
 def test_transform_bbox_to_4326_passes_through():
     rect = Rect(1, 2, 3, 4)
-    wgs84 = utils.QgsCoordinateReferenceSystem("EPSG:4326")
+    wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
     assert transform_bbox_to_4326(rect, wgs84) is rect
     assert transform_bbox_to_4326(None, wgs84) is None
     assert transform_bbox_to_4326(rect, None) is None

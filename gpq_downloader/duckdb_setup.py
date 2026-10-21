@@ -1,9 +1,9 @@
 """Find DuckDB, or install it into QGIS's Python, without breaking plugin load.
 
-The plugin's modules import without DuckDB (utils.py falls back to duckdb=None),
-so QGIS always loads the plugin and shows its toolbar button. When DuckDB is
-missing or too old, the user gets a message with an "Install DuckDB" button
-instead of a ModuleNotFoundError at startup.
+The plugin's modules import without DuckDB (utils.py and qgis_io/worker.py
+fall back to duckdb=None), so QGIS always loads the plugin and shows its
+toolbar button. When DuckDB is missing or too old, the user gets a message
+with an "Install DuckDB" button instead of a ModuleNotFoundError at startup.
 """
 
 from __future__ import annotations
@@ -76,10 +76,12 @@ def duckdb_status():
 
 
 def activate(module) -> None:
-    """Give the plugin's worker module the DuckDB module, so no restart is needed."""
+    """Give the plugin's worker modules the DuckDB module, so no restart is needed."""
     from . import utils
+    from .qgis_io import worker
 
     utils.duckdb = module
+    worker.duckdb = module
 
 
 def python_executable() -> str:

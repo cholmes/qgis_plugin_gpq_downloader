@@ -22,7 +22,7 @@ from . import duckdb_setup
 from .gui.dialog import DataSourceDialog
 from .gui import settings_store
 from .logger import message_level
-from .utils import Worker
+from .qgis_io.worker import Worker
 from .core.plan import custom_file_stem
 
 
