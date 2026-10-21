@@ -24,7 +24,7 @@ jobs:
       with:
         python-version: '3.11'
     - run: pip install ruff==0.17.1
-    - run: ruff check --select F,E9,E722 gpq_downloader/ scripts/
+    - run: ruff check --select F,E9,E722 gpq_downloader/ scripts/ tests/
 
   security:
     # plugins.qgis.org runs bandit over every uploaded plugin and publishes the
