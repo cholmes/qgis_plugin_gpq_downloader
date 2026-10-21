@@ -928,7 +928,7 @@ class DataSourceDialog(QDialog):
                 # If QGIS theme icon not available, use standard QStyle icon
                 from qgis.PyQt.QtWidgets import QStyle
                 self.select_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogListView))
-        except:
+        except Exception:
             # If there's any error, use a generic icon
             from qgis.PyQt.QtWidgets import QStyle
             self.select_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogListView))
@@ -1166,10 +1166,7 @@ class DataSourceDialog(QDialog):
             # Disconnect from any active layer selection signals
             layer = self.iface.activeLayer()
             if layer and layer.type() == QgsMapLayerType.VectorLayer:
-                try:
-                    layer.selectionChanged.disconnect(self.on_selection_changed)
-                except:
-                    pass
+                self._disconnect_selection_changed(layer)
                 
             # Clear any previous AOI visualization first
             if self.aoi_highlighter:
@@ -1215,10 +1212,7 @@ class DataSourceDialog(QDialog):
                 self.polygon_tool = None
 
             # Disconnect from any active layer selection signals
-            try:
-                self.iface.activeLayer().selectionChanged.disconnect(self.on_selection_changed)
-            except:
-                pass
+            self._disconnect_selection_changed(self.iface.activeLayer())
 
             # Clear any previous AOI visualization first
             if self.aoi_highlighter:
@@ -1401,10 +1395,7 @@ class DataSourceDialog(QDialog):
             # Disconnect from any active layer selection signals
             layer = self.iface.activeLayer()
             if layer and layer.type() == QgsMapLayerType.VectorLayer:
-                try:
-                    layer.selectionChanged.disconnect(self.on_selection_changed)
-                except:
-                    pass
+                self._disconnect_selection_changed(layer)
 
                 # Clear any selected features in the active layer
                 layer.removeSelection()
@@ -1603,10 +1594,7 @@ class DataSourceDialog(QDialog):
                 # Only process vector layers
                 if layer.type() == 0:  # Vector layer
                     # Disconnect from the selection changed signal first to avoid loops
-                    try:
-                        layer.selectionChanged.disconnect(self.on_selection_changed)
-                    except:
-                        pass  # If it wasn't connected, just continue
+                    self._disconnect_selection_changed(layer)
                         
                     # Clear the selection
                     layer.removeSelection()
@@ -1614,10 +1602,7 @@ class DataSourceDialog(QDialog):
             # If there's an active layer, connect to its selection changed signal
             active_layer = self.iface.activeLayer()
             if active_layer and active_layer.type() == 0:  # Vector layer
-                try:
-                    active_layer.selectionChanged.disconnect(self.on_selection_changed)
-                except:
-                    pass  # Make sure it's not already connected
+                self._disconnect_selection_changed(active_layer)
                 
             # Deactivate feature selection mode
             if self.iface.mapCanvas():
@@ -1681,10 +1666,7 @@ class DataSourceDialog(QDialog):
             layer.removeSelection()
 
             # Disconnect any existing selection signal first to avoid multiple connections
-            try:
-                layer.selectionChanged.disconnect(self.on_selection_changed)
-            except:
-                pass
+            self._disconnect_selection_changed(layer)
 
             # Connect to the selection changed signal
             layer.selectionChanged.connect(self.on_selection_changed)
@@ -1713,6 +1695,23 @@ class DataSourceDialog(QDialog):
             self.draw_button.setChecked(False)
             self.select_button.setChecked(True)
             self.bbox_button.setChecked(False)
+
+    def _disconnect_selection_changed(self, layer):
+        """Drop our selectionChanged handler from `layer`, whether or not it is connected.
+
+        Callers disconnect before connecting, or while tearing an AOI mode down,
+        so none of the cases below is an error: there may be no active layer, or
+        one with no selection to change (a raster), and PyQt raises TypeError
+        when the signal was never connected to this slot and RuntimeError when
+        the layer's C++ object has already been deleted.
+        """
+        signal = getattr(layer, "selectionChanged", None)
+        if signal is None:
+            return
+        try:
+            signal.disconnect(self.on_selection_changed)
+        except (TypeError, RuntimeError):
+            pass
 
     def on_selection_changed(self):
         """Handle when the selection in the active layer changes"""
@@ -1878,10 +1877,7 @@ class DataSourceDialog(QDialog):
             # Clear selection from previous layer if any and disconnect signals
             prev_layer = self.iface.activeLayer()
             if prev_layer and prev_layer.type() == QgsMapLayerType.VectorLayer:
-                try:
-                    prev_layer.selectionChanged.disconnect(self.on_selection_changed)
-                except:
-                    pass
+                self._disconnect_selection_changed(prev_layer)
                 prev_layer.removeSelection()
             
             # Set as active layer

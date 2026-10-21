@@ -266,9 +266,15 @@ def overture_part_extents(url, timeout=30):
     if key in _overture_extent_cache:
         return _overture_extent_cache[key]
     collection_url = f"{_OVERTURE_STAC}/{key[0]}/{key[1]}/{key[2]}/collection.json"
+    # The release, theme and type come out of the user's URL, but they cannot
+    # contain a slash, so they only ever land in the path: the scheme and host
+    # are the constant above. Checked rather than assumed, because urlopen would
+    # just as happily read a file:// path.
+    if not collection_url.startswith("https://"):
+        return None
     extents = None
     try:
-        with urllib.request.urlopen(collection_url, timeout=timeout) as response:
+        with urllib.request.urlopen(collection_url, timeout=timeout) as response:  # nosec B310
             collection = json.load(response)
         boxes = collection["extent"]["spatial"]["bbox"]
         # boxes[0] covers the collection; the rest are one per file, in item order
@@ -308,7 +314,7 @@ def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
     if overture is None and not url.endswith(".parquet"):
         return default
     try:
-        files = [row[0] for row in conn.execute(f"SELECT file FROM glob({sql_str(url)})").fetchall()]
+        files = [row[0] for row in conn.execute(f"SELECT file FROM glob({sql_str(url)})").fetchall()]  # nosec B608
     except Exception as e:
         logger.log(f"Could not list files for partition pruning: {e}")
         return default
@@ -365,6 +371,17 @@ def use_lon_lat_axis_order(conn):
         conn.execute("SET geometry_always_xy = true;")
     except Exception as e:
         logger.log(f"This DuckDB does not take geometry_always_xy: {e}")
+
+
+# DuckDB's Python API cannot parameterise a table name, a column name or the
+# path read_parquet() reads, which is most of what varies in the queries in
+# this module, so they are built as f-strings with every value that did not
+# come from this file passed through sql_str() or sql_ident() first.
+#
+# Those f-strings are what the B608 suppressions here mark. Bandit sees the
+# string formatting but not the quoting, so each suppression asserts that the
+# line has been read: add one only after checking that every interpolation on
+# it is a literal in this file, a number, or one of these two calls.
 
 
 def sql_str(value) -> str:
@@ -471,7 +488,7 @@ def first_parquet_file(conn, url: str) -> str:
     if "*" not in url:
         return url
     try:
-        row = conn.execute(f"SELECT file FROM glob({sql_str(url)}) LIMIT 1").fetchone()
+        row = conn.execute(f"SELECT file FROM glob({sql_str(url)}) LIMIT 1").fetchone()  # nosec B608
     except Exception as e:
         if duckdb is not None and isinstance(e, duckdb.InterruptException):
             raise
@@ -485,7 +502,7 @@ def read_geo_metadata(conn, url: str) -> tuple[str | None, str | None, str | Non
     url = first_parquet_file(conn, url)
     try:
         row = conn.execute(
-            f"SELECT value FROM parquet_kv_metadata({sql_str(url)}) "
+            f"SELECT value FROM parquet_kv_metadata({sql_str(url)}) "  # nosec B608
             "WHERE key = 'geo'::BLOB LIMIT 1"
         ).fetchone()
     except Exception as e:
@@ -639,7 +656,7 @@ class Worker(QObject):
                     conn.execute("LOAD spatial;")
 
                 # Get schema early as we need it for both column names and bbox check
-                schema_query = f"DESCRIBE SELECT * FROM read_parquet({sql_str(self.read_url)})"
+                schema_query = f"DESCRIBE SELECT * FROM read_parquet({sql_str(self.read_url)})"  # nosec B608
                 schema_result = conn.execute(schema_query).fetchall()
 
                 # The caller's validation results are only hints: the download queue
@@ -808,7 +825,7 @@ class Worker(QObject):
                     SELECT {', '.join(convert_columns)}
                     FROM {table_name}
                     {spatial_filter}
-                    """
+                    """  # nosec B608
                     
                     conn.execute(convert_query)
                     
@@ -831,7 +848,7 @@ class Worker(QObject):
                     self.clip_table(conn, table_name, geometry_column, bbox_column, area_wkt)
 
                 # Add check for empty results
-                row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+                row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]  # nosec B608
                 if row_count == 0:
                     self.info.emit(f"No data found{layer_info} in the requested area. Check that your map extent overlaps with the data and/or expand your map extent. Skipping to next dataset if available.")
                     self.finished.emit()  # Ensure finished signal is emitted
@@ -874,7 +891,7 @@ class Worker(QObject):
                                 CROSS JOIN bbox
                         ORDER BY ST_Hilbert(t.{geometry_expr}, bbox.b)
                     ) TO {sql_str(self.output_file)}
-                    """
+                    """  # nosec B608
 
                     if file_extension == "parquet":
                         format_options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 22);"
@@ -920,8 +937,10 @@ class Worker(QObject):
                     if not self.output_file.lower().endswith('.duckdb'): # Clean up temporary table
                         try:
                             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-                        except:
-                            pass
+                        except Exception as e:
+                            # The connection is closed right below, so a failed
+                            # cleanup leaks nothing; it is worth knowing about.
+                            logger.log(f"Could not drop the temporary table: {e}")
                     self.conn = None
                     conn.close()
                 # Don't leave a half-written export behind after a cancel
@@ -964,7 +983,7 @@ class Worker(QObject):
         temp_table = f"{table_name}_4326"
         try:
             conn.execute(
-                f"CREATE TABLE {temp_table} AS SELECT {', '.join(columns)} FROM {table_name}"
+                f"CREATE TABLE {temp_table} AS SELECT {', '.join(columns)} FROM {table_name}"  # nosec B608
             )
         except Exception as e:
             if duckdb is not None and isinstance(e, duckdb.InterruptException):
@@ -987,14 +1006,14 @@ class Worker(QObject):
         # intersection collapses to a lower dimension (a polygon that only
         # touches the area's edge would otherwise become a line or point).
         conn.execute(
-            f"DELETE FROM {table_name} WHERE {geom} IS NULL"
+            f"DELETE FROM {table_name} WHERE {geom} IS NULL"  # nosec B608
             f" OR NOT ST_Intersects({geom}, {area})"
             f" OR (NOT ST_CoveredBy({geom}, {area})"
             f" AND ST_Dimension(ST_Intersection({geom}, {area})) < ST_Dimension({geom}))"
         )
         # Only features crossing the area's edge need cutting
         conn.execute(
-            f"UPDATE {table_name} SET {geom} = ST_Intersection({geom}, {area})"
+            f"UPDATE {table_name} SET {geom} = ST_Intersection({geom}, {area})"  # nosec B608
             f" WHERE NOT ST_CoveredBy({geom}, {area})"
         )
         if bbox_column is None:
@@ -1009,7 +1028,7 @@ class Worker(QObject):
         )
         if not col_type.startswith("STRUCT"):
             new_bbox = f"to_json({new_bbox})"  # exports other than parquet store it as JSON
-        conn.execute(f'UPDATE {table_name} SET {sql_ident(bbox_column)} = {new_bbox}')
+        conn.execute(f'UPDATE {table_name} SET {sql_ident(bbox_column)} = {new_bbox}')  # nosec B608
 
     def kill(self):
         self.killed = True
@@ -1026,7 +1045,7 @@ class Worker(QObject):
         """Estimate the output file size in MB using GeoJSON feature collection structure"""
         try:
             # Get total row count
-            row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+            row_count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]  # nosec B608
 
             # Use a smaller sample size for large datasets
             sample_size = min(100, row_count)
@@ -1050,7 +1069,7 @@ class Worker(QObject):
                         )::VARCHAR
                     )) as avg_feature_size
                     FROM sample;
-                """
+                """  # nosec B608
 
                 # Get average feature size
                 avg_feature_size = conn.execute(sample_query).fetchone()[0]
@@ -1146,7 +1165,7 @@ class ValidationWorker(QObject):
                 return
 
             self.progress.emit("Checking data format...")
-            schema_query = f"DESCRIBE SELECT * FROM read_parquet({sql_str(self.read_url)})"
+            schema_query = f"DESCRIBE SELECT * FROM read_parquet({sql_str(self.read_url)})"  # nosec B608
             schema_result = conn.execute(schema_query).fetchall()
             if self.killed:
                 return

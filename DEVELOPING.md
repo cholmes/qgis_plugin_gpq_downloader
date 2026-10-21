@@ -58,6 +58,27 @@ pytest --cov=gpq_downloader gpq_downloader/tests/
 
 Tests require a QGIS environment. The CI runs them inside a QGIS Docker container (see `.github/workflows/tests.yml`).
 
+## Linting and the Security Scan
+
+CI runs two checks besides the tests, both quick to reproduce locally:
+
+```bash
+# Unused imports, undefined names, bare excepts
+pip install ruff==0.17.1 && ruff check --select F,E9,E722 gpq_downloader/ scripts/
+
+# The same bandit scan plugins.qgis.org runs on an uploaded plugin, over what
+# the zip ships. Its result is published on the plugin's security tab, so a
+# finding that lands on main is public before a release is even cut.
+pip install bandit==1.9.4 && bandit -r gpq_downloader/ -x gpq_downloader/tests
+```
+
+Bandit cannot see that the queries in `utils.py` quote everything through
+`sql_str()`/`sql_ident()`, or that the pip command in `duckdb_setup.py` never
+touches a shell, so those lines carry a `# nosec <id>` comment with the reason
+directly above. Waive a finding that way, in the source, rather than by
+configuring bandit: plugins.qgis.org scans with its own config and will only
+honour the comments. Check what the line actually interpolates first.
+
 ## Project Structure
 
 ```

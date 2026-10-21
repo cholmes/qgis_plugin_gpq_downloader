@@ -13,7 +13,9 @@ import os
 import platform
 import re
 import site
-import subprocess
+
+# Only pip_command() below is ever run, and never through a shell.
+import subprocess  # nosec B404
 import sys
 
 from qgis.core import QgsApplication, QgsTask
@@ -159,7 +161,11 @@ class DuckDBInstallerTask(QgsTask):
         if platform.system() == "Windows":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
-            result = subprocess.run(
+            # pip_command() builds every argument from this module's own
+            # constants and an interpreter path off sys.executable, and this
+            # runs the argument list directly rather than through a shell, so
+            # nothing a user types reaches it.
+            result = subprocess.run(  # nosec B603
                 self.command, capture_output=True, text=True, timeout=600, **kwargs
             )
         except Exception as e:
