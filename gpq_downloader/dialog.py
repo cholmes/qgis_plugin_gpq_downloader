@@ -452,7 +452,7 @@ class DataSourceDialog(QDialog):
         QgsSettings().setValue(
             "gpq_downloader/radio_selection",
             button_name,
-            section=QgsSettings.Plugins,
+            section=QgsSettings.Section.Plugins,
         )
 
     def handle_overture_selection(self, text):
@@ -741,7 +741,7 @@ class DataSourceDialog(QDialog):
             QgsSettings().setValue(
                 "gpq_downloader/clip_to_area",
                 self.clip_checkbox.isChecked(),
-                section=QgsSettings.Plugins,
+                section=QgsSettings.Section.Plugins,
             )
 
         # Save main checkboxes
@@ -749,7 +749,7 @@ class DataSourceDialog(QDialog):
             QgsSettings().setValue(
                 f"gpq_downloader/checkbox_{key}",
                 checkbox.isChecked(),
-                section=QgsSettings.Plugins,
+                section=QgsSettings.Section.Plugins,
             )
 
         # Save base subtype checkboxes
@@ -757,7 +757,7 @@ class DataSourceDialog(QDialog):
             QgsSettings().setValue(
                 f"gpq_downloader/base_subtype_checkbox_{key}",
                 checkbox.isChecked(),
-                section=QgsSettings.Plugins,
+                section=QgsSettings.Section.Plugins,
             )
 
         # Save divisions subtype checkboxes
@@ -765,7 +765,7 @@ class DataSourceDialog(QDialog):
             QgsSettings().setValue(
                 f"gpq_downloader/divisions_subtype_checkbox_{key}",
                 checkbox.isChecked(),
-                section=QgsSettings.Plugins,
+                section=QgsSettings.Section.Plugins,
             )
 
         # Save OSM checkboxes
@@ -773,14 +773,14 @@ class DataSourceDialog(QDialog):
             QgsSettings().setValue(
                 f"gpq_downloader/osm_checkbox_{key}",
                 checkbox.isChecked(),
-                section=QgsSettings.Plugins,
+                section=QgsSettings.Section.Plugins,
             )
 
         # Save AOI checkbox state
         QgsSettings().setValue(
             "gpq_downloader/aoi_enabled",
             self.extent_group.isChecked(),
-            section=QgsSettings.Plugins,
+            section=QgsSettings.Section.Plugins,
         )
 
     def load_checkbox_states(self) -> None:
@@ -790,7 +790,7 @@ class DataSourceDialog(QDialog):
                 f"gpq_downloader/checkbox_{key}",
                 False,
                 type=bool,
-                section=QgsSettings.Plugins,
+                section=QgsSettings.Section.Plugins,
             )
             checkbox.setChecked(checked)
 
@@ -800,7 +800,7 @@ class DataSourceDialog(QDialog):
                 f"gpq_downloader/base_subtype_checkbox_{key}",
                 False,
                 type=bool,
-                section=QgsSettings.Plugins,
+                section=QgsSettings.Section.Plugins,
             )
             checkbox.setChecked(checked)
 
@@ -810,7 +810,7 @@ class DataSourceDialog(QDialog):
                 f"gpq_downloader/divisions_subtype_checkbox_{key}",
                 False,
                 type=bool,
-                section=QgsSettings.Plugins,
+                section=QgsSettings.Section.Plugins,
             )
             checkbox.setChecked(checked)
 
@@ -820,7 +820,7 @@ class DataSourceDialog(QDialog):
                 f"gpq_downloader/osm_checkbox_{key}",
                 False,
                 type=bool,
-                section=QgsSettings.Plugins,
+                section=QgsSettings.Section.Plugins,
             )
             checkbox.setChecked(checked)
 
@@ -835,7 +835,7 @@ class DataSourceDialog(QDialog):
             "gpq_downloader/aoi_enabled",
             False,
             type=bool,
-            section=QgsSettings.Plugins,
+            section=QgsSettings.Section.Plugins,
         )
         self.extent_group.setChecked(aoi_enabled)
 
@@ -1039,7 +1039,7 @@ class DataSourceDialog(QDialog):
             "cover polygons) at its edge. Unchecked, they are downloaded whole."
         )
         self.clip_checkbox.setChecked(
-            QgsSettings().value("gpq_downloader/clip_to_area", False, type=bool, section=QgsSettings.Plugins)
+            QgsSettings().value("gpq_downloader/clip_to_area", False, type=bool, section=QgsSettings.Section.Plugins)
         )
         container_layout.addWidget(self.clip_checkbox)
 
@@ -1289,9 +1289,9 @@ class DataSourceDialog(QDialog):
                 # Ensure we're getting a standard WKT format
                 from qgis.core import QgsWkbTypes
                 geom = QgsGeometry(self.aoi_geometry)
-                if geom.wkbType() == QgsWkbTypes.MultiSurface:
+                if geom.wkbType() == QgsWkbTypes.Type.MultiSurface:
                     geom = QgsGeometry.fromMultiPolygonXY(geom.asMultiPolygon())
-                elif geom.wkbType() == QgsWkbTypes.CurvePolygon:
+                elif geom.wkbType() == QgsWkbTypes.Type.CurvePolygon:
                     geom = QgsGeometry.fromPolygonXY(geom.asPolygon())
                 wkt = geom.asWkt()
             else:
@@ -1316,7 +1316,7 @@ class DataSourceDialog(QDialog):
             QgsSettings().setValue(
                 "gpq_downloader/last_used_extent",
                 self.current_extent.toString(),
-                section=QgsSettings.Plugins,
+                section=QgsSettings.Section.Plugins,
             )
 
         # Reset the map tool to default when accepting dialog
@@ -1545,9 +1545,9 @@ class DataSourceDialog(QDialog):
             
             # Ensure the geometry is in a standard format
             from qgis.core import QgsWkbTypes
-            if reprojected_geom.wkbType() == QgsWkbTypes.MultiSurface:
+            if reprojected_geom.wkbType() == QgsWkbTypes.Type.MultiSurface:
                 reprojected_geom = QgsGeometry.fromMultiPolygonXY(reprojected_geom.asMultiPolygon())
-            elif reprojected_geom.wkbType() == QgsWkbTypes.CurvePolygon:
+            elif reprojected_geom.wkbType() == QgsWkbTypes.Type.CurvePolygon:
                 reprojected_geom = QgsGeometry.fromPolygonXY(reprojected_geom.asPolygon())
             
             return reprojected_geom
@@ -1555,9 +1555,9 @@ class DataSourceDialog(QDialog):
         # No reprojection needed, but still ensure the geometry is in a standard format
         from qgis.core import QgsWkbTypes
         geom = QgsGeometry(self.aoi_geometry)
-        if geom.wkbType() == QgsWkbTypes.MultiSurface:
+        if geom.wkbType() == QgsWkbTypes.Type.MultiSurface:
             geom = QgsGeometry.fromMultiPolygonXY(geom.asMultiPolygon())
-        elif geom.wkbType() == QgsWkbTypes.CurvePolygon:
+        elif geom.wkbType() == QgsWkbTypes.Type.CurvePolygon:
             geom = QgsGeometry.fromPolygonXY(geom.asPolygon())
         
         return geom
@@ -1774,10 +1774,10 @@ class DataSourceDialog(QDialog):
         if combined_geometry:
             # Convert MultiSurface to MultiPolygon if needed
             from qgis.core import QgsWkbTypes
-            if combined_geometry.wkbType() == QgsWkbTypes.MultiSurface:
+            if combined_geometry.wkbType() == QgsWkbTypes.Type.MultiSurface:
                 # Force convert to a standard format (MultiPolygon)
                 combined_geometry = QgsGeometry.fromMultiPolygonXY(combined_geometry.asMultiPolygon())
-            elif combined_geometry.wkbType() == QgsWkbTypes.CurvePolygon:
+            elif combined_geometry.wkbType() == QgsWkbTypes.Type.CurvePolygon:
                 # Convert CurvePolygon to standard Polygon
                 combined_geometry = QgsGeometry.fromPolygonXY(combined_geometry.asPolygon())
             

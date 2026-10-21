@@ -211,7 +211,7 @@ class QgisPluginGeoParquet:
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
 
         # Restore last radio selection
-        selected_name = QgsSettings().value("gpq_downloader/radio_selection", section=QgsSettings.Plugins)
+        selected_name = QgsSettings().value("gpq_downloader/radio_selection", section=QgsSettings.Section.Plugins)
         for button in [dialog.overture_radio, dialog.sourcecoop_radio, dialog.osm_radio, dialog.custom_radio]:
             if button.text() == selected_name:
                 button.setChecked(True)

@@ -148,7 +148,9 @@ class DuckDBInstallerTask(QgsTask):
     """Run pip in the background so QGIS stays responsive."""
 
     def __init__(self, on_done):
-        flag = QgsTask.CanCancel if hasattr(QgsTask, "CanCancel") else QgsTask.Flag.CanCancel
+        # The scoped name works on QGIS 3 and 4 alike; the unscoped
+        # QgsTask.CanCancel is what the Qt6 migration checker flags.
+        flag = QgsTask.Flag.CanCancel
         super().__init__("Installing DuckDB", flag)
         self.on_done = on_done
         self.output = ""
