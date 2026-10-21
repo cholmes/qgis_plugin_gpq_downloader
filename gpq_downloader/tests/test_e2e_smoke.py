@@ -84,6 +84,7 @@ def test_canvas_extent_download_loads_a_layer(qgs_app, clean_settings, iface, tm
             patch("gpq_downloader.plugin.QFileDialog.getSaveFileName",
                   return_value=(output, "GeoPackage (*.gpkg)")) as save_dialog, \
             patch("gpq_downloader.plugin.QMessageBox") as plugin_boxes, \
+            patch("gpq_downloader.qgis_io.layers.QMessageBox", plugin_boxes), \
             patch("gpq_downloader.gui.dialog.QMessageBox") as dialog_boxes:
         plugin.run()
         assert len(dialogs) == 1
