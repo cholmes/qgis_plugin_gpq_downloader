@@ -1,8 +1,9 @@
 """The plugin's glue between QGIS and DuckDB.
 
 - crs: QGIS-side CRS conversion (the query window, the data's own CRS)
-- worker: the download and validation workers the plugin runs on a QThread,
-  and the cancellable DuckDB connection they share
+- worker: the download and validation workers, and the cancellable DuckDB
+  connection they share
+- manager: the download queue's runner, and the QgsTask both workers run on
 - duckdb_setup: finding DuckDB, or installing it into QGIS's Python
 - layers: loading a finished download into the project
 

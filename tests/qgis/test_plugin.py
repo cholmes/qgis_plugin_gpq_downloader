@@ -2,19 +2,29 @@ from unittest.mock import MagicMock, patch
 from qgis.PyQt.QtWidgets import QAction
 from pathlib import Path
 
+from gpq_downloader.core.plan import DownloadJob
 from gpq_downloader.plugin import QgisPluginGeoParquet
 
-def test_plugin_run_with_active_download(qgs_app, mock_iface):
-    """Test run method when a download is already in progress"""
+
+def hold_a_job(plugin, job=None):
+    """Make the plugin's download manager busy without running anything."""
+    job = job or DownloadJob("https://example.com/test.parquet", "out.parquet")
+    plugin.downloads.queue.enqueue(job)
+    plugin.downloads.queue.next_job()
+    return job
+
+
+@patch('gpq_downloader.plugin.DataSourceDialog')
+def test_plugin_run_with_active_download(mock_dialog, qgs_app, mock_iface):
+    """#47: a download in progress no longer refuses the dialog; what it asks
+    for is queued behind the running one."""
     plugin = QgisPluginGeoParquet(mock_iface)
-    plugin.worker = MagicMock()
-    plugin.worker_thread = MagicMock()
-    plugin.worker_thread.isRunning.return_value = True
-    
+    hold_a_job(plugin)
+
     with patch('gpq_downloader.plugin.QMessageBox.warning') as mock_warning:
         plugin.run()
-        mock_warning.assert_called_once()
-        assert "Download in Progress" in mock_warning.call_args[0][1]
+        mock_warning.assert_not_called()
+    mock_dialog.return_value.show.assert_called_once()
 
 @patch('gpq_downloader.plugin.DataSourceDialog')
 def test_plugin_run_dialog_shown(mock_dialog, qgs_app, mock_iface):
@@ -30,7 +40,7 @@ def test_plugin_run_dialog_shown(mock_dialog, qgs_app, mock_iface):
     # Dialog should be shown non-modally (not exec)
     dialog_instance.show.assert_called_once()
     assert plugin.worker is None
-    assert plugin.worker_thread is None
+    assert not plugin.downloads.is_busy
 
 @patch('gpq_downloader.gui.settings_store.QgsSettings')
 @patch('gpq_downloader.plugin.QFileDialog.getSaveFileName')
@@ -106,16 +116,16 @@ def test_plugin_queues_buildings_and_building_parts_separately(
     ]
 
 
-@patch('gpq_downloader.plugin.QgisPluginGeoParquet._start_worker')
-def test_plugin_names_the_building_parts_layer_apart_from_buildings(start_worker, qgs_app, mock_iface):
+def test_plugin_names_the_building_parts_layer_apart_from_buildings(qgs_app, mock_iface):
     plugin = QgisPluginGeoParquet(mock_iface)
     plugin.where_fragment = None
     plugin.clip_to_area = False
     base = "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings"
     names = []
-    for type_str in ("building", "building_part"):
-        plugin.process_download_queue([(f"{base}/type={type_str}/*", "out.parquet")], None)
-        names.append(start_worker.call_args[0][4])
+    with patch.object(plugin.downloads, "enqueue", return_value=0) as enqueue:
+        for type_str in ("building", "building_part"):
+            plugin.process_download_queue([(f"{base}/type={type_str}/*", "out.parquet")], None)
+            names.append(enqueue.call_args[0][0][0].layer_name)
     assert names == ["Overture Buildings", "Overture Building Parts"]
 
 
@@ -142,14 +152,14 @@ def test_plugin_update_progress(qgs_app, mock_iface):
 def test_plugin_cancel_download(qgs_app, mock_iface):
     """Test download cancellation"""
     plugin = QgisPluginGeoParquet(mock_iface)
-    plugin.worker = MagicMock()
-    plugin.worker_thread = MagicMock()
-    
-    # Patch the cleanup_thread method to verify it's called
-    with patch.object(plugin, 'cleanup_thread') as mock_cleanup:
+    plugin.progress_dialog = MagicMock()
+
+    # The manager stops the running worker and drops the queue
+    # (test_download_manager.py runs that on real tasks)
+    with patch.object(plugin.downloads, 'cancel_all') as cancel_all:
         plugin.cancel_download()
-        plugin.worker.kill.assert_called_once()
-        mock_cleanup.assert_called_once()
+        cancel_all.assert_called_once()
+    plugin.progress_dialog.close.assert_called_once()
 
 @patch('gpq_downloader.qgis_io.layers.QgsVectorLayer')
 def test_plugin_load_layer_success(mock_vector_layer, qgs_app, mock_iface):
@@ -200,7 +210,7 @@ def test_plugin_initialization(qgs_app, mock_iface):
     plugin = QgisPluginGeoParquet(mock_iface)
     assert plugin.iface == mock_iface
     assert plugin.worker is None
-    assert plugin.worker_thread is None
+    assert not plugin.downloads.is_busy
     assert isinstance(plugin.download_dir, Path)
 
 def test_plugin_init_gui(qgs_app, mock_iface):
@@ -224,24 +234,21 @@ def test_plugin_unload(qgs_app, mock_iface):
     # Verify icon was added
     assert len(mock_iface.toolbar_icons) == 1
     
-    # Mock worker thread to not be running
-    plugin.worker_thread = MagicMock()
-    plugin.worker_thread.isRunning.return_value = False
-    
+    # No download is running (the manager starts idle)
+    assert not plugin.downloads.is_busy
+
     # Unload plugin
     plugin.unload()
     
     # Check that icon was removed
     assert len(mock_iface.toolbar_icons) == 0
 
-@patch('gpq_downloader.plugin.QThread')
-def test_plugin_cleanup_thread(mock_thread, qgs_app, mock_iface):
+def test_plugin_cleanup_thread(qgs_app, mock_iface):
     """Test thread cleanup"""
     plugin = QgisPluginGeoParquet(mock_iface)
-    plugin.worker = MagicMock()
-    plugin.worker_thread = MagicMock()
-    
+    hold_a_job(plugin)
+
     plugin.cleanup_thread()
     assert plugin.worker is None
-    assert plugin.worker_thread is None
+    assert not plugin.downloads.is_busy
 
