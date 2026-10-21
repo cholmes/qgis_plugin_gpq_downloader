@@ -33,6 +33,7 @@ class QgisPluginGeoParquet:
         self.action = None
         self.output_file = None
         self.clip_to_area = False  # from the dialog's "Clip features to the area" box
+        self.where_fragment = None  # from the dialog's attribute filter; None is no filter
         self._duckdb_message = None  # our widget on the shared QGIS message bar
         # Create a default downloads directory in user's home directory
         self.download_dir = Path.home() / "Downloads"
@@ -278,6 +279,11 @@ class QgisPluginGeoParquet:
         clip_checkbox = getattr(dialog, "clip_checkbox", None)
         self.clip_to_area = clip_checkbox is not None and clip_checkbox.isChecked() is True
 
+        # The isinstance check keeps a mocked dialog's MagicMock out of the SQL
+        get_where_fragment = getattr(dialog, "get_where_fragment", None)
+        where_fragment = get_where_fragment() if callable(get_where_fragment) else None
+        self.where_fragment = where_fragment if isinstance(where_fragment, str) and where_fragment else None
+
         # Now process downloads one at a time
         self.process_download_queue(download_queue, extent, aoi_geometry)
 
@@ -332,6 +338,7 @@ class QgisPluginGeoParquet:
             'layer_name': getattr(self.worker, 'layer_name', None),
             'aoi_geometry': getattr(self.worker, 'aoi_geometry', None),
             'clip_to_area': getattr(self.worker, 'clip_to_area', False),
+            'where_fragment': getattr(self.worker, 'where_fragment', None),
         }
         # The worker returned after emitting the warning; stop its thread before
         # a new worker replaces it
@@ -415,6 +422,7 @@ class QgisPluginGeoParquet:
                         worker_info['aoi_geometry'],
                         worker_info['clip_to_area'],
                         worker_info['remaining_queue'],
+                        where_fragment=worker_info['where_fragment'],
                     )
                     return
                 continue
@@ -430,6 +438,7 @@ class QgisPluginGeoParquet:
                     worker_info['clip_to_area'],
                     worker_info['remaining_queue'],
                     size_warning_accepted=True,
+                    where_fragment=worker_info['where_fragment'],
                 )
                 return
             
@@ -441,7 +450,8 @@ class QgisPluginGeoParquet:
                 return
 
     def _start_worker(self, url, extent, output_file, validation_results, layer_name,
-                      aoi_geometry, clip_to_area, remaining_queue, size_warning_accepted=False):
+                      aoi_geometry, clip_to_area, remaining_queue, size_warning_accepted=False,
+                      where_fragment=None):
         """Create the progress dialog, worker and thread for one download and start it."""
         self.progress_dialog = QProgressDialog(
             f"Starting {layer_name} download..." if layer_name else "Starting download...",
@@ -454,6 +464,7 @@ class QgisPluginGeoParquet:
         self.worker = Worker(
             url, extent, output_file, self.iface, validation_results, layer_name,
             aoi_geometry=aoi_geometry, clip_to_area=clip_to_area,
+            where_fragment=where_fragment,
         )
         self.worker.size_warning_accepted = size_warning_accepted
         self.worker.remaining_queue = remaining_queue
@@ -502,6 +513,7 @@ class QgisPluginGeoParquet:
         self._start_worker(
             url, extent, output_file, validation_results, layer_name,
             aoi_geometry, self.clip_to_area, remaining_queue,
+            where_fragment=self.where_fragment,
         )
 
     def handle_download_complete(self, remaining_queue, extent, aoi_geometry=None):

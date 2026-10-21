@@ -19,6 +19,7 @@ except ImportError:
     duckdb = None
 
 from .. import logger
+from ..core.filters import apply_where_fragment, validate_where_fragment
 from ..core.overture import parquet_source_for_bbox
 from ..core.presets import load_presets
 from ..core.sql import sql_ident, sql_str
@@ -74,7 +75,7 @@ class Worker(QObject):
     percent = pyqtSignal(int)
     file_size_warning = pyqtSignal(float)  # Signal for file size warnings (in MB)
 
-    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None, clip_to_area=False, connection_factory=None):
+    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None, clip_to_area=False, connection_factory=None, *, where_fragment=None):
         super().__init__()
         # Opens the DuckDB connection run() uses: duckdb.connect unless a test
         # passes a stand-in that records the SQL
@@ -91,9 +92,18 @@ class Worker(QObject):
         self.aoi_geometry = aoi_geometry
         # Cut features that extend past the area of interest (or bbox) at its edge
         self.clip_to_area = clip_to_area
+        # The user's attribute filter (core/filters.py), ANDed onto the spatial
+        # filter of the download; None downloads everything in the area
+        self.where_fragment = where_fragment
         self.conn = None  # kept so kill() can interrupt a running query
 
     def run(self):
+        # The dialog has already checked the filter; this keeps any other
+        # caller from getting a second statement into the download
+        filter_error = validate_where_fragment(self.where_fragment)
+        if filter_error:
+            self.error.emit(filter_error)
+            return
         try:
             layer_info = f" for {self.layer_name}" if self.layer_name else ""
             self.progress.emit(f"Connecting to database{layer_info}...")
@@ -257,7 +267,13 @@ class Worker(QObject):
                         conditions.append(
                             f'ST_Intersects({sql_ident(geometry_column)}, ST_GeomFromText({sql_str(filter_area_wkt)}))'
                         )
-                where_clause = ("WHERE " + "\n AND ".join(conditions)) if conditions else ""
+                # The attribute filter goes on the remote read too, even for a WKB
+                # BLOB column: it names the file's own columns, which is what
+                # this SELECT reads, so DuckDB can push it down to the scan. It
+                # is SQL the user typed and is interpolated as such: see
+                # core/filters.py for why that is not a hole in the rule above.
+                condition = apply_where_fragment("\n AND ".join(conditions), self.where_fragment)
+                where_clause = ("WHERE " + condition) if condition else ""
 
                 parquet_source = parquet_source_for_bbox(conn, self.read_url, bbox)
                 if parquet_source is None:
@@ -604,9 +620,11 @@ class ValidationWorker(QObject):
     progress = pyqtSignal(str)
     needs_bbox_warning = pyqtSignal()
 
-    def __init__(self, dataset_url, iface, extent):
+    def __init__(self, dataset_url, iface, extent, *, where_fragment=None):
         super().__init__()
         self.dataset_url = dataset_url
+        # The attribute filter to try against the source before the dialog closes
+        self.where_fragment = where_fragment
         self.read_url = dataset_url  # what DuckDB reads; set by resolve_dataset_url()
         self.iface = iface
         self.extent = extent
@@ -641,6 +659,8 @@ class ValidationWorker(QObject):
                     "has_bbox": True,
                     "bbox_column": "bbox",
                 })
+                if not self.check_where_fragment(conn, validation_results):
+                    return
                 self.finished.emit(True, "Validation successful", validation_results)
                 return
 
@@ -661,6 +681,11 @@ class ValidationWorker(QObject):
             if bbox_column:
                 validation_results["has_bbox"] = True
                 validation_results["bbox_column"] = bbox_column
+            # Before the bbox warning: its Yes accepts the dialog, which must
+            # not happen for a filter that is about to be rejected
+            if not self.check_where_fragment(conn, validation_results):
+                return
+            if bbox_column:
                 self.finished.emit(True, "Validation successful", validation_results)
             else:
                 # No bbox column found - emit warning signal first
@@ -680,6 +705,38 @@ class ValidationWorker(QObject):
             self.conn = None
             if conn is not None:
                 conn.close()
+
+    def check_where_fragment(self, conn, validation_results):
+        """Ask DuckDB whether the attribute filter works on this source.
+
+        True when there is no filter or DuckDB binds it; otherwise emits the
+        failure, with DuckDB's own message, and returns False. DuckDB plans
+        LIMIT 0 as an empty result, so binding the filter reads the schema
+        and no rows, however large the source is.
+        """
+        if not self.where_fragment:
+            return True
+        filter_error = validate_where_fragment(self.where_fragment)
+        if filter_error:
+            self.finished.emit(False, filter_error, validation_results)
+            return False
+        self.progress.emit("Checking the attribute filter...")
+        # An exception to the rule at the top of this module: the fragment is
+        # SQL the user typed to run in their own DuckDB, interpolated on
+        # purpose and checked by validate_where_fragment() (core/filters.py)
+        probe = (
+            f"SELECT 1 FROM read_parquet({sql_str(self.read_url)}) "  # nosec B608
+            f"WHERE {apply_where_fragment('', self.where_fragment)} LIMIT 0"
+        )
+        try:
+            conn.execute(probe).fetchall()
+        except Exception as e:
+            if self.killed:
+                return False
+            logger.log(f"Attribute filter rejected: {e}")
+            self.finished.emit(False, f"The attribute filter does not work on this data:\n\n{e}", validation_results)
+            return False
+        return not self.killed
 
     def kill(self):
         """Stop validation; interrupts the running DuckDB query so cancel returns at once."""
