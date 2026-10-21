@@ -167,7 +167,7 @@ def test_a_filter_duckdb_rejects_is_shown_and_the_dialog_stays_open(dialog):
     assert outcomes == [(False, message)]
     assert probes == [f"SELECT 1 FROM read_parquet('{URL}') WHERE (clas = 'school') LIMIT 0"]
     assert dialog.accepted_count == 0
-    assert dialog.validation_worker is None and dialog.validation_thread is None
+    assert dialog.validation_worker is None and dialog.validation_task is None
 
 
 def test_a_filter_duckdb_accepts_closes_the_dialog(dialog):
