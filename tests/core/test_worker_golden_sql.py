@@ -14,7 +14,7 @@ in qgis_io/worker.py is free to change and nothing else is.
 
 The window is in EPSG:4326 and the data has no CRS of its own, so nothing here
 goes through a QGIS transform; the AOI and projected-data paths do, and are
-pinned in gpq_downloader/tests/test_worker_qgis_seams.py.
+pinned in tests/qgis/test_worker_qgis_seams.py.
 """
 
 import duckdb

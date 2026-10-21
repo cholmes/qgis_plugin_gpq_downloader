@@ -30,7 +30,7 @@ jobs:
     # plugins.qgis.org runs bandit over every uploaded plugin and publishes the
     # result on the plugin's security tab, so a finding that lands on main is
     # already public by the time a release is cut. Run the same scan here, over
-    # what the zip ships: gpq_downloader/ without its tests.
+    # what the zip ships: gpq_downloader/.
     #
     # A false positive is waived with a `# nosec <id>` comment on the line, with
     # the reason directly above it -- bandit reads those from the source, so the
@@ -47,7 +47,7 @@ jobs:
     # Bandit warns "nosec encountered, but no failed test" for every line of a
     # multi-line statement it did suppress. That noise is expected; the exit
     # code is what fails the job.
-    - run: bandit -r gpq_downloader/ -x gpq_downloader/tests
+    - run: bandit -r gpq_downloader/
 
   core-headless:
     # The core suite has to run on plain Python: macOS devs cannot import qgis

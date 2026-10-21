@@ -19,7 +19,7 @@ def test_plugin_loads_and_adds_its_button_without_duckdb():
         import sys
         sys.modules["duckdb"] = None  # makes `import duckdb` raise ImportError
         sys.path.insert(0, {REPO!r})
-        sys.path.insert(0, {os.path.join(REPO, "gpq_downloader", "tests")!r})
+        sys.path.insert(0, {os.path.join(REPO, "tests", "qgis")!r})
         from unittest.mock import MagicMock
         from qgis.core import QgsApplication
         app = QgsApplication([], False)

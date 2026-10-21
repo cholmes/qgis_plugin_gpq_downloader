@@ -33,7 +33,7 @@ from gpq_downloader.utils import (
     use_lon_lat_axis_order,
 )
 
-DATA = os.path.join(os.path.dirname(__file__), "..", "..", "gpq_downloader", "tests", "data")
+DATA = os.path.join(os.path.dirname(__file__), "..", "qgis", "data")
 DATA = os.path.normpath(DATA)
 
 COVERING = {"bbox": {

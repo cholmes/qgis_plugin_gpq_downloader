@@ -1,7 +1,7 @@
 """Characterization of the partition-extent decoders and the Overture STAC lookup.
 
 The values are what the code computes today (checked against the files where
-the existing tests in gpq_downloader/tests/test_s3_partitions.py say so); a
+the existing tests in tests/qgis/test_s3_partitions.py say so); a
 move that changes any of them changes which files a download reads.
 """
 
