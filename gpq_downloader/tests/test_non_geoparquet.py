@@ -44,8 +44,8 @@ class TestNonGeoParquetHandling:
             metadata_dict = {k.decode(): v.decode() for k, v in metadata.items()}
             assert "geo" not in metadata_dict
     
-    @patch('gpq_downloader.utils.transform_bbox_to_4326')
-    @patch('gpq_downloader.utils.duckdb.connect')
+    @patch('gpq_downloader.qgis_io.worker.transform_bbox_to_4326')
+    @patch('gpq_downloader.qgis_io.worker.duckdb.connect')
     def test_worker_handles_non_geoparquet(self, mock_connect, mock_transform_bbox, non_geoparquet_file, tmp_path):
         """Test that Worker can process non-GeoParquet files with geometry."""
         # Mock connection
@@ -121,8 +121,8 @@ class TestNonGeoParquetHandling:
         # Verify finished signal was emitted
         worker.finished.emit.assert_called_once()
     
-    @patch('gpq_downloader.utils.transform_bbox_to_4326')
-    @patch('gpq_downloader.utils.duckdb.connect')
+    @patch('gpq_downloader.qgis_io.worker.transform_bbox_to_4326')
+    @patch('gpq_downloader.qgis_io.worker.duckdb.connect')
     def test_non_geoparquet_spatial_query(self, mock_connect, mock_transform_bbox, non_geoparquet_file, tmp_path):
         """Test spatial filtering works without bbox column."""
         mock_conn = MagicMock()
@@ -234,7 +234,7 @@ class TestNonGeoParquetHandling:
         os.environ.get('SKIP_INTEGRATION_TESTS', 'false').lower() == 'true',
         reason="Skipping integration tests"
     )
-    @patch('gpq_downloader.utils.transform_bbox_to_4326')
+    @patch('gpq_downloader.qgis_io.worker.transform_bbox_to_4326')
     def test_end_to_end_remote_non_geoparquet(self, mock_transform_bbox):
         """End-to-end test downloading and processing remote non-geoparquet file."""
         dataset_url = "https://data.source.coop/cholmes/aois/non_geoparquet_with_geometry.parquet"

@@ -103,7 +103,7 @@ def test_plugin_cancel_download(qgs_app, mock_iface):
         plugin.worker.kill.assert_called_once()
         mock_cleanup.assert_called_once()
 
-@patch('gpq_downloader.plugin.QgsVectorLayer')
+@patch('gpq_downloader.qgis_io.layers.QgsVectorLayer')
 def test_plugin_load_layer_success(mock_vector_layer, qgs_app, mock_iface):
     """Test successful layer loading"""
     plugin = QgisPluginGeoParquet(mock_iface)
@@ -116,11 +116,11 @@ def test_plugin_load_layer_success(mock_vector_layer, qgs_app, mock_iface):
     # Setup mock project
     mock_project = MagicMock()
     
-    with patch('gpq_downloader.plugin.QgsProject.instance', return_value=mock_project):
+    with patch('gpq_downloader.qgis_io.layers.QgsProject.instance', return_value=mock_project):
         plugin.load_layer("test.gpkg")
         mock_project.addMapLayer.assert_called_once_with(mock_layer)
 
-@patch('gpq_downloader.plugin.QgsVectorLayer')
+@patch('gpq_downloader.qgis_io.layers.QgsVectorLayer')
 def test_plugin_load_layer_invalid(mock_vector_layer, qgs_app, mock_iface):
     """Test loading invalid layer"""
     plugin = QgisPluginGeoParquet(mock_iface)
@@ -130,7 +130,7 @@ def test_plugin_load_layer_invalid(mock_vector_layer, qgs_app, mock_iface):
     mock_layer.isValid.return_value = False
     mock_vector_layer.return_value = mock_layer
     
-    with patch('gpq_downloader.plugin.QMessageBox.critical') as mock_critical:
+    with patch('gpq_downloader.qgis_io.layers.QMessageBox.critical') as mock_critical:
         plugin.load_layer("test.gpkg")
         mock_critical.assert_called_once()
         assert mock_critical.call_args[0][0] == mock_iface.mainWindow()
