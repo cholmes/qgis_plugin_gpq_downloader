@@ -292,9 +292,11 @@ class TestNonGeoParquetHandling:
                     if key == b"geo":
                         has_bbox = True  # Would need more parsing to get actual bbox column
                         break
-            except:
+            except Exception:
+                # A file with no key-value metadata at all is one of the cases
+                # under test, so this is a result, not a failure
                 pass
-            
+
             conn.close()
             
             # Create validation results based on our checks

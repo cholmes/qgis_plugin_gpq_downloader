@@ -127,8 +127,9 @@ class QgisPluginGeoParquet:
             return
         try:
             self.iface.messageBar().popWidget(self._duckdb_message)
-        except Exception:
-            pass  # the user may already have dismissed it
+        except RuntimeError:
+            # The user already dismissed it, so Qt has deleted the widget
+            pass
         self._duckdb_message = None
 
     def install_duckdb(self):

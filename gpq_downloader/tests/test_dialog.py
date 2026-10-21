@@ -128,6 +128,45 @@ def _layer_with_features(mock_iface):
     return layer, canvas
 
 
+def test_disconnect_selection_changed_removes_the_handler(qgs_app, mock_iface):
+    """The one thing the helper has to do: take our slot off the signal."""
+    dialog = DataSourceDialog(None, mock_iface)
+    layer = MagicMock()
+
+    dialog._disconnect_selection_changed(layer)
+
+    layer.selectionChanged.disconnect.assert_called_once_with(dialog.on_selection_changed)
+
+
+@pytest.mark.parametrize(
+    "layer, case",
+    [
+        (None, "no active layer"),
+        (object(), "a layer with no selection to change, such as a raster"),
+        (MagicMock(**{"selectionChanged.disconnect.side_effect": RuntimeError}), "deleted layer"),
+    ],
+)
+def test_disconnect_selection_changed_tolerates(qgs_app, mock_iface, layer, case):
+    """Callers disconnect before connecting and while tearing an AOI mode down,
+    so none of these states is an error."""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    dialog._disconnect_selection_changed(layer)  # must not raise
+
+
+def test_disconnect_selection_changed_tolerates_a_slot_never_connected(qgs_app, mock_iface):
+    """PyQt itself raises TypeError here, which a MagicMock layer cannot show."""
+    dialog = DataSourceDialog(None, mock_iface)
+    layer = QgsVectorLayer("Polygon?crs=EPSG:4326", "never_connected", "memory")
+
+    dialog._disconnect_selection_changed(layer)  # must not raise
+
+    # And it is a real disconnect once there is something to disconnect
+    layer.selectionChanged.connect(dialog.on_selection_changed)
+    dialog._disconnect_selection_changed(layer)
+    dialog._disconnect_selection_changed(layer)  # now off again, still fine
+
+
 def test_finish_feature_selection_clears_selection_keeps_aoi(qgs_app, mock_iface):
     """Select Features: the selection highlight is cleared, the AOI is kept."""
     layer, _canvas = _layer_with_features(mock_iface)
