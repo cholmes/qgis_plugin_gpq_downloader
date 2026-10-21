@@ -265,7 +265,7 @@ def test_message_level_returns_an_enum_not_an_int():
         assert type(level) is not int, f"{name} resolved to a plain int"
 
 
-@pytest.mark.parametrize("module", ["dialog", "gui/extent", "plugin"])
+@pytest.mark.parametrize("module", ["gui/dialog", "gui/extent", "plugin"])
 def test_no_bare_int_message_levels_in_source(module):
     """Every pushMessage/pushWidget passes a real message level. A bare int here
     raised TypeError in QGIS 4 but worked in QGIS 3, so only Qt6 catches it."""
@@ -309,7 +309,7 @@ def test_no_bare_qstyle_pixmaps_in_source():
     root = pathlib.Path(__file__).resolve().parent.parent
     offenders = [
         f"{name}:{i}"
-        for name in ("dialog.py", "gui/extent.py")
+        for name in ("gui/dialog.py", "gui/extent.py")
         for i, line in enumerate((root / name).read_text().splitlines(), 1)
         if re.search(r"QStyle\.SP_", line)
     ]

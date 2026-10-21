@@ -19,7 +19,7 @@ import datetime
 from pathlib import Path
 
 from . import duckdb_setup
-from .dialog import DataSourceDialog
+from .gui.dialog import DataSourceDialog
 from .gui import settings_store
 from .logger import message_level
 from .utils import Worker
