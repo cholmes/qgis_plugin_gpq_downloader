@@ -15,6 +15,7 @@ except ImportError:
     duckdb = None
 
 from . import logger
+from .core.presets import load_presets
 
 # Re-exported from gpq_downloader.core, where this code moved (#195), so
 # existing `from gpq_downloader.utils import ...` and `utils.<name>` uses keep
@@ -886,10 +887,7 @@ class ValidationWorker(QObject):
         self.killed = False
         self.conn = None  # kept so kill() can interrupt a running query
 
-        base_path = os.path.dirname(os.path.abspath(__file__))
-        presets_path = os.path.join(base_path, "data", "presets.json")
-        with open(presets_path, "r") as f:
-            self.PRESET_DATASETS = json.load(f)
+        self.PRESET_DATASETS = load_presets()
 
     def run(self):
         # Initialize validation results with default values
