@@ -595,8 +595,11 @@ class Worker(QObject):
     percent = pyqtSignal(int)
     file_size_warning = pyqtSignal(float)  # Signal for file size warnings (in MB)
 
-    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None, clip_to_area=False):
+    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None, clip_to_area=False, connection_factory=None):
         super().__init__()
+        # Opens the DuckDB connection run() uses: duckdb.connect unless a test
+        # passes a stand-in that records the SQL
+        self.connection_factory = connection_factory
         self.dataset_url = dataset_url
         self.read_url = dataset_url  # what DuckDB reads; set by resolve_dataset_url()
         self.extent = extent
@@ -633,10 +636,11 @@ class Worker(QObject):
                 # Install and load the spatial extension
                 self.progress.emit(f"Loading spatial extension{layer_info}...")
 
+                connect = self.connection_factory or duckdb.connect
                 if self.output_file.lower().endswith('.duckdb'):
-                    conn = duckdb.connect(self.output_file)  # Connect directly to output file
+                    conn = connect(self.output_file)  # Connect directly to output file
                 else:
-                    conn = duckdb.connect()
+                    conn = connect()
                 conn = CancellableConnection(conn, self)
                 self.conn = conn
 

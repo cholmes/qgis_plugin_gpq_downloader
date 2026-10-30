@@ -25,9 +25,12 @@ dependencies = [
 packages = ["gpq_downloader"]
 
 [tool.pytest.ini_options]
-testpaths = ["gpq_downloader/tests", "scripts/tests"]
+testpaths = ["gpq_downloader/tests", "scripts/tests", "tests"]
 python_files = "test_*.py"
-addopts = "--cov=gpq_downloader"
+# The coverage floor is the ratchet from #194: CI measured 70% with the
+# characterization suite, and the gate sits one point under so a rounding
+# wobble never fails a run. It only moves up (#198 raises it 15 points by 1.0).
+addopts = "--cov=gpq_downloader --cov-fail-under=69"
 markers = [
     "integration: needs network access or real remote data",
 ]
