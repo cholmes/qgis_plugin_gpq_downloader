@@ -59,8 +59,11 @@ class WorkerTask(QgsTask):
         return True
 
     def cancel(self):
-        # Also reached from the task manager: its cancel button, or QGIS closing
-        self.worker.kill()
+        # Also reached from the task manager: its cancel button, or QGIS
+        # closing - possibly after finished() has already dropped the worker
+        worker = self.worker
+        if worker is not None:
+            worker.kill()
         super().cancel()
 
     def finished(self, result):

@@ -235,6 +235,21 @@ def test_overture_pruning(overture_stac, files, bbox, expected):
     assert conn.statements == [glob_sql(OVERTURE_GLOB)]
 
 
+def test_overture_pruning_keeps_an_antimeridian_crossing_bbox(overture_stac):
+    """A STAC bbox with xmin > xmax crosses the antimeridian (GeoJSON
+    convention): it covers both sides, and was wrongly pruned before."""
+    overture._overture_extent_cache[OVERTURE_KEY][2] = (170.0, -10.0, -170.0, 10.0)
+    conn = lister([part(0), part(1), part(2)])
+    east = parquet_source_for_bbox(conn, OVERTURE_GLOB, Rect(175, -1, 176, 1))
+    assert east is not None and part(2) in east
+    conn = lister([part(0), part(1), part(2)])
+    west = parquet_source_for_bbox(conn, OVERTURE_GLOB, Rect(-176, -1, -175, 1))
+    assert west is not None and part(2) in west
+    conn = lister([part(0), part(1), part(2)])
+    outside = parquet_source_for_bbox(conn, OVERTURE_GLOB, Rect(20, -1, 21, 1))
+    assert outside is None or part(2) not in outside
+
+
 def test_overture_pruning_ignores_file_name_extents(overture_stac):
     """Overture URLs are pruned only by part number: a quadkey-looking name is
     not decoded, and with no part number it makes the whole glob the answer."""

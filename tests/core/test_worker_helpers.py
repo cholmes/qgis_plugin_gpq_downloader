@@ -192,18 +192,6 @@ def test_estimate_file_size_with_only_a_geometry_column():
     assert "'properties', json_object() )" in squash(conn.statements[2])
 
 
-# --- process_schema_columns (not called by run()) -------------------------------
-
-def test_process_schema_columns():
-    schema = describe(
-        ("id", "BIGINT"), ("s", "STRUCT(a INT)"), ("m", "MAP(VARCHAR, INT)"), ("l", "VARCHAR[]"),
-        ("u", "UTINYINT"), ("g", "BLOB"),
-    )
-    assert make_worker().process_schema_columns(schema) == [
-        '"id"', 'TO_JSON("s") AS "s"', 'TO_JSON("m") AS "m"', "array_to_string(\"l\", ', ') AS \"l\"",
-        'CAST("u" AS INTEGER) AS "u"', '"g"',
-    ]
-
 
 # --- Cancellation -----------------------------------------------------------------
 

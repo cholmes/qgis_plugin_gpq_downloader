@@ -19,7 +19,7 @@ import datetime
 from pathlib import Path
 
 from .qgis_io import duckdb_setup, layers
-from .gui.dialog import DataSourceDialog
+from .gui.dialog import DataSourceDialog, ReleaseLookupError
 from .gui import settings_store
 from .logger import message_level
 from .qgis_io.manager import DownloadManager
@@ -211,8 +211,15 @@ class QgisPluginGeoParquet:
 
     def handle_dialog_accepted(self, dialog):
         """Handle the dialog being accepted"""
-        # Get the selected URLs from the dialog
-        urls = dialog.get_urls()
+        # Get the selected URLs from the dialog. The dialog looked the release
+        # up once already and caches it, but the lookup can still fail here
+        # (fresh dialog state in tests, or a preset path that skipped OK's
+        # call), and an exception must not escape a Qt slot.
+        try:
+            urls = dialog.get_urls()
+        except ReleaseLookupError as e:
+            QMessageBox.warning(self.iface.mainWindow(), "Download Error", str(e))
+            return
         
         # Get the custom extent from the dialog if available, otherwise use map canvas extent
         extent = dialog.get_current_extent() or self.iface.mapCanvas().extent()
@@ -289,11 +296,20 @@ class QgisPluginGeoParquet:
         # for one still waiting, which starts once this box is closed
         if not self.downloads.waiting:
             self._close_progress_dialog()
-        QMessageBox.critical(self.iface.mainWindow(), "Error", message)
+        box = QMessageBox(
+            QMessageBox.Icon.Critical, "Error", message,
+            QMessageBox.StandardButton.Ok, self.iface.mainWindow(),
+        )
+        # The message can quote remote file metadata; never render it as HTML
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.exec()
 
     def update_progress(self, message):
-        if hasattr(self, "progress_dialog"):
-            self.progress_dialog.setLabelText(message)
+        if getattr(self, "progress_dialog", None) is not None:
+            try:
+                self.progress_dialog.setLabelText(message)
+            except RuntimeError:
+                pass  # Qt already deleted it, with its parent
 
     def cancel_download(self):
         """Cancel: stop the running download and drop every one waiting."""
@@ -446,9 +462,12 @@ class QgisPluginGeoParquet:
     def _update_progress_title(self):
         if self._progress_open:
             waiting = self.downloads.waiting
-            self.progress_dialog.setWindowTitle(
-                f"Downloading Data ({waiting} waiting)" if waiting else "Downloading Data"
-            )
+            try:
+                self.progress_dialog.setWindowTitle(
+                    f"Downloading Data ({waiting} waiting)" if waiting else "Downloading Data"
+                )
+            except RuntimeError:
+                pass  # Qt already deleted it, with its parent
 
     def _close_progress_dialog(self):
         self._progress_open = False

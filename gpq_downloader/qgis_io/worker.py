@@ -72,7 +72,6 @@ class Worker(QObject):
     load_layer = pyqtSignal(str)
     info = pyqtSignal(str)
     progress = pyqtSignal(str)
-    percent = pyqtSignal(int)
     file_size_warning = pyqtSignal(float)  # Signal for file size warnings (in MB)
 
     def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None, clip_to_area=False, connection_factory=None, *, where_fragment=None):
@@ -121,6 +120,11 @@ class Worker(QObject):
 
             conn = None
             copy_started = False  # only an export this run started is removed on cancel
+            # DuckDB writes parquet to tmp_<name> when overwriting an existing
+            # file; an unrelated file already called that is not ours to remove
+            out_dir, out_name = os.path.split(self.output_file)
+            tmp_output = os.path.join(out_dir, "tmp_" + out_name)
+            tmp_preexisting = os.path.exists(tmp_output)
             try:
                 # Install and load the spatial extension
                 self.progress.emit(f"Loading spatial extension{layer_info}...")
@@ -445,9 +449,10 @@ class Worker(QObject):
                 # Don't leave a half-written export behind after a cancel
                 # (.duckdb is the user's database file, so it is never removed)
                 if self.killed and copy_started and not self.output_file.lower().endswith('.duckdb'):
-                    # DuckDB writes parquet to tmp_<name> when overwriting an existing file
-                    out_dir, out_name = os.path.split(self.output_file)
-                    for path in (self.output_file, os.path.join(out_dir, "tmp_" + out_name)):
+                    partial = [self.output_file]
+                    if not tmp_preexisting:
+                        partial.append(tmp_output)
+                    for path in partial:
                         try:
                             if os.path.exists(path):
                                 os.remove(path)
@@ -592,27 +597,6 @@ class Worker(QObject):
             logger.log(f"Error estimating file size: {str(e)}", 2)
             return 0
 
-    def process_schema_columns(self, schema_result):
-        """Process schema columns and return formatted SELECT clause"""
-        columns = []
-        for row in schema_result:
-            col_name = row[0]
-            col_type = row[1]
-            quoted_col_name = sql_ident(col_name)
-
-            if "STRUCT" in col_type.upper() or "MAP" in col_type.upper():
-                columns.append(f"TO_JSON({quoted_col_name}) AS {quoted_col_name}")
-            elif "[]" in col_type:
-                columns.append(
-                    f"array_to_string({quoted_col_name}, ', ') AS {quoted_col_name}"
-                )
-            elif col_type.upper() == "UTINYINT":
-                columns.append(
-                    f"CAST({quoted_col_name} AS INTEGER) AS {quoted_col_name}"
-                )
-            else:
-                columns.append(quoted_col_name)
-        return columns
 
 
 class ValidationWorker(QObject):

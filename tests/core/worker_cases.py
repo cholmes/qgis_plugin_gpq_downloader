@@ -160,7 +160,7 @@ def serve_stac(monkeypatch, body):
     return requests
 
 
-SIGNALS = ("progress", "info", "error", "load_layer", "finished", "file_size_warning", "percent")
+SIGNALS = ("progress", "info", "error", "load_layer", "finished", "file_size_warning")
 
 
 def run_worker(source, output_file, monkeypatch, *, responder=None, clip=False, validation_results=None,

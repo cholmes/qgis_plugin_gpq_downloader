@@ -257,6 +257,31 @@ class LateValidation(QObject):
         self.killed = True  # too late to stop the emit
 
 
+def test_a_cancelled_validation_reporting_late_does_not_accept_the_dialog(dialog):
+    """Cancel, then let the worker report success with no second validation
+    started: the late success must not accept the dialog and start the
+    download the user just cancelled."""
+    LateValidation.made = []
+    outcomes = []
+    dialog.validation_complete.connect(lambda ok, msg, results: outcomes.append(msg))
+    dialog.custom_radio.setChecked(True)
+    with patch("gpq_downloader.gui.dialog.ValidationWorker", LateValidation), \
+            patch("gpq_downloader.gui.dialog.QMessageBox") as boxes:
+        dialog.url_input.setText("https://example.com/first.parquet")
+        dialog.validate_and_accept()
+        first = LateValidation.made[0]
+        assert first.started.wait(30)
+        dialog.cancel_validation()
+
+        first.released.set()
+        assert wait_for(lambda: not any(t.worker is first for t in manager_module._running_tasks))
+        for _ in range(20):
+            QgsApplication.processEvents()
+        assert outcomes == []  # the cancelled one's success is not acted on
+        assert dialog.accepted_count == 0
+    assert not boxes.method_calls, boxes.method_calls
+
+
 def test_a_cancelled_validation_reporting_late_does_not_answer_for_the_next(dialog):
     """Cleanup no longer waits for the worker, so OK can start a second
     validation while the cancelled one is still returning."""

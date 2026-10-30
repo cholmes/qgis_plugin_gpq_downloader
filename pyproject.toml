@@ -55,7 +55,13 @@ include_external_packages = true
 name = "core stays QGIS-free"
 type = "forbidden"
 source_modules = ["gpq_downloader.core"]
-forbidden_modules = ["qgis", "PyQt5", "PyQt6", "osgeo"]
+forbidden_modules = ["qgis", "PyQt5", "PyQt6", "osgeo", "gpq_downloader.gui", "gpq_downloader.qgis_io"]
+
+[[tool.importlinter.contracts]]
+name = "qgis_io does not import the GUI"
+type = "forbidden"
+source_modules = ["gpq_downloader.qgis_io"]
+forbidden_modules = ["gpq_downloader.gui"]
 
 [tool.black]
 line-length = 88

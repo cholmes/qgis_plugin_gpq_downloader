@@ -33,35 +33,6 @@ def test_estimate_file_size(mock_iface, sample_bbox, tmp_path):
     assert estimated_size > 0
     assert isinstance(estimated_size, float)
 
-# Add test for process_schema_columns
-def test_process_schema_columns():
-    """Test schema column processing for different data types"""
-    # Create worker
-    worker = Worker(
-        "https://example.com/test.parquet",
-        QgsRectangle(0, 0, 1, 1),
-        "test.parquet",
-        MagicMock(),
-        {"has_bbox": True}
-    )
-    
-    # Test different column types
-    schema_result = [
-        ("id", "INTEGER", "YES", None, None, None),
-        ("tags", "MAP(VARCHAR, VARCHAR)", "YES", None, None, None),
-        ("names", "STRUCT(primary VARCHAR)", "YES", None, None, None),
-        ("categories", "VARCHAR[]", "YES", None, None, None),
-        ("small_num", "UTINYINT", "YES", None, None, None),
-        ("geometry", "GEOMETRY", "YES", None, None, None)
-    ]
-    
-    columns = worker.process_schema_columns(schema_result)
-    
-    assert len(columns) == 6
-    assert 'TO_JSON("tags")' in columns[1]
-    assert 'TO_JSON("names")' in columns[2]
-    assert 'array_to_string("categories"' in columns[3]
-    assert 'CAST("small_num" AS INTEGER)' in columns[4]
 
 # Add test for needs_validation method
 def test_validation_worker_needs_validation():
