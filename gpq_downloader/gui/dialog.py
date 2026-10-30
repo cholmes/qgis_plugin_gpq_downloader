@@ -37,6 +37,12 @@ from .extent import AoiHighlighter, AreaOfInterestMixin
 # How many OpenStreetMap preset checkboxes go on a row before wrapping.
 OSM_CHECKBOX_COLUMNS = 5
 
+# How many Overture preset checkboxes go on a row before wrapping.
+OVERTURE_CHECKBOX_COLUMNS = 3
+
+# Overture presets whose checkbox label is not just the key title-cased
+OVERTURE_DISPLAY_NAMES = {"building_parts": "Building Parts"}
+
 
 class DataSourceDialog(AreaOfInterestMixin, QDialog):
     validation_complete = pyqtSignal(bool, str, dict)
@@ -139,23 +145,27 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         overture_page = QWidget()
         overture_layout = QVBoxLayout()
 
-        # Create horizontal layout for main checkboxes (first row)
-        checkbox_layout = QHBoxLayout()
+        # A grid, not a row: each new Overture preset would otherwise raise the
+        # dialog's minimum width (#80 made it six)
+        checkbox_layout = QGridLayout()
 
         # Create a widget to hold checkboxes
         self.overture_checkboxes = {}
         for key in self.PRESET_DATASETS["overture"].keys():
             if key not in ["base", "divisions"]:  # Handle base and divisions separately
-                checkbox = QCheckBox(key.title())
+                checkbox = QCheckBox(OVERTURE_DISPLAY_NAMES.get(key) or key.title())
                 self.overture_checkboxes[key] = checkbox
-                checkbox_layout.addWidget(checkbox)
 
-        # Add Divisions to the first row (before Base which has subtypes)
+        # Add Divisions to the first block (before Base which has subtypes)
         self.divisions_checkbox = QCheckBox("Divisions")
         self.overture_checkboxes["divisions"] = self.divisions_checkbox
-        checkbox_layout.addWidget(self.divisions_checkbox)
 
-        # Add the horizontal checkbox layout to main layout
+        for index, checkbox in enumerate(self.overture_checkboxes.values()):
+            checkbox_layout.addWidget(
+                checkbox, index // OVERTURE_CHECKBOX_COLUMNS, index % OVERTURE_CHECKBOX_COLUMNS
+            )
+
+        # Add the checkbox grid to main layout
         overture_layout.addLayout(checkbox_layout)
 
         # Divisions subtype checkboxes (right after first row, shown when Divisions is checked)

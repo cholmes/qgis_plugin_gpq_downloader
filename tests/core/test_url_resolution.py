@@ -52,6 +52,12 @@ PRESET_TABLE = {
         "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings/type=building/*",
         [],
     ),
+    ("overture", "building_parts", "building_part"): (
+        "s3://overturemaps-us-west-2/release/{release}/theme=buildings/type=building_part/*",
+        "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings/type=building_part/*",
+        "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings/type=building_part/*",
+        [],
+    ),
     ("overture", "places", "place"): (
         "s3://overturemaps-us-west-2/release/{release}/theme=places/type=place/*",
         "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=places/type=place/*",
@@ -193,6 +199,20 @@ def test_preset_url_resolution(entry):
     if "url_template" in dataset:
         assert dataset["url_template"].format(release=RELEASE, subtype=subtype) == url
     assert resolve(url) == (expected_url, expected_statements)
+
+
+def test_building_parts_is_its_own_preset_next_to_buildings():
+    """#80: building_part is a separate download, not a type=building* glob."""
+    overture = presets()["overture"]
+    keys = list(overture)
+    assert keys[keys.index("buildings") + 1] == "building_parts"
+    url = overture["building_parts"]["url_template"].format(release=RELEASE)
+    assert url == f"s3://overturemaps-us-west-2/release/{RELEASE}/theme=buildings/type=building_part/*"
+    assert "{subtype}" not in overture["building_parts"]["url_template"]
+    assert url != overture["buildings"]["url_template"].format(release=RELEASE)
+    assert resolve(url) == (url, [])
+    assert overture["building_parts"]["info_url"] == "https://docs.overturemaps.org/reference/buildings/building_part"
+    assert overture["building_parts"]["needs_validation"] is False
 
 
 def test_presets_needs_validation_flags():
