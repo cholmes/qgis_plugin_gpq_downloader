@@ -4,7 +4,7 @@ clip_table(), reproject_table() and estimate_file_size() take the connection
 as an argument, so their exact statements are pinned on a recording
 connection. reproject_table() itself needs no QGIS (it is handed the CRS as
 text); deciding whether to call it does, and that is pinned in
-gpq_downloader/tests/test_worker_qgis_seams.py.
+tests/qgis/test_worker_qgis_seams.py.
 """
 
 import os

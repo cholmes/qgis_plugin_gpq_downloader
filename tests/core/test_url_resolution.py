@@ -4,7 +4,7 @@ These pin what the plugin does today with each kind of URL: which URL DuckDB
 is told to read and the exact statements issued to configure the connection
 for it. The statements are pinned on a recording connection because the s3_*
 settings and S3 secrets need the httpfs extension, which a headless run does
-not have; gpq_downloader/tests/test_minio.py checks the secret on a real one.
+not have; tests/qgis/test_minio.py checks the secret on a real one.
 """
 
 import json

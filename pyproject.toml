@@ -25,7 +25,12 @@ dependencies = [
 packages = ["gpq_downloader", "gpq_downloader.core", "gpq_downloader.gui", "gpq_downloader.qgis_io"]
 
 [tool.pytest.ini_options]
-testpaths = ["gpq_downloader/tests", "scripts/tests", "tests"]
+# tests/qgis must run before tests/core in one pytest process: tests/core
+# loads DuckDB's spatial extension (which carries its own GDAL) and doing that
+# before QgsApplication.initQgis() breaks OGR reads on the QGIS 3.34 image
+# (the GDAL-export tests fail and the run segfaults at exit). This mirrors the
+# pre-move order, where gpq_downloader/tests ran first.
+testpaths = ["tests/qgis", "scripts/tests", "tests/core"]
 python_files = "test_*.py"
 # The coverage floor is the ratchet from #194: CI measured 70% with the
 # characterization suite, and the gate sits one point under so a rounding
@@ -37,7 +42,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["gpq_downloader"]
-omit = ["gpq_downloader/tests/*"]
+omit = ["tests/*"]
 
 [tool.coverage.report]
 exclude_lines = [

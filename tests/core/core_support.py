@@ -69,7 +69,7 @@ def _install_qgis_stubs():
 
         def __init__(self, *args, **kwargs):
             raise NotImplementedError(
-                f"{type(self).__name__} needs the real QGIS; this test belongs in gpq_downloader/tests"
+                f"{type(self).__name__} needs the real QGIS; this test belongs in tests/qgis"
             )
 
         @classmethod

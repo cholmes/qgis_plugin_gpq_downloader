@@ -5,8 +5,8 @@ from qgis.core import QgsApplication, QgsCoordinateReferenceSystem, QgsRectangle
 from qgis.PyQt.QtCore import QObject
 from qgis.PyQt.QtWidgets import QMainWindow
 
-# Add the parent directory to sys.path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add the repo root to sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # Mock QGIS Application
 @pytest.fixture(scope="session")
