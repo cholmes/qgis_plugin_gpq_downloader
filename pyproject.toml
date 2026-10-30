@@ -22,7 +22,7 @@ dependencies = [
 "Bug Tracker" = "https://github.com/yourusername/qgis_plugin_gpq_downloader/issues"
 
 [tool.setuptools]
-packages = ["gpq_downloader", "gpq_downloader.core", "gpq_downloader.gui"]
+packages = ["gpq_downloader", "gpq_downloader.core", "gpq_downloader.gui", "gpq_downloader.qgis_io"]
 
 [tool.pytest.ini_options]
 testpaths = ["gpq_downloader/tests", "scripts/tests", "tests"]

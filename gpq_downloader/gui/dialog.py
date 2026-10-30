@@ -27,7 +27,8 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread
 
-from ..utils import MINIO_URL_FORMAT, ValidationWorker
+from ..qgis_io.worker import ValidationWorker
+from ..utils import MINIO_URL_FORMAT
 from ..core.presets import load_presets
 from . import settings_store
 from .extent import AoiHighlighter, AreaOfInterestMixin

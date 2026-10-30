@@ -6,7 +6,7 @@ import sys
 import textwrap
 from unittest.mock import MagicMock
 
-from gpq_downloader import duckdb_setup
+from gpq_downloader.qgis_io import duckdb_setup
 from gpq_downloader.plugin import QgisPluginGeoParquet, custom_file_stem
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

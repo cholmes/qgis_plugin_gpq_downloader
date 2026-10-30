@@ -10,7 +10,7 @@ off that matrix: no data, errors, clipping, GeoJSON's size check, DuckDB.
 
 Statements are compared after squash(), which only collapses the whitespace
 between tokens outside quotes, so the indentation of the multi-line f-strings
-in utils.py is free to change and nothing else is.
+in qgis_io/worker.py is free to change and nothing else is.
 
 The window is in EPSG:4326 and the data has no CRS of its own, so nothing here
 goes through a QGIS transform; the AOI and projected-data paths do, and are

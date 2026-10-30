@@ -1,11 +1,12 @@
-"""Make gpq_downloader.utils importable without QGIS, and the test doubles the
-headless tests share. conftest.py imports this before any test module, so the
-stand-ins are in place before gpq_downloader is first imported.
+"""Make gpq_downloader.utils and qgis_io importable without QGIS, and the test
+doubles the headless tests share. conftest.py imports this before any test
+module, so the stand-ins are in place before gpq_downloader is first imported.
 
-utils.py imports qgis.core and qgis.PyQt.QtCore at module level. The logic
-these tests pin (URL resolution, partition pruning, metadata parsing, the SQL
-the Worker issues) does not need QGIS, so when qgis cannot be imported a few
-minimal stand-ins are put in sys.modules before gpq_downloader is imported.
+utils.py and qgis_io/ import qgis.core and qgis.PyQt.QtCore at module level.
+The logic these tests pin (URL resolution, partition pruning, metadata
+parsing, the SQL the Worker issues) does not need QGIS, so when qgis cannot be
+imported a few minimal stand-ins are put in sys.modules before gpq_downloader
+is imported.
 
 When the real qgis is importable (the QGIS CI containers) nothing is stubbed,
 and the same tests run against it. So the stubs only provide what these tests
@@ -151,12 +152,12 @@ except ImportError:
     QGIS_STUBBED = True
 
 
-from gpq_downloader import utils  # noqa: E402
+from gpq_downloader.qgis_io.crs import QgsCoordinateReferenceSystem  # noqa: E402
 
 
 class Rect:
-    """What utils reads from a QgsRectangle. QgsRectangle stores doubles, so the
-    coordinates are floats here too: they are formatted into the SQL."""
+    """What the Worker reads from a QgsRectangle. QgsRectangle stores doubles,
+    so the coordinates are floats here too: they are formatted into the SQL."""
 
     def __init__(self, xmin, ymin, xmax, ymax):
         self._coords = tuple(float(v) for v in (xmin, ymin, xmax, ymax))
@@ -178,7 +179,7 @@ class FakeIface:
     """iface whose map canvas is in EPSG:4326, so the Worker transforms nothing."""
 
     def __init__(self):
-        crs = utils.QgsCoordinateReferenceSystem("EPSG:4326")
+        crs = QgsCoordinateReferenceSystem("EPSG:4326")
         settings = types.SimpleNamespace(destinationCrs=lambda: crs)
         canvas = types.SimpleNamespace(mapSettings=lambda: settings)
         self.mapCanvas = lambda: canvas
@@ -230,7 +231,7 @@ def squash(sql):
     """Collapse whitespace outside quoted literals and identifiers.
 
     The golden tests compare every token of the SQL; only the indentation of the
-    multi-line f-strings in utils.py is not pinned.
+    multi-line f-strings in qgis_io/worker.py is not pinned.
     """
     if isinstance(sql, tuple):
         return (squash(sql[0]), sql[1])
