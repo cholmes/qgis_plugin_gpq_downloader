@@ -26,6 +26,12 @@ from gpq_downloader.core.filters import apply_where_fragment, validate_where_fra
     "  height > 10  ",
     "a - b > 1",  # a single minus is not a comment
     "a / 2 > 1",  # nor a single slash
+    r"name = E'O\'Brien'",  # E'' strings use backslash escapes
+    r"name = e'a\\b'",
+    r"regexp_matches(name, '^\d+')",  # backslash in a plain string is literal
+    "note = 'select few'",  # keywords inside a literal are fine
+    "src = 'read_text(x)'",  # and so are function names
+    "selected_class = 'x'",  # a column that only contains "select"
 ])
 def test_valid_fragments_pass(fragment):
     assert validate_where_fragment(fragment) is None
@@ -54,6 +60,22 @@ def test_an_empty_fragment_is_no_filter_not_an_error(fragment):
     ("a = 1)", "')' without a matching '('"),
     # would close the parenthesis apply_where_fragment() opens
     ("1=1) OR (1=1", "')' without a matching '('"),
+    # dollar-quoted strings are refused rather than lexed: a paren inside
+    # $$...$$ would miscount the balance and let a real ')' close the wrapper
+    ("$$($$ = 'z') OR (1=1 AND 'a' = 'a' AND $$)$$ <> 'w'", "cannot contain '$'"),
+    ("name = $$O'Brien$$", "cannot contain '$'"),
+    # an E'' escape hiding a quote cannot smuggle parens past the count
+    (r"E'\'(' = 'x') OR (1=1", "')' without a matching '('"),
+    (r"name = E'O\'Brien", "unclosed string"),
+    # the tripwire: no subqueries, no file/settings/network functions
+    ("(SELECT content FROM read_text('/etc/hosts')) LIKE '%x%'", "cannot contain SELECT"),
+    ("x IN (select 1)", "cannot contain SELECT"),
+    ("(TABLE t) IS NOT NULL", "cannot contain TABLE"),
+    ("read_text('/etc/passwd') IS NOT NULL", "cannot call read_text()"),
+    ("len(read_csv('http://evil/x')) > 0", "cannot call read_csv()"),
+    ("glob('*') IS NOT NULL", "cannot call glob()"),
+    ("current_setting('s3_secret_access_key') = ''", "cannot call current_setting()"),
+    ("duckdb_secrets() IS NOT NULL", "cannot call duckdb_secrets()"),
 ])
 def test_rejected_fragments_say_why(fragment, message):
     error = validate_where_fragment(fragment)
