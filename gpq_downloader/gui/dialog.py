@@ -307,7 +307,8 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         filter_tooltip = (
             "Optional. A DuckDB SQL condition on the data's own columns, without WHERE. "
             "Only features that match it and fall in the area are downloaded "
-            "(it is ANDed with the spatial filter). Leave empty to download everything in the area."
+            "(it is ANDed with the spatial filter). Leave empty to download everything in the area. "
+            "The condition runs as SQL in your local DuckDB, so only paste filters from sources you trust."
         )
         filter_label.setToolTip(filter_tooltip)
         self.filter_input.setToolTip(filter_tooltip)
