@@ -239,8 +239,6 @@ class QgisPluginGeoParquet:
             
             # Generate filename based on the URL and source type
             if dialog.overture_radio.isChecked():
-                # Extract theme from URL
-                theme = url.split('theme=')[1].split('/')[0]
                 filename = f"{overture_file_stem(url)}_{current_date}.parquet"
             elif dialog.sourcecoop_radio.isChecked():
                 dataset_name = dialog.sourcecoop_combo.currentText()
@@ -258,7 +256,7 @@ class QgisPluginGeoParquet:
             # Show save file dialog
             output_file, selected_filter = QFileDialog.getSaveFileName(
                 self.iface.mainWindow(),
-                f"Save Data for {theme if dialog.overture_radio.isChecked() else 'dataset'}",
+                f"Save Data for {(overture_layer_name(url) or 'dataset') if dialog.overture_radio.isChecked() else 'dataset'}",
                 default_save_path,
                 "GeoParquet (*.parquet);;DuckDB Database (*.duckdb);;GeoPackage (*.gpkg);;FlatGeobuf (*.fgb);;GeoJSON (*.geojson)"
             )

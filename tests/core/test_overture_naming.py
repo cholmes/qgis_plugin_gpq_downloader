@@ -21,7 +21,9 @@ def url(theme, type_str):
     ("places", "place", "overture_places", "Overture Places"),
     ("transportation", "segment", "overture_transportation", "Overture Transportation"),
     ("addresses", "*", "overture_addresses", "Overture Addresses"),
-    ("divisions", "division_area", "overture_divisions", "Overture Divisions"),
+    ("divisions", "division", "overture_divisions", "Overture Divisions"),
+    ("divisions", "division_area", "overture_division_areas", "Overture Division Areas"),
+    ("divisions", "division_boundary", "overture_division_boundaries", "Overture Division Boundaries"),
     ("base", "water", "overture_base_water", "Overture Base - Water"),
     ("base", "land_use", "overture_base_land_use", "Overture Base - Land_Use"),
 ])
@@ -34,6 +36,18 @@ def test_building_parts_do_not_share_a_name_with_buildings():
     buildings, parts = url("buildings", "building"), url("buildings", "building_part")
     assert overture_file_stem(buildings) != overture_file_stem(parts)
     assert overture_layer_name(buildings) != overture_layer_name(parts)
+
+
+def test_the_divisions_subtypes_do_not_share_a_name():
+    urls = [url("divisions", t) for t in ("division", "division_area", "division_boundary")]
+    stems = [overture_file_stem(u) for u in urls]
+    layers = [overture_layer_name(u) for u in urls]
+    assert len(set(stems)) == 3
+    assert len(set(layers)) == 3
+
+
+def test_a_url_without_a_theme_still_gets_a_file_stem():
+    assert overture_file_stem("s3://overturemaps-us-west-2/release/x/*") == "overture"
 
 
 def test_a_url_without_a_type_is_named_by_its_theme():
