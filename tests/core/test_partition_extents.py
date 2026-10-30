@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from gpq_downloader import utils
+from gpq_downloader.core import overture
 from gpq_downloader.utils import (
     extent_from_file_name,
     overture_part_extents,
@@ -161,7 +161,7 @@ def stac(monkeypatch):
             raise server.body
         return FakeResponse(json.dumps(server.body).encode())
 
-    monkeypatch.setattr(utils.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(overture.urllib.request, "urlopen", urlopen)
     return server
 
 
@@ -190,7 +190,7 @@ def test_overture_part_extents_is_cached_per_release_theme_and_type(stac):
     # Any URL under the same release/theme/type uses the cached result
     assert overture_part_extents(BUILDINGS + "part-00000-x.parquet") is first
     assert len(stac.requests) == 1
-    assert utils._overture_extent_cache == {("2026-09-23.1", "buildings", "building"): {0: (0, 0, 1, 1)}}
+    assert overture._overture_extent_cache == {("2026-09-23.1", "buildings", "building"): {0: (0, 0, 1, 1)}}
     overture_part_extents(BUILDINGS.replace("2026-09-23.1", "2026-10-22.0"))
     assert [u for u, _ in stac.requests] == [
         COLLECTION_URL,

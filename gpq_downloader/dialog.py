@@ -1,5 +1,3 @@
-import json
-
 import requests
 
 from qgis.PyQt.QtWidgets import (
@@ -31,6 +29,7 @@ from qgis.core import QgsSettings, QgsRectangle, QgsGeometry, QgsApplication, Qg
 from .logger import message_level
 import os
 from .utils import MINIO_URL_FORMAT, ValidationWorker
+from .core.presets import load_presets
 from .map_tools import PolygonMapTool, AoiHighlighter, RectangleMapTool
 
 # How many OpenStreetMap preset checkboxes go on a row before wrapping.
@@ -89,10 +88,7 @@ class DataSourceDialog(QDialog):
         self.setMinimumWidth(500)
 
 
-        base_path = os.path.dirname(os.path.abspath(__file__))
-        presets_path = os.path.join(base_path, "data", "presets.json")
-        with open(presets_path, "r") as f:
-            self.PRESET_DATASETS = json.load(f)
+        self.PRESET_DATASETS = load_presets()
 
         # Create main layout
         layout = QVBoxLayout()

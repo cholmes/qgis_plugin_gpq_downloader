@@ -7,7 +7,7 @@ real qgis is not importable, before anything imports gpq_downloader.
 import core_support  # noqa: F401  (must run before gpq_downloader is imported)
 import pytest
 
-from gpq_downloader import utils
+from gpq_downloader.core import overture
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +24,7 @@ def no_network(monkeypatch):
         calls.append(url)
         raise OSError(f"network blocked in tests: {url}")
 
-    monkeypatch.setattr(utils.urllib.request, "urlopen", urlopen)
-    monkeypatch.setattr(utils, "_overture_extent_cache", {})
+    monkeypatch.setattr(overture.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(overture, "_overture_extent_cache", {})
     yield calls
     assert not calls, f"unexpected network requests: {calls}"
