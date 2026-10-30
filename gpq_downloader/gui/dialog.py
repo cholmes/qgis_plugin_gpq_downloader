@@ -29,6 +29,7 @@ from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread
 
 from ..qgis_io.worker import ValidationWorker
 from ..utils import MINIO_URL_FORMAT
+from ..core.filters import validate_where_fragment
 from ..core.presets import load_presets
 from . import settings_store
 from .extent import AoiHighlighter, AreaOfInterestMixin
@@ -296,6 +297,26 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Add Area of Interest group
         layout.addWidget(self.setup_area_of_interest())
 
+        # Attribute filter (#16). Deliberately not saved to QgsSettings like the
+        # checkboxes: a filter left over from a past session would silently
+        # shrink every later download, so it lasts only as long as this dialog.
+        filter_layout = QHBoxLayout()
+        filter_label = QLabel("Attribute filter (SQL):")
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("confidence > 0.9 AND class = 'school'")
+        filter_tooltip = (
+            "Optional. A DuckDB SQL condition on the data's own columns, without WHERE. "
+            "Only features that match it and fall in the area are downloaded "
+            "(it is ANDed with the spatial filter). Leave empty to download everything in the area. "
+            "The condition runs as SQL in your local DuckDB, so only paste filters from sources you trust."
+        )
+        filter_label.setToolTip(filter_tooltip)
+        self.filter_input.setToolTip(filter_tooltip)
+        filter_label.setBuddy(self.filter_input)
+        filter_layout.addWidget(filter_label)
+        filter_layout.addWidget(self.filter_input)
+        layout.addLayout(filter_layout)
+
         # Buttons
         button_layout = QHBoxLayout()
         self.ok_button = QPushButton("OK")
@@ -351,6 +372,10 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         """Show/hide base subtype combo based on selection"""
         self.base_subtype_widget.setVisible(text == "Base")
 
+    def get_where_fragment(self):
+        """The attribute filter as typed, stripped, or None when it is empty."""
+        return self.filter_input.text().strip() or None
+
     def validate_and_accept(self):
         """Validate the input and accept the dialog if valid"""
         urls = self.get_urls()
@@ -358,6 +383,14 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             QMessageBox.warning(
                 self, "Validation Error", "Please select at least one dataset"
             )
+            return
+
+        # The cheap lexical check runs for every source. Only a custom URL is
+        # also tried against DuckDB below; a preset's DuckDB error comes from
+        # the download itself.
+        filter_error = validate_where_fragment(self.filter_input.text())
+        if filter_error:
+            QMessageBox.warning(self, "Validation Error", filter_error)
             return
             
         # Check if the user selected an Area of Interest
@@ -404,7 +437,9 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                 extent = self.current_extent if self.current_extent else self.iface.mapCanvas().extent()
 
                 # Create validation worker
-                self.validation_worker = ValidationWorker(url, self.iface, extent)
+                self.validation_worker = ValidationWorker(
+                    url, self.iface, extent, where_fragment=self.get_where_fragment()
+                )
                 self.validation_thread = QThread()
                 self.validation_worker.moveToThread(self.validation_thread)
 

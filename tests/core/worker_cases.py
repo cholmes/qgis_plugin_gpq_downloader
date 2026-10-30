@@ -164,7 +164,7 @@ SIGNALS = ("progress", "info", "error", "load_layer", "finished", "file_size_war
 
 
 def run_worker(source, output_file, monkeypatch, *, responder=None, clip=False, validation_results=None,
-               layer_name=None, before_run=None):
+               layer_name=None, before_run=None, where_fragment=None):
     """Run a Worker on `source` against a recording connection.
 
     Returns (worker, connection, signals): signals is every emission in order,
@@ -183,7 +183,7 @@ def run_worker(source, output_file, monkeypatch, *, responder=None, clip=False, 
     worker = Worker(
         source.url, WINDOW, output_file, FakeIface(),
         dict(validation_results or {}), layer_name, clip_to_area=clip,
-        connection_factory=connect,
+        connection_factory=connect, where_fragment=where_fragment,
     )
     signals = []
     for name in SIGNALS:

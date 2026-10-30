@@ -551,3 +551,103 @@ def test_the_overture_name_column_test_is_by_substring(monkeypatch):
         'CREATE TABLE download_data AS ( SELECT "names"."primary" as name,"geometry", "street_names" '
         f"FROM read_parquet('{url}') WHERE ST_Intersects(\"geometry\", ST_GeomFromText('{WINDOW_WKT}')) )"
     )
+
+
+# --- The attribute filter (#16) -----------------------------------------------
+#
+# The fragment is ANDed onto the spatial condition of the download, in the one
+# statement that reads the remote data, for every source and format. With no
+# filter the SQL is the golden SQL above, unchanged.
+
+FILTER = "confidence > 0.9"
+
+
+def test_attribute_filter_on_an_overture_geoparquet_download(monkeypatch):
+    output_file = f"{OUT}.parquet"
+    _, conn, signals = run_worker(SOURCES["overture"], output_file, monkeypatch, where_fragment=FILTER)
+    assert statements(conn) == PREAMBLE + setup_statements("overture") + [
+        f"CREATE TABLE download_data AS ( SELECT * FROM read_parquet(['{OVERTURE_PART_1}']) "
+        'WHERE ("bbox".xmin <= 11.0 AND "bbox".xmax >= 10.0 AND "bbox".ymin <= 11.0 AND "bbox".ymax >= 10.0) '
+        "AND (confidence > 0.9) )",
+        COUNT, copy("geometry", output_file, FORMAT_OPTIONS["parquet"]), CLEANUP,
+    ]
+    assert signals == progress() + [("load_layer", output_file), ("finished",)]
+
+
+def test_attribute_filter_on_a_custom_geopackage_download(monkeypatch):
+    """The filter names the file's own columns: the struct is converted to JSON
+    in the SELECT, but WHERE still sees the struct."""
+    output_file = f"{OUT}.gpkg"
+    _, conn, _ = run_worker(
+        SOURCES["custom_https"], output_file, monkeypatch,
+        where_fragment="level >= 2 AND props['kind'] = 'river'",
+    )
+    assert statements(conn) == PREAMBLE + setup_statements("custom_https") + [
+        'CREATE TABLE download_data AS ( SELECT "id", "name", "geom", TO_JSON("geom_bbox") AS "geom_bbox", '
+        'array_to_string("tags", \', \') AS "tags", TO_JSON("props") AS "props", '
+        'CAST("level" AS INTEGER) AS "level" '
+        f"FROM read_parquet('{CUSTOM_URL}') "
+        'WHERE ("geom_bbox".xmin <= 11.0 AND "geom_bbox".xmax >= 10.0 '
+        'AND "geom_bbox".ymin <= 11.0 AND "geom_bbox".ymax >= 10.0) '
+        "AND (level >= 2 AND props['kind'] = 'river') )",
+        COUNT, copy("geom", output_file, FORMAT_OPTIONS["gpkg"]), CLEANUP,
+    ]
+
+
+def test_attribute_filter_without_a_covering_ands_onto_the_geometry_test(monkeypatch):
+    output_file = f"{OUT}.fgb"
+    _, conn, _ = run_worker(SOURCES["minio"], output_file, monkeypatch, where_fragment=FILTER)
+    assert statements(conn)[len(PREAMBLE) + len(setup_statements("minio"))] == (
+        'CREATE TABLE download_data AS ( SELECT "id", "geometry" '
+        f"FROM read_parquet('{MINIO_S3}') "
+        f"WHERE (ST_Intersects(\"geometry\", ST_GeomFromText('{WINDOW_WKT}'))) AND (confidence > 0.9) )"
+    )
+
+
+def test_attribute_filter_on_wkb_blobs_filters_the_remote_read(monkeypatch):
+    """With WKB in a BLOB and no covering nothing spatial is filtered remotely,
+    but the attribute filter still is; the local geometry test is unchanged."""
+    output_file = f"{OUT}.parquet"
+    _, conn, _ = run_worker(SOURCES["sourcecoop_proxy"], output_file, monkeypatch, where_fragment=FILTER)
+    golden = GOLDEN["sourcecoop_proxy"]
+    assert statements(conn) == PREAMBLE + setup_statements("sourcecoop_proxy") + [
+        f"CREATE TABLE download_data AS ( SELECT * FROM read_parquet('{PROXY_S3}') WHERE (confidence > 0.9) )",
+    ] + golden["after_create"] + [COUNT, copy("geometry", output_file, FORMAT_OPTIONS["parquet"]), CLEANUP]
+
+
+def with_filter(create, fragment):
+    """The golden download statement with `fragment` ANDed onto its WHERE."""
+    head, sep, condition = create.rpartition(" WHERE ")
+    if not sep:  # no spatial condition: the statement ends " )"
+        return f"{create[:-2]} WHERE ({fragment}) )"
+    return f"{head} WHERE ({condition[:-2]}) AND ({fragment}) )"
+
+
+@pytest.mark.parametrize("fmt", ["parquet", "gpkg", "fgb"])
+@pytest.mark.parametrize("source", sorted(GOLDEN))
+def test_attribute_filter_changes_only_the_download_statement(source, fmt, monkeypatch):
+    """Across the matrix the filter touches the remote read and nothing else."""
+    golden = GOLDEN[source]
+    output_file = f"{OUT}.{fmt}"
+    create = golden["create_parquet" if fmt == "parquet" else "create_other"]
+    _, conn, signals = run_worker(SOURCES[source], output_file, monkeypatch, where_fragment=f"  {FILTER}\n")
+    assert statements(conn) == (
+        PREAMBLE
+        + setup_statements(source)
+        + [with_filter(create, FILTER)]
+        + golden["after_create"]
+        + [COUNT, copy(golden["geometry"], output_file, FORMAT_OPTIONS[fmt]), CLEANUP]
+    )
+    assert signals == progress() + [("load_layer", output_file), ("finished",)]
+
+
+@pytest.mark.parametrize("fragment", [None, "", "   ", "\n\t"])
+@pytest.mark.parametrize("source", sorted(GOLDEN))
+def test_no_attribute_filter_is_the_golden_sql(source, fragment, monkeypatch):
+    """An empty or blank filter issues byte for byte the SQL of no filter:
+    the statements are compared unsquashed."""
+    output_file = f"{OUT}.gpkg"
+    _, without, _ = run_worker(SOURCES[source], output_file, monkeypatch)
+    _, empty, _ = run_worker(SOURCES[source], output_file, monkeypatch, where_fragment=fragment)
+    assert empty.statements == without.statements
+    assert not any("AND (" in s for s in statements(empty) if isinstance(s, str))
