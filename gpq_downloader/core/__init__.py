@@ -2,7 +2,7 @@
 
 - overture: partition pruning, from the extents in file names or Overture's STAC
 - presets: loading data/presets.json
-- plan: download planning (file names)
+- plan: download planning (file names, the download queue)
 - sql: quoting for the SQL built as f-strings
 
 They moved here from utils.py and plugin.py (#195); utils.py re-exports its old

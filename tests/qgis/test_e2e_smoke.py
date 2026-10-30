@@ -2,7 +2,7 @@
 
 plugin.run() opens the dialog; a custom file:// URL of a local fixture file is
 entered and OK is clicked. That runs the real ValidationWorker and then the
-real Worker on their QThreads, with real DuckDB, against the map canvas
+real Worker on their QgsTasks, with real DuckDB, against the map canvas
 extent, and the Worker's load_layer signal adds the result to the project.
 Only the save-file dialog and the message boxes are replaced, so nothing
 waits for a click.

@@ -150,6 +150,10 @@ _overture_extent_cache = {}
 
 def _stac_bbox(box):
     """(xmin, ymin, xmax, ymax) from a STAC bbox, which may carry elevations."""
+    if not isinstance(box, (list, tuple)) or not all(
+        isinstance(v, (int, float)) and not isinstance(v, bool) for v in box
+    ):
+        return None
     if len(box) >= 6:
         return (box[0], box[1], box[3], box[4])
     if len(box) >= 4:
@@ -186,7 +190,9 @@ def overture_part_extents(url, timeout=30):
     extents = None
     try:
         with urllib.request.urlopen(collection_url, timeout=timeout) as response:  # nosec B310
-            collection = json.load(response)
+            # The collection is ~100KB; a response past this cap is not it,
+            # and json.loads on the truncated read falls back to the glob
+            collection = json.loads(response.read(2_000_000))
         boxes = collection["extent"]["spatial"]["bbox"]
         # boxes[0] covers the collection; the rest are one per file, in item order
         extents = {}
@@ -255,7 +261,14 @@ def parquet_source_for_bbox(conn, url, bbox, buffer_deg=0.01):
         if extent is None:
             return default
         fxmin, fymin, fxmax, fymax = extent
-        if fxmin <= xmax and fxmax >= xmin and fymin <= ymax and fymax >= ymin:
+        if fxmin <= fxmax:
+            x_overlap = fxmin <= xmax and fxmax >= xmin
+        else:
+            # A STAC bbox crossing the antimeridian has xmin > xmax
+            # (GeoJSON/STAC convention): it covers [xmin, 180] and
+            # [-180, xmax], so the window only misses it between the two
+            x_overlap = fxmax >= xmin or fxmin <= xmax
+        if x_overlap and fymin <= ymax and fymax >= ymin:
             selected.append(f)
     how = "the Overture STAC" if overture is not None else "file name"
     logger.info(f"Partition pruning by {how}: reading {len(selected)} of {len(files)} files")

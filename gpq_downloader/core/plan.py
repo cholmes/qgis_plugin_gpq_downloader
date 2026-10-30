@@ -1,10 +1,16 @@
-"""Download planning that needs no QGIS: what to call the files a download writes.
+"""Download planning that needs no QGIS: what to call the files a download
+writes, and the queue the downloads wait in.
 
-Moved here from plugin.py (#195), which still imports custom_file_stem from
-here, so gpq_downloader.plugin.custom_file_stem keeps working.
+The naming moved here from plugin.py (#195), which still imports
+custom_file_stem from here, so gpq_downloader.plugin.custom_file_stem keeps
+working. DownloadQueue is the state half of the download manager (#197);
+qgis_io/manager.py runs its jobs.
 """
 
+import dataclasses
 import re
+from collections import deque
+from typing import Any, Optional
 
 
 def custom_file_stem(url):
@@ -80,3 +86,89 @@ def overture_layer_name(url):
         # For base layers, include the subtype
         return f"Overture {theme.title()} - {type_str.title()}"
     return f"Overture {theme.title()}"
+
+
+@dataclasses.dataclass(frozen=True)
+class DownloadJob:
+    """One file to download: what the plugin hands a Worker.
+
+    extent and aoi_geometry are QGIS objects; nothing here looks inside them.
+    A changed job (the GeoJSON size warning's other format, or its "proceed
+    anyway") is made with dataclasses.replace().
+    """
+
+    url: str
+    output_file: str
+    layer_name: Optional[str] = None
+    extent: Any = None
+    aoi_geometry: Any = None
+    clip_to_area: bool = False
+    where_fragment: Optional[str] = None
+    validation_results: dict = dataclasses.field(default_factory=dict)
+    size_warning_accepted: bool = False
+
+
+class DownloadQueue:
+    """The downloads waiting, in order, and the one running.
+
+    At most one job is active. It stays active until mark_done(), which the
+    manager calls only once that job's worker has stopped: a cancelled job
+    is still active while its query is being interrupted, so the next job
+    cannot start beside it (#47).
+    """
+
+    def __init__(self):
+        self._pending = deque()
+        self.active = None
+
+    @property
+    def is_busy(self):
+        """True from next_job() until mark_done(): no other job may start."""
+        return self.active is not None
+
+    @property
+    def waiting(self):
+        """How many jobs are waiting behind the active one."""
+        return len(self._pending)
+
+    @property
+    def pending(self):
+        """The waiting jobs, next first."""
+        return tuple(self._pending)
+
+    def enqueue(self, job):
+        """Add a job at the back. Returns how many jobs are now waiting."""
+        self._pending.append(job)
+        return len(self._pending)
+
+    def next_job(self):
+        """Make the next waiting job active and return it.
+
+        None while a job is active, or when nothing is waiting.
+        """
+        if self.active is not None or not self._pending:
+            return None
+        self.active = self._pending.popleft()
+        return self.active
+
+    def replace_active(self, job):
+        """Swap the active job for a changed copy of it (to run it again)."""
+        if self.active is None:
+            raise RuntimeError("no active job to replace")
+        self.active = job
+
+    def mark_done(self):
+        """End the active job, however it ended. Returns it (None if none was)."""
+        job, self.active = self.active, None
+        return job
+
+    def cancel_all(self):
+        """Drop every waiting job and return them, next first.
+
+        The active job is left for the manager to stop; it stays active,
+        and the queue busy, until its worker has stopped and mark_done() is
+        called.
+        """
+        dropped = tuple(self._pending)
+        self._pending.clear()
+        return dropped

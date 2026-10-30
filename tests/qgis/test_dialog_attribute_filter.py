@@ -16,6 +16,7 @@ from qgis.core import QgsApplication, QgsSettings
 from qgis.PyQt.QtCore import QCoreApplication, QEvent
 from qgis.PyQt.QtWidgets import QLineEdit
 
+from gpq_downloader.core.plan import DownloadJob
 from gpq_downloader.dialog import DataSourceDialog
 from gpq_downloader.plugin import QgisPluginGeoParquet
 
@@ -166,7 +167,7 @@ def test_a_filter_duckdb_rejects_is_shown_and_the_dialog_stays_open(dialog):
     assert outcomes == [(False, message)]
     assert probes == [f"SELECT 1 FROM read_parquet('{URL}') WHERE (clas = 'school') LIMIT 0"]
     assert dialog.accepted_count == 0
-    assert dialog.validation_worker is None and dialog.validation_thread is None
+    assert dialog.validation_worker is None and dialog.validation_task is None
 
 
 def test_a_filter_duckdb_accepts_closes_the_dialog(dialog):
@@ -189,7 +190,7 @@ def accept_into_plugin(mock_iface, dialog, tmp_path):
     output = str(tmp_path / "out.parquet")
     with patch("gpq_downloader.plugin.QFileDialog.getSaveFileName", return_value=(output, "GeoParquet (*.parquet)")), \
             patch("gpq_downloader.plugin.QProgressDialog"), \
-            patch("gpq_downloader.plugin.QThread"), \
+            patch("gpq_downloader.qgis_io.manager.submit"), \
             patch("gpq_downloader.plugin.Worker") as worker:
         plugin.handle_dialog_accepted(dialog)
     worker.assert_called_once()
@@ -228,14 +229,13 @@ def test_the_filter_survives_the_large_geojson_restart(mock_iface):
     """Proceeding past the GeoJSON size warning starts a new Worker; the
     filter goes with it."""
     plugin = QgisPluginGeoParquet(mock_iface)
-    old = MagicMock(where_fragment="confidence > 0.9", remaining_queue=[], layer_name=None,
-                    aoi_geometry=None, clip_to_area=False)
-    plugin.worker = old
+    # The job the manager holds at the warning
+    plugin.downloads.queue.enqueue(DownloadJob(URL, "out.geojson", where_fragment="confidence > 0.9"))
+    plugin.downloads.queue.next_job()
     with patch("gpq_downloader.plugin.QDialog") as box, \
-            patch.object(plugin, "cleanup_thread"), \
-            patch.object(plugin, "_start_worker") as start:
+            patch.object(plugin.downloads, "retry") as start:
         box.return_value.exec.return_value = 2  # "Proceed with GeoJSON anyway"
         plugin.handle_large_file_warning(5000.0)
     start.assert_called_once()
-    assert start.call_args.kwargs["where_fragment"] == "confidence > 0.9"
-    assert start.call_args.kwargs["size_warning_accepted"] is True
+    assert start.call_args.args[0].where_fragment == "confidence > 0.9"
+    assert start.call_args.args[0].size_warning_accepted is True

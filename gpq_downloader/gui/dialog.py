@@ -7,8 +7,10 @@ from gpq_downloader/dialog.py (#195), which re-exports its names until 1.0
 (#198).
 """
 
-import requests
+import json
 
+from qgis.core import QgsBlockingNetworkRequest
+from qgis.PyQt.QtNetwork import QNetworkRequest
 from qgis.PyQt.QtWidgets import (
     QMessageBox,
     QDialog,
@@ -25,8 +27,9 @@ from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QGridLayout,
 )
-from qgis.PyQt.QtCore import pyqtSignal, Qt, QThread
+from qgis.PyQt.QtCore import pyqtSignal, Qt, QUrl
 
+from ..qgis_io.manager import QUEUED, WorkerTask, submit
 from ..qgis_io.worker import ValidationWorker
 from ..utils import MINIO_URL_FORMAT
 from ..core.filters import validate_where_fragment
@@ -43,6 +46,47 @@ OVERTURE_CHECKBOX_COLUMNS = 3
 # Overture presets whose checkbox label is not just the key title-cased
 OVERTURE_DISPLAY_NAMES = {"building_parts": "Building Parts"}
 
+# Overture's STAC catalog, whose "latest" names the newest release
+OVERTURE_CATALOG_URL = "https://stac.overturemaps.org/catalog.json"
+RELEASE_LOOKUP_TIMEOUT_MS = 30000
+
+
+class ReleaseLookupError(Exception):
+    """The latest Overture release could not be looked up."""
+
+
+def latest_overture_release():
+    """The newest Overture release, from its STAC catalog.
+
+    Fetched through QGIS's network stack, so the proxy and authentication
+    set in QGIS apply. Like requests.get it blocks until the catalog
+    arrives or the timeout runs out: on the main thread,
+    QgsBlockingNetworkRequest runs the request on a thread of its own and
+    turns the event loop only to answer an authentication or SSL prompt.
+    Raises ReleaseLookupError when the catalog cannot be read.
+    """
+    request = QNetworkRequest(QUrl(OVERTURE_CATALOG_URL))
+    if hasattr(request, "setTransferTimeout"):  # Qt 5.15 and newer
+        request.setTransferTimeout(RELEASE_LOOKUP_TIMEOUT_MS)
+    fetch = QgsBlockingNetworkRequest()
+    # forceRefresh: never a cached catalog, which could name an old release
+    if fetch.get(request, True) != QgsBlockingNetworkRequest.ErrorCode.NoError:
+        raise ReleaseLookupError(
+            f"Could not look up the latest Overture release: {fetch.errorMessage()}"
+        )
+    try:
+        content = bytes(fetch.reply().content())
+        if len(content) > 2_000_000:  # the catalog is ~1KB; don't parse a hostile reply
+            raise ValueError(f"the catalog is implausibly large ({len(content)} bytes)")
+        release = json.loads(content)["latest"]
+        if not isinstance(release, str):
+            raise ValueError(f"'latest' is a {type(release).__name__}, not a release id")
+        return release
+    except (ValueError, KeyError, TypeError) as e:
+        raise ReleaseLookupError(
+            f"Could not read the latest Overture release from {OVERTURE_CATALOG_URL}: {e!r}"
+        ) from e
+
 
 class DataSourceDialog(AreaOfInterestMixin, QDialog):
     validation_complete = pyqtSignal(bool, str, dict)
@@ -50,8 +94,11 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
     def __init__(self, parent=None, iface=None):
         super().__init__(parent)
         self.iface = iface
-        self.validation_thread = None
+        self.validation_task = None
         self.validation_worker = None
+        self._bbox_warning_open = False  # the bbox warning holds a queued finished() (see show_bbox_warning)
+        self._held_validation = None
+        self._latest_release = None  # looked up once per dialog; OK uses it twice, back to back
         self.progress_message = None
         self.requires_validation = True
         self.extent_group = None
@@ -388,7 +435,11 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
     def validate_and_accept(self):
         """Validate the input and accept the dialog if valid"""
-        urls = self.get_urls()
+        try:
+            urls = self.get_urls()
+        except ReleaseLookupError as e:
+            QMessageBox.warning(self, "Validation Error", str(e))
+            return
         if not urls:
             QMessageBox.warning(
                 self, "Validation Error", "Please select at least one dataset"
@@ -447,28 +498,30 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                 extent = self.current_extent if self.current_extent else self.iface.mapCanvas().extent()
 
                 # Create validation worker
-                self.validation_worker = ValidationWorker(
+                worker = ValidationWorker(
                     url, self.iface, extent, where_fragment=self.get_where_fragment()
                 )
-                self.validation_thread = QThread()
-                self.validation_worker.moveToThread(self.validation_thread)
+                self.validation_worker = worker
 
-                # Connect signals
-                self.validation_thread.started.connect(self.validation_worker.run)
-                self.validation_worker.progress.connect(
-                    self.progress_dialog.setLabelText
+                # It emits from the task's thread; queued, these run on the
+                # main thread
+                worker.progress.connect(self.progress_dialog.setLabelText, QUEUED)
+                worker.finished.connect(
+                    lambda success, message, results: self._unless_superseded(
+                        worker, self.handle_validation_result, success, message, results
+                    ),
+                    QUEUED,
                 )
-                self.validation_worker.finished.connect(
-                    lambda success, message, results: self.handle_validation_result(
-                        success, message, results
-                    )
-                )
-                self.validation_worker.needs_bbox_warning.connect(
-                    self.show_bbox_warning
+                worker.needs_bbox_warning.connect(
+                    lambda: self._unless_superseded(worker, self.show_bbox_warning),
+                    QUEUED,
                 )
 
                 # Start validation
-                self.validation_thread.start()
+                self.validation_task = WorkerTask(
+                    f"Validating {url}", worker, self._validation_task_finished
+                )
+                submit(self.validation_task)
                 self.progress_dialog.show()
                 return
 
@@ -477,6 +530,11 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
     def handle_validation_result(self, success, message, validation_results):
         """Handle validation result in the dialog"""
+        if self._bbox_warning_open:
+            # The warning's modal event loop delivered the queued finished();
+            # hold it until the user has answered (see show_bbox_warning)
+            self._held_validation = (success, message, validation_results)
+            return
         self.cleanup_validation()
 
         if success:
@@ -486,9 +544,30 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             QMessageBox.warning(self, "Validation Error", message)
             self.validation_complete.emit(False, message, validation_results)
 
+    def _unless_superseded(self, worker, slot, *args):
+        """Call slot(*args) only while `worker` is still the current validation.
+
+        Cleanup no longer waits for the task, so a cancelled worker can still
+        be returning from DuckDB when its signals arrive. After Cancel or
+        closeEvent (validation_worker is None), or once OK has started the
+        next validation (a different worker), its report is not an answer to
+        anything the user is still asking - acting on it would accept a
+        dialog the user had dismissed and start the download anyway.
+        """
+        if self.validation_worker is worker:
+            slot(*args)
+
+    def _validation_task_finished(self, task, result):
+        """The task ended without the worker reporting (cancelled from the
+        QGIS task manager): take the progress dialog down with it."""
+        if task.worker is self.validation_worker:
+            self.cleanup_validation()
+
     def cancel_validation(self):
         """Handle validation cancellation"""
-        if self.validation_worker:
+        if self.validation_task is not None:
+            self.validation_task.cancel()  # kills the worker
+        elif self.validation_worker:
             self.validation_worker.kill()
         self.cleanup_validation()
 
@@ -498,15 +577,10 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             self.progress_dialog.close()
             self.progress_dialog = None
 
-        if self.validation_worker:
-            self.validation_worker.deleteLater()
-            self.validation_worker = None
-
-        if self.validation_thread:
-            self.validation_thread.quit()
-            self.validation_thread.wait()
-            self.validation_thread.deleteLater()
-            self.validation_thread = None
+        # A killed worker may still be returning from DuckDB; its task holds
+        # it until then, and the task manager deletes the task
+        self.validation_worker = None
+        self.validation_task = None
 
     def closeEvent(self, event):
         """Handle dialog close event"""
@@ -514,7 +588,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self._remove_canvas_key_filter()
 
         # Clean up validation if running
-        if self.validation_thread and self.validation_thread.isRunning():
+        if self.validation_task is not None:
             self.cancel_validation()
 
         # Disconnect from layer changes
@@ -549,9 +623,12 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         if self.custom_radio.isChecked():
             return [self.url_input.text().strip()]
         elif self.overture_radio.isChecked():
-            latest_release = requests.get(
-                "https://stac.overturemaps.org/catalog.json", timeout=30
-            ).json()["latest"]
+            # One lookup per dialog: validate_and_accept() and the plugin's
+            # accepted handler both call get_urls() on the same OK, and a
+            # network drop between the two would otherwise raise out of a slot
+            if self._latest_release is None:
+                self._latest_release = latest_overture_release()
+            latest_release = self._latest_release
 
             for theme, checkbox in self.overture_checkboxes.items():
                 if checkbox.isChecked():
@@ -638,15 +715,25 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             self.progress_dialog.close()
             self.progress_dialog = None
 
-        reply = QMessageBox.warning(
-            self,
-            "No bbox Column Detected",
-            "This dataset doesn't have a bbox column, which means downloads will be slower. "
-            "GeoParquet 1.1 files with a bbox column work much better - tell your data provider to upgrade!\n\n"
-            "Do you want to continue with the download?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
+        # The worker emits finished() right behind needs_bbox_warning. The
+        # modal's nested event loop would deliver it mid-exec and accept the
+        # dialog under the warning - a No answered afterwards could not stop
+        # the download - so handle_validation_result holds it until here.
+        self._bbox_warning_open = True
+        self._held_validation = None
+        try:
+            reply = QMessageBox.warning(
+                self,
+                "No bbox Column Detected",
+                "This dataset doesn't have a bbox column, which means downloads will be slower. "
+                "GeoParquet 1.1 files with a bbox column work much better - tell your data provider to upgrade!\n\n"
+                "Do you want to continue with the download?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+        finally:
+            self._bbox_warning_open = False
+        held, self._held_validation = self._held_validation, None
 
         validation_results = {
             "has_bbox": False,
@@ -654,11 +741,18 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             "bbox_column": None,
         }
         if reply == QMessageBox.StandardButton.No:
+            # Drops the held result too: whatever the worker said, the user
+            # does not want this download
+            self.cleanup_validation()
             self.validation_complete.emit(
                 False, "Download cancelled by user.", validation_results
             )
+        elif held is not None:
+            self.handle_validation_result(*held)
         else:
-            # Accept the dialog when user clicks Yes
+            # finished() has not arrived yet; cleanup first, so when it does,
+            # _unless_superseded drops it instead of accepting a second time
+            self.cleanup_validation()
             self.validation_complete.emit(
                 True, "Validation successful", validation_results
             )
@@ -727,10 +821,6 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         aoi_enabled = settings_store.load_flag(settings_store.AOI_ENABLED)
         self.extent_group.setChecked(aoi_enabled)
 
-    def on_validation_finished(self, success, message, results):
-        # This method should handle the validation results
-        # Check how it's setting validation_results
-        pass
 
     def accept(self):
         """Override accept to store the current extent"""
