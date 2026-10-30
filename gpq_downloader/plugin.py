@@ -294,13 +294,7 @@ class QgisPluginGeoParquet:
         # for one still waiting, which starts once this box is closed
         if not self.downloads.waiting:
             self._close_progress_dialog()
-        box = QMessageBox(
-            QMessageBox.Icon.Critical, "Error", message,
-            QMessageBox.StandardButton.Ok, self.iface.mainWindow(),
-        )
-        # The message can quote remote file metadata; never render it as HTML
-        box.setTextFormat(Qt.TextFormat.PlainText)
-        box.exec()
+        QMessageBox.critical(self.iface.mainWindow(), "Error", message)
 
     def update_progress(self, message):
         if getattr(self, "progress_dialog", None) is not None:

@@ -541,13 +541,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             self.validation_complete.emit(True, message, validation_results)
             self.accept()
         else:
-            box = QMessageBox(
-                QMessageBox.Icon.Warning, "Validation Error", message,
-                QMessageBox.StandardButton.Ok, self,
-            )
-            # DuckDB's message can quote remote metadata; never render it as HTML
-            box.setTextFormat(Qt.TextFormat.PlainText)
-            box.exec()
+            QMessageBox.warning(self, "Validation Error", message)
             self.validation_complete.emit(False, message, validation_results)
 
     def _unless_superseded(self, worker, slot, *args):
