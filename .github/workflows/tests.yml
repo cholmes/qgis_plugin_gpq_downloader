@@ -68,8 +68,10 @@ jobs:
     - run: pip install -e .[dev]
     - run: lint-imports
     # --no-cov: pyproject's addopts measures the whole package, and this job
-    # runs only tests/core. The test job reports coverage.
-    - run: pytest tests/core --no-cov -q
+    # runs only tests/core. The test job reports coverage. -p no:pytest-qt:
+    # the dev extra brings pytest-qt in for the QGIS jobs, and with no Qt
+    # binding installed its pytest_configure aborts the whole run.
+    - run: pytest tests/core --no-cov -p no:pytest-qt -q
 
   test:
     # Both Qt generations: the plugin supports QGIS 3 and 4, and a Qt6-only

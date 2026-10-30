@@ -34,9 +34,16 @@ def custom_file_stem(url):
 
 
 # Presets whose type is told apart from the rest of their theme by name:
-# building_part shares theme=buildings with building, so naming by theme alone
-# would give both downloads the same layer and file name.
-_OVERTURE_TYPE_NAMES = {"building_part": "Building Parts"}
+# building_part shares theme=buildings with building, and the three divisions
+# subtypes share theme=divisions, so naming by theme alone would give those
+# downloads the same layer and file name - and two in the same second the
+# same default path, the second overwriting the first.
+_OVERTURE_TYPE_NAMES = {
+    "building_part": "Building Parts",
+    "division": "Divisions",
+    "division_area": "Division Areas",
+    "division_boundary": "Division Boundaries",
+}
 
 
 def _overture_theme_and_type(url):
@@ -58,6 +65,8 @@ def overture_file_stem(url):
         return "overture_" + _OVERTURE_TYPE_NAMES[type_str].lower().replace(" ", "_")
     if theme == "base" and type_str:
         return f"overture_base_{type_str}"
+    if theme is None:
+        return "overture"
     return f"overture_{theme}"
 
 
