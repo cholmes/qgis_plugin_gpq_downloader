@@ -46,6 +46,14 @@ def test_the_divisions_subtypes_do_not_share_a_name():
     assert len(set(layers)) == 3
 
 
+def test_the_division_points_label_does_not_rename_the_layer():
+    """The dialog labels type=division "Division Points" to tell it from the
+    Divisions theme, but the file and layer names follow the type key (#215),
+    so a download keeps the name it has always had."""
+    assert overture_file_stem(url("divisions", "division")) == "overture_divisions"
+    assert overture_layer_name(url("divisions", "division")) == "Overture Divisions"
+
+
 def test_a_url_without_a_theme_still_gets_a_file_stem():
     assert overture_file_stem("s3://overturemaps-us-west-2/release/x/*") == "overture"
 

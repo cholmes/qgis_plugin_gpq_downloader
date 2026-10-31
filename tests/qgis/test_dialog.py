@@ -387,13 +387,89 @@ def test_osm_checkboxes_wrap_instead_of_widening_the_dialog(qgs_app, mock_iface)
     dialog.close()
 
 
-def test_building_parts_checkbox(qgs_app, mock_iface):
-    """#80: Building Parts is its own Overture checkbox, off by default."""
+BUILDINGS_URL_BASE = "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings"
+
+
+@pytest.fixture
+def unsaved_checkboxes():
+    """Keep these tests out of the settings QGIS is really running on.
+
+    Toggling any checkbox saves every checkbox state, so a test that ticks
+    boxes to build a URL would otherwise overwrite what the person running the
+    suite has chosen in their own QGIS profile.
+    """
+    with patch("gpq_downloader.gui.settings_store.save_value"):
+        yield
+
+
+def overture_dialog(mock_iface):
+    """An Overture dialog with every preset checkbox off, whatever is remembered."""
     dialog = DataSourceDialog(None, mock_iface)
-    checkbox = dialog.overture_checkboxes["building_parts"]
+    dialog.overture_radio.setChecked(True)
+    for checkbox in dialog.overture_checkboxes.values():
+        checkbox.setChecked(False)
+    for checkbox in dialog.buildings_subtype_checkboxes.values():
+        checkbox.setChecked(False)
+    for checkbox in dialog.divisions_subtype_checkboxes.values():
+        checkbox.setChecked(False)
+    for checkbox in dialog.base_subtype_checkboxes.values():
+        checkbox.setChecked(False)
+    return dialog
+
+
+def test_building_parts_nests_under_buildings(qgs_app, mock_iface, unsaved_checkboxes):
+    """Building Parts is an indented child of Buildings, not a top-level checkbox."""
+    dialog = DataSourceDialog(None, mock_iface)
+    assert "building_parts" not in dialog.overture_checkboxes
+    assert list(dialog.overture_checkboxes)[0] == "buildings"
+    checkbox = dialog.buildings_subtype_checkboxes["building_parts"]
     assert checkbox.text() == "Building Parts"
-    assert not checkbox.isChecked()
-    assert list(dialog.overture_checkboxes)[:2] == ["buildings", "building_parts"]
+    assert checkbox.parentWidget() is dialog.buildings_subtype_widget
+    dialog.close()
+
+
+def test_dialog_buildings_subtypes_visibility(qgs_app, mock_iface, unsaved_checkboxes):
+    """The Building Parts row follows the Buildings checkbox, like the other
+    parents' subtype rows."""
+    dialog = DataSourceDialog(None, mock_iface)
+
+    dialog.buildings_checkbox.setChecked(False)
+    assert dialog.buildings_subtype_widget.isHidden()
+
+    dialog.buildings_checkbox.setChecked(True)
+    assert not dialog.buildings_subtype_widget.isHidden()
+
+    dialog.buildings_checkbox.setChecked(False)
+    assert dialog.buildings_subtype_widget.isHidden()
+    dialog.close()
+
+
+def test_the_division_subtype_is_labelled_division_points(qgs_app, mock_iface, unsaved_checkboxes):
+    """The point type reads "Division Points", so it is not confused with the
+    Divisions theme that holds all three. Its key, which the URL and the saved
+    setting use, stays "division"."""
+    dialog = DataSourceDialog(None, mock_iface)
+    assert dialog.divisions_checkbox.text() == "Divisions"
+    assert list(dialog.divisions_subtype_checkboxes) == [
+        "division", "division_area", "division_boundary",
+    ]
+    assert [c.text() for c in dialog.divisions_subtype_checkboxes.values()] == [
+        "Division Points", "Division Area", "Division Boundary",
+    ]
+    dialog.close()
+
+
+def test_division_points_still_downloads_type_division(qgs_app, mock_iface, unsaved_checkboxes):
+    """The renamed label must not change the URL the subtype builds."""
+    dialog = overture_dialog(mock_iface)
+    dialog.divisions_checkbox.setChecked(True)
+    for key, checkbox in dialog.divisions_subtype_checkboxes.items():
+        checkbox.setChecked(key == "division")
+    with patch("gpq_downloader.gui.dialog.latest_overture_release", return_value="2026-09-23.1"):
+        urls = dialog.get_urls()
+    assert urls == [
+        "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=divisions/type=division/*"
+    ]
     dialog.close()
 
 
@@ -405,14 +481,37 @@ def test_overture_checkboxes_wrap_instead_of_widening_the_dialog(qgs_app, mock_i
     dialog.close()
 
 
-def test_buildings_and_building_parts_are_two_urls(qgs_app, mock_iface):
+def test_buildings_and_building_parts_are_two_urls(qgs_app, mock_iface, unsaved_checkboxes):
     """Checking both downloads two datasets, one URL each, not a type=building* glob."""
-    dialog = DataSourceDialog(None, mock_iface)
-    dialog.overture_radio.setChecked(True)
-    dialog.overture_checkboxes["buildings"].setChecked(True)
-    dialog.overture_checkboxes["building_parts"].setChecked(True)
+    dialog = overture_dialog(mock_iface)
+    dialog.buildings_checkbox.setChecked(True)
+    dialog.buildings_subtype_checkboxes["building_parts"].setChecked(True)
     with patch("gpq_downloader.gui.dialog.latest_overture_release", return_value="2026-09-23.1"):
         urls = dialog.get_urls()
-    base = "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings"
-    assert urls == [f"{base}/type=building/*", f"{base}/type=building_part/*"]
+    assert urls == [
+        f"{BUILDINGS_URL_BASE}/type=building/*",
+        f"{BUILDINGS_URL_BASE}/type=building_part/*",
+    ]
+    dialog.close()
+
+
+def test_buildings_without_building_parts_is_the_buildings_url_alone(qgs_app, mock_iface, unsaved_checkboxes):
+    """Buildings is not a pure container like Base and Divisions: on its own it
+    still downloads type=building."""
+    dialog = overture_dialog(mock_iface)
+    dialog.buildings_checkbox.setChecked(True)
+    with patch("gpq_downloader.gui.dialog.latest_overture_release", return_value="2026-09-23.1"):
+        urls = dialog.get_urls()
+    assert urls == [f"{BUILDINGS_URL_BASE}/type=building/*"]
+    dialog.close()
+
+
+def test_building_parts_without_buildings_downloads_nothing(qgs_app, mock_iface, unsaved_checkboxes):
+    """Nesting Building Parts under Buildings means it is only reached through
+    Buildings; a ticked child with its parent off is not a download."""
+    dialog = overture_dialog(mock_iface)
+    dialog.buildings_subtype_checkboxes["building_parts"].setChecked(True)
+    with patch("gpq_downloader.gui.dialog.latest_overture_release", return_value="2026-09-23.1"):
+        urls = dialog.get_urls()
+    assert urls == []
     dialog.close()
