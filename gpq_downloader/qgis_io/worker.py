@@ -750,3 +750,71 @@ class ValidationWorker(QObject):
 
         # All other datasets need validation
         return True
+
+
+class SchemaWorker(QObject):
+    """Reads one dataset's column list, for the dialog's filter box (#217).
+
+    DESCRIBE SELECT * FROM read_parquet(...) is the query ValidationWorker
+    already runs to find the geometry and bbox columns; this worker runs only
+    that, so the filter box can complete column names and name the ones the
+    data has not got before the download rather than after it.
+
+    It takes a callable, not a URL: an Overture URL needs the newest release,
+    and looking that up is a network request that must not run on the GUI
+    thread. The callable is run here, on the task's thread, and closes over
+    strings only - never over a widget.
+
+    A schema it cannot read is not an error to put in front of the user: the
+    filter box simply goes without completion, as it did before, and the
+    download reports whatever is really wrong with the source. So failed()
+    carries the message for the status line and nothing escapes run().
+    """
+
+    schema_ready = pyqtSignal(list)  # [(column name, DuckDB type), ...]
+    failed = pyqtSignal(str)
+
+    def __init__(self, resolve_url):
+        super().__init__()
+        self._resolve_url = resolve_url
+        self.killed = False
+        self.conn = None  # kept so kill() can interrupt a running query
+
+    def run(self):
+        conn = None
+        try:
+            url = self._resolve_url()
+            if self.killed or not url:
+                return
+            conn = CancellableConnection(duckdb.connect(), self)
+            self.conn = conn
+            conn.execute("INSTALL spatial;")
+            conn.execute("LOAD spatial;")
+            conn.execute("INSTALL httpfs;")
+            conn.execute("LOAD httpfs;")
+            read_url = resolve_dataset_url(conn, url)
+            if self.killed:
+                return
+            query = f"DESCRIBE SELECT * FROM read_parquet({sql_str(read_url)})"  # nosec B608
+            rows = conn.execute(query).fetchall()
+            if self.killed:
+                return
+            self.schema_ready.emit([(row[0], row[1]) for row in rows])
+        except Exception as e:
+            if not self.killed:
+                logger.log(f"Could not read the column list: {e}")
+                self.failed.emit(str(e))
+        finally:
+            self.conn = None
+            if conn is not None:
+                conn.close()
+
+    def kill(self):
+        """Stop the fetch; interrupts the running query so a new one can start."""
+        self.killed = True
+        conn = self.conn
+        if conn is not None:
+            try:
+                conn.interrupt()
+            except Exception as e:
+                logger.log(f"Could not interrupt DuckDB query: {e}")

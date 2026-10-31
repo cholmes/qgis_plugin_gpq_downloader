@@ -13,6 +13,7 @@ from qgis.core import QgsBlockingNetworkRequest
 from qgis.PyQt.QtNetwork import QNetworkRequest
 from qgis.PyQt.QtWidgets import (
     QMessageBox,
+    QCompleter,
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
@@ -27,12 +28,20 @@ from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QGridLayout,
 )
-from qgis.PyQt.QtCore import pyqtSignal, Qt, QUrl
+from qgis.PyQt.QtGui import QStandardItem, QStandardItemModel
+from qgis.PyQt.QtCore import pyqtSignal, QEvent, Qt, QTimer, QUrl
 
+from .. import logger
 from ..qgis_io.manager import QUEUED, WorkerTask, submit
-from ..qgis_io.worker import ValidationWorker
+from ..qgis_io.worker import SchemaWorker, ValidationWorker
 from ..utils import MINIO_URL_FORMAT
-from ..core.filters import validate_where_fragment
+from ..core.filters import (
+    completion_candidates,
+    completion_text,
+    current_word,
+    unknown_column_message,
+    validate_where_fragment,
+)
 from ..core.presets import load_presets
 from . import settings_store
 from .extent import AoiHighlighter, AreaOfInterestMixin
@@ -49,6 +58,41 @@ OVERTURE_DISPLAY_NAMES = {"building_parts": "Building Parts"}
 # Overture's STAC catalog, whose "latest" names the newest release
 OVERTURE_CATALOG_URL = "https://stac.overturemaps.org/catalog.json"
 RELEASE_LOOKUP_TIMEOUT_MS = 30000
+
+# Left in an Overture URL in place of the release while a selection is only
+# being counted and keyed: putting the real release in is a network lookup
+# (latest_overture_release), which the schema task does on its own thread.
+RELEASE_PLACEHOLDER = "{release}"
+
+# How long after the selection last changed the column list is read. Ticking
+# three checkboxes in a row is one selection worth a DESCRIBE, not three.
+SCHEMA_FETCH_DELAY_MS = 500
+
+# What the line under the filter box says. The filter is a single-dataset
+# option: a condition on columns two datasets do not share is not a filter
+# either of them can run, and there is no one schema to check it against.
+FILTER_NEEDS_A_DATASET = "Select a dataset to filter it."
+FILTER_NEEDS_ONE_DATASET = (
+    "An attribute filter applies to one dataset at a time; {count} are selected."
+)
+FILTER_READING_COLUMNS = "Reading the column list..."
+FILTER_COLUMNS_READY = "{count} columns available - press Tab to complete a name."
+FILTER_NO_COLUMNS = "Could not read the column list, so column names are not checked."
+
+# A half-typed fragment trips the lexical check on its way through: the
+# closing quote or parenthesis simply has not been typed yet. Those read as
+# "not finished", not as the "this will not run" of a ';' or a SELECT.
+_INCOMPLETE_HINTS = ("unclosed", "without a matching")
+
+_STATUS_ERROR = "color: #c0392b;"
+_STATUS_WARNING = "color: #b9770e;"
+_STATUS_HINT = "color: gray;"
+_FIELD_ERROR = "QLineEdit { border: 1px solid #c0392b; }"
+
+
+def _is_unfinished(error):
+    """Is `error` only the lexical check seeing a fragment mid-typing?"""
+    return any(hint in error for hint in _INCOMPLETE_HINTS)
 
 
 class ReleaseLookupError(Exception):
@@ -98,6 +142,14 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self.validation_worker = None
         self._bbox_warning_open = False  # the bbox warning holds a queued finished() (see show_bbox_warning)
         self._held_validation = None
+        self.schema_task = None
+        self.schema_worker = None
+        self._schema_columns = []  # [(name, DuckDB type)] for the ticked dataset
+        self._schema_key = None  # which dataset _schema_columns describe
+        self._schema_cache = {}  # key -> columns, so reticking does not refetch
+        self._schema_pending_key = None  # the fetch now running
+        self._schema_error = None  # why the last fetch gave no columns
+        self._schema_wanted = False  # the user has used the filter box
         self._latest_release = None  # looked up once per dialog; OK uses it twice, back to back
         self.progress_message = None
         self.requires_validation = True
@@ -358,21 +410,47 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # checkboxes: a filter left over from a past session would silently
         # shrink every later download, so it lasts only as long as this dialog.
         filter_layout = QHBoxLayout()
-        filter_label = QLabel("Attribute filter (SQL):")
+        self.filter_label = QLabel("Attribute filter (SQL):")
         self.filter_input = QLineEdit()
         self.filter_input.setPlaceholderText("confidence > 0.9 AND class = 'school'")
         filter_tooltip = (
             "Optional. A DuckDB SQL condition on the data's own columns, without WHERE. "
             "Only features that match it and fall in the area are downloaded "
             "(it is ANDed with the spatial filter). Leave empty to download everything in the area. "
+            "Press Tab for the column names of the selected dataset. "
+            "Available when exactly one dataset is selected. "
             "The condition runs as SQL in your local DuckDB, so only paste filters from sources you trust."
         )
-        filter_label.setToolTip(filter_tooltip)
+        self.filter_label.setToolTip(filter_tooltip)
         self.filter_input.setToolTip(filter_tooltip)
-        filter_label.setBuddy(self.filter_input)
-        filter_layout.addWidget(filter_label)
+        self.filter_label.setBuddy(self.filter_input)
+        filter_layout.addWidget(self.filter_label)
         filter_layout.addWidget(self.filter_input)
         layout.addLayout(filter_layout)
+
+        # What is wrong with the filter, or what it can complete, said inline:
+        # a modal after the download has started is how "cg = cv" used to be
+        # answered, and by then it was a DuckDB Binder Error (#217).
+        self.filter_status = QLabel()
+        self.filter_status.setWordWrap(True)
+        self.filter_status.setStyleSheet(_STATUS_HINT)
+        self.filter_status.hide()
+        layout.addWidget(self.filter_status)
+
+        # Completes column names mid-expression. Not setCompleter(): that
+        # completes the whole line, which is no use after the first AND, so
+        # the popup is driven by hand from current_word() instead.
+        self._completer_model = QStandardItemModel(self)
+        self._completer = QCompleter(self._completer_model, self)
+        self._completer.setCompletionRole(Qt.ItemDataRole.UserRole)
+        self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self._completer.setWidget(self.filter_input)
+        self._completer.activated[str].connect(self._insert_completion)
+
+        self._schema_timer = QTimer(self)
+        self._schema_timer.setSingleShot(True)
+        self._schema_timer.timeout.connect(self._start_schema_fetch)
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -411,6 +489,10 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Ensure to call save_checkbox_states when the dialog is accepted
         self.ok_button.clicked.connect(self.save_checkbox_states)
 
+        # Also after load_checkbox_states(), so restoring the remembered
+        # checkboxes does not read as the user changing the selection
+        self._connect_filter_signals()
+
     def save_radio_button_state(self) -> None:
         if self.custom_radio.isChecked():
             button_name = self.custom_radio.text()
@@ -430,8 +512,347 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self.base_subtype_widget.setVisible(text == "Base")
 
     def get_where_fragment(self):
-        """The attribute filter as typed, stripped, or None when it is empty."""
+        """The attribute filter as typed, stripped, or None when it is empty.
+
+        Also None when more than one dataset is selected: the filter box is
+        disabled then (#217), and a condition typed while one dataset was
+        ticked must not quietly shrink every download of a later selection
+        the user never typed it for. With nothing ticked there is no download
+        to filter and validate_and_accept() stops before any of this, so the
+        text is returned as typed.
+        """
+        if len(self.selected_datasets()) > 1:
+            return None
         return self.filter_input.text().strip() or None
+
+    # --- the filter box's column knowledge (#217) -------------------------
+    #
+    # The filter box used to be a QLineEdit with a placeholder and nothing
+    # else, so the only way to learn what a dataset's columns were called was
+    # to get the filter wrong and read DuckDB's answer after the fact: `cg =
+    # cv` came back as a Binder Error modal listing candidate bindings. The
+    # dialog now reads the one selected dataset's column list in the
+    # background (SchemaWorker), completes names from it, and says under the
+    # field what is wrong with what is typed.
+    #
+    # One dataset, because that is the only selection a condition can be
+    # offered and checked against; a filter across datasets that do not share
+    # a column is not a filter either of them can run.
+
+    def _connect_filter_signals(self):
+        """Wire the filter box up, once the remembered checkboxes are restored.
+
+        The checkboxes themselves are connected here rather than where they
+        are built, so this stays out of that block.
+        """
+        checkboxes = (
+            list(self.overture_checkboxes.values())
+            + list(self.base_subtype_checkboxes.values())
+            + list(self.divisions_subtype_checkboxes.values())
+            + list(self.osm_checkboxes.values())
+        )
+        for checkbox in checkboxes:
+            checkbox.toggled.connect(self._selection_changed)
+        for radio in (
+            self.custom_radio,
+            self.overture_radio,
+            self.sourcecoop_radio,
+            self.osm_radio,
+        ):
+            radio.toggled.connect(self._selection_changed)
+        self.sourcecoop_combo.currentTextChanged.connect(self._selection_changed)
+        self.url_input.textChanged.connect(self._selection_changed)
+        self.filter_input.textChanged.connect(self._update_filter_status)
+        self.filter_input.textEdited.connect(self._filter_text_edited)
+        # After QCompleter.setWidget(), which installs a filter of its own:
+        # the last one installed is called first, so Tab is taken here
+        self.filter_input.installEventFilter(self)
+        self._selection_changed()
+
+    def selected_datasets(self):
+        """The URLs ticked now, one per download, with {release} left in place.
+
+        get_urls() with a release given reaches no network, so this is cheap
+        enough to run on every keystroke and every checkbox toggle.
+        """
+        try:
+            urls = self.get_urls(release=RELEASE_PLACEHOLDER)
+        except Exception as e:  # a preset this build cannot build a URL for
+            logger.log(f"Could not list the selected datasets: {e}")
+            return []
+        return [url for url in urls if url]
+
+    def _single_dataset(self):
+        """(key, resolve_url) for the one dataset ticked, or None.
+
+        `key` identifies it for the schema cache and never depends on the
+        Overture release, which changes monthly while the columns do not.
+        `resolve_url` is called by the schema task on its own thread, so it
+        closes over strings only and never touches a widget.
+        """
+        urls = self.selected_datasets()
+        if len(urls) != 1:
+            return None
+        url = urls[0]
+
+        def resolve_url(url=url):
+            if RELEASE_PLACEHOLDER in url:
+                return url.replace(RELEASE_PLACEHOLDER, latest_overture_release())
+            return url
+
+        return url, resolve_url
+
+    def filter_columns(self):
+        """[(column name, DuckDB type)] for the ticked dataset, or []."""
+        return list(self._schema_columns)
+
+    def _selection_changed(self, *args):
+        """What is ticked changed: the filter is for exactly one dataset."""
+        source = self._single_dataset()
+        key = source[0] if source else None
+        if key != self._schema_key:
+            self._schema_key = key
+            self._schema_error = None
+            self._set_filter_columns([])
+            self.cancel_schema_fetch()
+            if key is not None and key in self._schema_cache:
+                self._set_filter_columns(self._schema_cache[key])
+        available = key is not None
+        self.filter_label.setEnabled(available)
+        self.filter_input.setEnabled(available)
+        if available and self._schema_wanted and not self._schema_columns:
+            self.request_filter_columns()
+        self._update_filter_status()
+
+    def _filter_text_edited(self, _text=""):
+        """The user typed in the filter box: get the columns, offer the names."""
+        self.request_filter_columns()
+        self._show_completions()
+
+    def request_filter_columns(self, delay_ms=None):
+        """Ask for the ticked dataset's column list, shortly.
+
+        Only ever reached from the user's own use of the filter box - typing
+        in it, or giving it the keyboard - so opening the dialog reads no
+        schema, and neither does restoring the remembered checkboxes.
+        """
+        self._schema_wanted = True
+        if self._schema_columns or self._single_dataset() is None:
+            return
+        self._schema_timer.start(
+            SCHEMA_FETCH_DELAY_MS if delay_ms is None else delay_ms
+        )
+        self._update_filter_status()
+
+    def _start_schema_fetch(self):
+        """Read the ticked dataset's columns on a task thread."""
+        source = self._single_dataset()
+        if source is None:
+            return
+        key, resolve_url = source
+        if key in self._schema_cache:
+            self._set_filter_columns(self._schema_cache[key])
+            self._update_filter_status()
+            return
+        if self.schema_worker is not None and self._schema_pending_key == key:
+            return  # already on its way
+        self.cancel_schema_fetch()
+        worker = SchemaWorker(resolve_url)
+        self.schema_worker = worker
+        self._schema_pending_key = key
+
+        # It emits from the task's thread; queued, these run on the main
+        # thread. Both carry the key they are about rather than being guarded
+        # on the worker still being the current one, the way the validation
+        # signals are (_unless_superseded): nothing here orders the queued
+        # emission against the task's own finished(), which lets go of the
+        # worker, and a column list dropped for that would be a completer
+        # that silently never fills.
+        worker.schema_ready.connect(
+            lambda schema: self._schema_arrived(key, list(schema)), QUEUED
+        )
+        worker.failed.connect(
+            lambda message: self._schema_unavailable(key, message), QUEUED
+        )
+        self.schema_task = WorkerTask(
+            f"Reading the columns of {key}", worker, self._schema_task_finished
+        )
+        submit(self.schema_task)
+        self._update_filter_status()
+
+    def _schema_arrived(self, key, schema):
+        """`key`'s columns, from a fetch that may since have been superseded.
+
+        A killed worker reports nothing (SchemaWorker.run checks), so what
+        arrives is always a real column list and worth keeping; it only
+        reaches the completer while `key` is still what is ticked.
+        """
+        self._schema_cache[key] = list(schema)
+        if key != self._schema_key:
+            return
+        self._schema_error = None
+        self._set_filter_columns(schema)
+        self._update_filter_status()
+
+    def _schema_unavailable(self, key, message):
+        """No column list for `key`: the filter box goes on without one.
+
+        Which is how it worked before there was one, so this is a line under
+        the field and nothing more. The download reports whatever is really
+        wrong with the source.
+        """
+        if key != self._schema_key:
+            return
+        self._schema_error = message
+        self._set_filter_columns([])
+        self._update_filter_status()
+
+    def _schema_task_finished(self, task, result):
+        """The task ended: let go of it, whether or not the worker reported."""
+        if task.worker is self.schema_worker:
+            self.schema_worker = None
+            self.schema_task = None
+            self._schema_pending_key = None
+            self._update_filter_status()
+
+    def cancel_schema_fetch(self):
+        """Stop a running column fetch and let go of its worker and task."""
+        self._schema_timer.stop()
+        if self.schema_task is not None:
+            self.schema_task.cancel()  # kills the worker
+        elif self.schema_worker is not None:
+            self.schema_worker.kill()
+        # A killed worker may still be returning from DuckDB; its task holds
+        # it until then, and the task manager deletes the task
+        self.schema_worker = None
+        self.schema_task = None
+        self._schema_pending_key = None
+
+    def _set_filter_columns(self, schema):
+        """Put `schema` behind the completer, as names with their types."""
+        self._schema_columns = list(schema)
+        self._completer_model.clear()
+        for name, label in completion_candidates(self._schema_columns):
+            item = QStandardItem(label)
+            # The popup shows the type beside the name; the completer matches
+            # on and inserts the name alone, which is what UserRole holds
+            item.setData(name, Qt.ItemDataRole.UserRole)
+            item.setEditable(False)
+            self._completer_model.appendRow(item)
+
+    def filter_completion_prefix(self):
+        """The word the completer should complete, or None where none can be."""
+        spot = current_word(
+            self.filter_input.text(), self.filter_input.cursorPosition()
+        )
+        return None if spot is None else spot[1]
+
+    def _show_completions(self, offer_all=False):
+        """Offer the columns matching the word under the cursor; did it show?"""
+        if not self._schema_columns or not self.filter_input.isEnabled():
+            return False
+        prefix = self.filter_completion_prefix()
+        if prefix is None or (not prefix and not offer_all):
+            self._hide_completions()
+            return False
+        self._completer.setCompletionPrefix(prefix)
+        if self._completer.completionCount() == 0:
+            self._hide_completions()
+            return False
+        self._completer.complete()
+        return True
+
+    def _hide_completions(self):
+        popup = self._completer.popup()
+        if popup is not None and popup.isVisible():
+            popup.hide()
+
+    def complete_current_word(self):
+        """Tab in the filter box: take the completion, or offer the columns.
+
+        Returns True when Tab was used for completion, so that the key is not
+        also spent moving the keyboard out of the field.
+        """
+        if not self._schema_columns or not self.filter_input.isEnabled():
+            return False
+        popup = self._completer.popup()
+        if popup is not None and popup.isVisible():
+            index = popup.currentIndex()
+            name = (
+                index.data(Qt.ItemDataRole.UserRole)
+                if index.isValid()
+                else self._completer.currentCompletion()
+            )
+            popup.hide()
+            if name:
+                self._insert_completion(name)
+                return True
+            return False
+        return self._show_completions(offer_all=True)
+
+    def _insert_completion(self, name):
+        """Put `name` in place of the word under the cursor."""
+        text = self.filter_input.text()
+        cursor = self.filter_input.cursorPosition()
+        spot = current_word(text, cursor)
+        start = cursor if spot is None else spot[0]
+        inserted = completion_text(name)
+        self.filter_input.setText(text[:start] + inserted + text[cursor:])
+        self.filter_input.setCursorPosition(start + len(inserted))
+
+    def filter_status_message(self):
+        """(the line to put under the filter box, the stylesheet for it).
+
+        Nothing here opens a dialog: a filter being typed is corrected where
+        it is typed, and only OK still stops for a message box.
+        """
+        if not self.filter_input.isEnabled():
+            count = len(self.selected_datasets())
+            if count == 0:
+                return FILTER_NEEDS_A_DATASET, _STATUS_HINT
+            return FILTER_NEEDS_ONE_DATASET.format(count=count), _STATUS_HINT
+        fragment = self.filter_input.text()
+        error = validate_where_fragment(fragment)
+        if error:
+            return error, (_STATUS_WARNING if _is_unfinished(error) else _STATUS_ERROR)
+        unknown = unknown_column_message(
+            fragment, [name for name, _type in self._schema_columns]
+        )
+        if unknown:
+            return unknown, _STATUS_WARNING
+        if self.schema_worker is not None or self._schema_timer.isActive():
+            return FILTER_READING_COLUMNS, _STATUS_HINT
+        if self._schema_columns:
+            return (
+                FILTER_COLUMNS_READY.format(count=len(self._schema_columns)),
+                _STATUS_HINT,
+            )
+        if self._schema_error:
+            return FILTER_NO_COLUMNS, _STATUS_HINT
+        return "", _STATUS_HINT
+
+    def _update_filter_status(self, *args):
+        text, style = self.filter_status_message()
+        self.filter_status.setText(text)
+        self.filter_status.setStyleSheet(style)
+        self.filter_status.setVisible(bool(text))
+        self.filter_input.setStyleSheet(_FIELD_ERROR if style == _STATUS_ERROR else "")
+
+    def eventFilter(self, obj, event):
+        """Tab completes a column name instead of leaving the filter box."""
+        if obj is self.filter_input:
+            event_type = event.type()
+            if event_type == QEvent.Type.KeyPress and event.key() in (
+                Qt.Key.Key_Tab,
+                Qt.Key.Key_Backtab,
+            ):
+                if self.complete_current_word():
+                    return True
+            elif event_type == QEvent.Type.FocusIn:
+                # The one fetch that starts without anything being typed: the
+                # columns are wanted by the time the first word is
+                self.request_filter_columns()
+        return super().eventFilter(obj, event)
 
     def validate_and_accept(self):
         """Validate the input and accept the dialog if valid"""
@@ -449,7 +870,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # The cheap lexical check runs for every source. Only a custom URL is
         # also tried against DuckDB below; a preset's DuckDB error comes from
         # the download itself.
-        filter_error = validate_where_fragment(self.filter_input.text())
+        filter_error = validate_where_fragment(self.get_where_fragment())
         if filter_error:
             QMessageBox.warning(self, "Validation Error", filter_error)
             return
@@ -590,6 +1011,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Clean up validation if running
         if self.validation_task is not None:
             self.cancel_validation()
+        self.cancel_schema_fetch()
 
         # Disconnect from layer changes
         if self.iface:
@@ -617,8 +1039,13 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         super().closeEvent(event)
 
-    def get_urls(self):
-        """Returns a list of URLs for selected datasets"""
+    def get_urls(self, release=None):
+        """Returns a list of URLs for selected datasets
+
+        `release` names the Overture release to build the URLs from, skipping
+        the lookup: selected_datasets() passes RELEASE_PLACEHOLDER so that
+        counting what is ticked never reaches the network (#217).
+        """
         urls = []
         if self.custom_radio.isChecked():
             return [self.url_input.text().strip()]
@@ -626,9 +1053,11 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             # One lookup per dialog: validate_and_accept() and the plugin's
             # accepted handler both call get_urls() on the same OK, and a
             # network drop between the two would otherwise raise out of a slot
-            if self._latest_release is None:
-                self._latest_release = latest_overture_release()
-            latest_release = self._latest_release
+            if release is None:
+                if self._latest_release is None:
+                    self._latest_release = latest_overture_release()
+                release = self._latest_release
+            latest_release = release
 
             for theme, checkbox in self.overture_checkboxes.items():
                 if checkbox.isChecked():
@@ -824,6 +1253,10 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
     def accept(self):
         """Override accept to store the current extent"""
+        # QDialog.accept() hides the dialog without a closeEvent, so the
+        # column fetch is stopped here too rather than left running
+        self.cancel_schema_fetch()
+
         # Store the extent to be used by the plugin
         if hasattr(self, 'current_extent') and self.current_extent:
             settings_store.save_last_used_extent(self.current_extent.toString())
@@ -844,6 +1277,8 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
     def reject(self):
         """Override reject to clean up resources"""
+        self.cancel_schema_fetch()
+
         # Reset the map tool to default when rejecting dialog
         if self.polygon_tool and self.iface and self.iface.mapCanvas():
             self.iface.mapCanvas().unsetMapTool(self.polygon_tool)
