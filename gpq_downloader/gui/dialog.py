@@ -46,6 +46,11 @@ OVERTURE_CHECKBOX_COLUMNS = 3
 # Overture presets whose checkbox label is not just the key title-cased
 OVERTURE_DISPLAY_NAMES = {"building_parts": "Building Parts"}
 
+# Overture presets shown as an indented checkbox under Buildings instead of a
+# top-level checkbox of their own. Buildings is not a pure container like Base
+# and Divisions: it downloads type=building itself and these add to it.
+BUILDINGS_SUBTYPE_PRESETS = ("building_parts",)
+
 # Overture's STAC catalog, whose "latest" names the newest release
 OVERTURE_CATALOG_URL = "https://stac.overturemaps.org/catalog.json"
 RELEASE_LOOKUP_TIMEOUT_MS = 30000
@@ -198,8 +203,11 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         # Create a widget to hold checkboxes
         self.overture_checkboxes = {}
+        # base and divisions get a parent checkbox of their own below; the
+        # BUILDINGS_SUBTYPE_PRESETS get an indented checkbox under Buildings
+        placed_elsewhere = ["base", "divisions", *BUILDINGS_SUBTYPE_PRESETS]
         for key in self.PRESET_DATASETS["overture"].keys():
-            if key not in ["base", "divisions"]:  # Handle base and divisions separately
+            if key not in placed_elsewhere:
                 checkbox = QCheckBox(OVERTURE_DISPLAY_NAMES.get(key) or key.title())
                 self.overture_checkboxes[key] = checkbox
 
@@ -215,6 +223,26 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Add the checkbox grid to main layout
         overture_layout.addLayout(checkbox_layout)
 
+        # Buildings subtype checkboxes (shown when Buildings is checked)
+        self.buildings_checkbox = self.overture_checkboxes["buildings"]
+        self.buildings_subtype_widget = QWidget()
+        buildings_subtype_layout = QHBoxLayout()
+        buildings_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Indent subtypes
+
+        self.buildings_subtype_checkboxes = {}
+        for key in BUILDINGS_SUBTYPE_PRESETS:
+            checkbox = QCheckBox(OVERTURE_DISPLAY_NAMES.get(key) or key.title())
+            self.buildings_subtype_checkboxes[key] = checkbox
+            buildings_subtype_layout.addWidget(checkbox)
+        buildings_subtype_layout.addStretch()
+
+        self.buildings_subtype_widget.setLayout(buildings_subtype_layout)
+        self.buildings_subtype_widget.hide()
+        overture_layout.addWidget(self.buildings_subtype_widget)
+
+        # Connect buildings checkbox to show/hide subtype checkboxes
+        self.buildings_checkbox.toggled.connect(self.buildings_subtype_widget.setVisible)
+
         # Divisions subtype checkboxes (right after first row, shown when Divisions is checked)
         self.divisions_subtype_widget = QWidget()
         divisions_subtype_layout = QHBoxLayout()
@@ -222,7 +250,11 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         self.divisions_subtype_checkboxes = {}
         divisions_subtype_display_names = {
-            "division": "Division",
+            # "Division Points" for the point geometry, so it is not read as
+            # the Divisions theme that holds all three. The key stays
+            # "division": it is Overture's type name, and both the URL and
+            # the saved setting are built from it.
+            "division": "Division Points",
             "division_area": "Division Area",
             "division_boundary": "Division Boundary",
         }
@@ -400,6 +432,8 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         # Connect each checkbox to save its state when toggled
         for checkbox in self.overture_checkboxes.values():
+            checkbox.toggled.connect(self.save_checkbox_states)
+        for checkbox in self.buildings_subtype_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
         for checkbox in self.base_subtype_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
@@ -633,7 +667,28 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             for theme, checkbox in self.overture_checkboxes.items():
                 if checkbox.isChecked():
                     dataset = self.PRESET_DATASETS["overture"][theme]
-                    if theme == "transportation":
+                    if theme == "buildings":
+                        # Not a pure container like base and divisions:
+                        # Buildings downloads type=building itself, and each
+                        # ticked nested preset adds a URL of its own. Which
+                        # also means a nested preset is only ever reached
+                        # through Buildings.
+                        urls.append(
+                            dataset["url_template"].format(
+                                subtype="building", release=latest_release
+                            )
+                        )
+                        for (
+                            nested_key,
+                            nested_checkbox,
+                        ) in self.buildings_subtype_checkboxes.items():
+                            if nested_checkbox.isChecked():
+                                nested = self.PRESET_DATASETS["overture"][nested_key]
+                                urls.append(
+                                    nested["url_template"].format(release=latest_release)
+                                )
+                        continue  # Skip the normal URL append for buildings
+                    elif theme == "transportation":
                         type_str = "segment"
                     elif theme == "divisions":
                         # Handle multiple divisions subtypes
@@ -775,6 +830,12 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         for key, checkbox in self.overture_checkboxes.items():
             settings_store.save_value(settings_store.CHECKBOX.format(key=key), checkbox.isChecked())
 
+        # Save buildings subtype checkboxes. They keep the top-level key
+        # they were saved under while Building Parts was a top-level checkbox
+        # (#80), so nesting it does not lose what the user chose.
+        for key, checkbox in self.buildings_subtype_checkboxes.items():
+            settings_store.save_value(settings_store.CHECKBOX.format(key=key), checkbox.isChecked())
+
         # Save base subtype checkboxes
         for key, checkbox in self.base_subtype_checkboxes.items():
             settings_store.save_value(settings_store.BASE_SUBTYPE_CHECKBOX.format(key=key), checkbox.isChecked())
@@ -796,6 +857,12 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             checked = settings_store.load_flag(settings_store.CHECKBOX.format(key=key))
             checkbox.setChecked(checked)
 
+        # Load buildings subtype checkboxes, on by default (see load_flag:
+        # a stored False, from a user who unticked one, still wins)
+        for key, checkbox in self.buildings_subtype_checkboxes.items():
+            checked = settings_store.load_flag(settings_store.CHECKBOX.format(key=key), default=True)
+            checkbox.setChecked(checked)
+
         # Load base subtype checkboxes
         for key, checkbox in self.base_subtype_checkboxes.items():
             checked = settings_store.load_flag(settings_store.BASE_SUBTYPE_CHECKBOX.format(key=key))
@@ -803,13 +870,19 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         # Load divisions subtype checkboxes
         for key, checkbox in self.divisions_subtype_checkboxes.items():
-            checked = settings_store.load_flag(settings_store.DIVISIONS_SUBTYPE_CHECKBOX.format(key=key))
+            # On by default; a stored False from the user still wins
+            checked = settings_store.load_flag(
+                settings_store.DIVISIONS_SUBTYPE_CHECKBOX.format(key=key), default=True
+            )
             checkbox.setChecked(checked)
 
         # Load OSM checkboxes
         for key, checkbox in self.osm_checkboxes.items():
             checked = settings_store.load_flag(settings_store.OSM_CHECKBOX.format(key=key))
             checkbox.setChecked(checked)
+
+        # Update buildings subtype widget visibility based on buildings checkbox state
+        self.buildings_subtype_widget.setVisible(self.buildings_checkbox.isChecked())
 
         # Update base subtype widget visibility based on base checkbox state
         self.base_subtype_widget.setVisible(self.base_checkbox.isChecked())
