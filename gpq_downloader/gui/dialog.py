@@ -36,6 +36,7 @@ from ..core.filters import validate_where_fragment
 from ..core.presets import load_presets
 from . import settings_store
 from .extent import AoiHighlighter, AreaOfInterestMixin
+from .flow_layout import FlowLayout
 
 # How many OpenStreetMap preset checkboxes go on a row before wrapping.
 OSM_CHECKBOX_COLUMNS = 5
@@ -53,10 +54,6 @@ OVERTURE_CATEGORIES = {"divisions": "Divisions", "base": "Base"}
 # sentence beside Buildings, not as a preset name.
 BUILDINGS_MODIFIERS = {"building_parts": "include building parts"}
 
-# Room to leave for the page's own margins when working out how much width a
-# line of a category's layers may take: the dialog's minimum width, less this
-# and the preset column.
-OVERTURE_PAGE_MARGINS = 40
 
 # Overture's STAC catalog, whose "latest" names the newest release
 OVERTURE_CATALOG_URL = "https://stac.overturemaps.org/catalog.json"
@@ -217,17 +214,12 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             QCheckBox(label).sizeHint().width()
             for label in ["Buildings", *OVERTURE_CATEGORIES.values()]
         )
-        # What is left of the dialog's minimum width for one line of layers.
-        # A category with more layers than fit wraps rather than widen the
-        # dialog, so the page never asks for more width than it already has.
-        layer_line_budget = (
-            self.minimumWidth() - preset_column_width - OVERTURE_PAGE_MARGINS
-        )
-
         # Buildings, with its modifier beside it
         buildings_row = QHBoxLayout()
         self.buildings_checkbox = QCheckBox("Buildings")
-        self.buildings_checkbox.setMinimumWidth(preset_column_width)
+        # Fixed, not minimum: a checkbox free to grow soaks up the spare width
+        # and pushes what follows it out of line with the rows below
+        self.buildings_checkbox.setFixedWidth(preset_column_width)
         self.overture_checkboxes["buildings"] = self.buildings_checkbox
         buildings_row.addWidget(self.buildings_checkbox)
 
@@ -279,6 +271,8 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                 for layer in self.PRESET_DATASETS["overture"][key]["subtypes"]
             }
 
+        category_lines = []  # (index of the line on the page, its layer widget)
+
         (
             self.divisions_checkbox,
             self.divisions_subtype_checkboxes,
@@ -289,8 +283,8 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             OVERTURE_CATEGORIES["divisions"],
             layers_of("divisions"),
             preset_column_width,
-            layer_line_budget,
         )
+        category_lines.append((overture_layout.count() - 1, self.divisions_subtype_widget))
         (
             self.base_checkbox,
             self.base_subtype_checkboxes,
@@ -301,8 +295,15 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             OVERTURE_CATEGORIES["base"],
             layers_of("base"),
             preset_column_width,
-            layer_line_budget,
         )
+        category_lines.append((overture_layout.count() - 1, self.base_subtype_widget))
+
+        self._reserve_room_above_other_presets(overture_layout, category_lines)
+
+        # Pin the lines to the top of the page. Without this the page's spare
+        # height is shared out between them, so how far down a preset sits
+        # depends on how tall its neighbours happen to be.
+        overture_layout.addStretch()
 
         overture_page.setLayout(overture_layout)
 
@@ -447,9 +448,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         settings_store.save_value(settings_store.RADIO_SELECTION, button_name)
 
-    def _add_overture_category(
-        self, layout, key, label, layer_labels, column_width, line_budget
-    ):
+    def _add_overture_category(self, layout, key, label, layer_labels, column_width):
         """Add an Overture category: a choice of layers, on the category's line.
 
         The layers go to the right of the category checkbox, on its own line,
@@ -457,46 +456,62 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         them attached to the right preset: a block placed below a preset reads
         as belonging to whatever sits above it (#230).
 
-        Layers that do not fit within line_budget wrap onto a continuation line
-        inside the same block, so a category with many of them never widens the
-        dialog or runs off its edge (#80, #193).
+        The layers are laid out by a FlowLayout, so they take one line wherever
+        there is room for one and wrap onto a continuation line inside the same
+        block where there is not. Whether the line then holds that room open
+        while hidden is _reserve_room_above_other_presets()'s to say.
 
         Returns (checkbox, {layer: checkbox}, the widget holding the layers).
         """
         row = QHBoxLayout()
         checkbox = QCheckBox(label)
-        checkbox.setMinimumWidth(column_width)
+        checkbox.setFixedWidth(column_width)  # see the Buildings checkbox
         self.overture_checkboxes[key] = checkbox
         # Top, not centre: a category whose layers wrap onto a second line
         # would otherwise float between the two lines instead of starting them
         row.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignTop)
 
         layer_widget = QWidget()
-        lines = QVBoxLayout()
-        lines.setContentsMargins(0, 0, 0, 0)
+        lines = FlowLayout()
         layer_checkboxes = {}
-        line, used = None, 0
         for layer, layer_label in layer_labels.items():
             layer_checkbox = QCheckBox(layer_label)
-            width = layer_checkbox.sizeHint().width()
-            if line is None or (used and used + width > line_budget):
-                line = QHBoxLayout()
-                line.setContentsMargins(0, 0, 0, 0)
-                lines.addLayout(line)
-                used = 0
-            line.addWidget(layer_checkbox)
-            used += width + lines.spacing()
             layer_checkboxes[layer] = layer_checkbox
-        for index in range(lines.count()):
-            lines.itemAt(index).addStretch()  # pack each line to the left
-
+            lines.addWidget(layer_checkbox)
         layer_widget.setLayout(lines)
+
+        policy = layer_widget.sizePolicy()
+        policy.setHeightForWidth(True)  # the line is as tall as the wrap makes it
+        layer_widget.setSizePolicy(policy)
         layer_widget.hide()
         row.addWidget(layer_widget)
         layout.addLayout(row)
 
         checkbox.toggled.connect(layer_widget.setVisible)
         return checkbox, layer_checkboxes, layer_widget
+
+    def _reserve_room_above_other_presets(self, layout, category_lines):
+        """Hold a category's room on the page open while its layers are hidden.
+
+        A category whose layers wrap makes its line taller, and everything
+        below it moves down - so ticking Divisions could shift Base out from
+        under the pointer (#230). Holding the room open whether or not the
+        layers are showing keeps the presets below it still, whatever the
+        width and the font do to the wrap.
+
+        Only lines with a preset below them need it. The last line on the page
+        pushes nothing down, so it is left to grow with its layers rather than
+        hold a blank band open under them.
+        """
+        # The last line that holds anything: a trailing stretch is not one
+        lines = [i for i in range(layout.count()) if layout.itemAt(i).layout() is not None]
+        last_line = lines[-1] if lines else -1
+        for index, layer_widget in category_lines:
+            if index == last_line:
+                continue
+            policy = layer_widget.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            layer_widget.setSizePolicy(policy)
 
     def handle_overture_selection(self, text):
         """Show/hide base subtype combo based on selection"""

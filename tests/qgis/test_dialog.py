@@ -455,6 +455,102 @@ def row_checkboxes(row):
     return found
 
 
+def preset_tops(dialog):
+    """Every preset checkbox's y on the page, once the page has been laid out."""
+    page = dialog.buildings_checkbox.parentWidget()
+    page.layout().activate()
+    return {
+        key: checkbox.mapTo(page, checkbox.rect().topLeft()).y()
+        for key, checkbox in dialog.overture_checkboxes.items()
+    }
+
+
+@pytest.mark.parametrize("width", [560, 640, 820])
+def test_what_follows_a_preset_starts_at_the_same_column(
+    qgs_app, mock_iface, unsaved_checkboxes, width
+):
+    """The modifier and the layer groups line up under each other.
+
+    They drift apart if the preset checkbox is free to grow, because then it
+    takes the spare width instead of the stretch at the end of the line - and
+    how much is spare depends on how wide the dialog is.
+    """
+    dialog = overture_dialog(mock_iface)
+    for checkbox in dialog.overture_checkboxes.values():
+        checkbox.setChecked(True)
+    dialog.resize(width, dialog.height())
+    dialog.show()
+    qgs_app.processEvents()
+    page = dialog.buildings_checkbox.parentWidget()
+    page.layout().activate()
+
+    def starts_at(checkbox):
+        return checkbox.mapTo(page, checkbox.rect().topLeft()).x()
+
+    first_of_each = [
+        starts_at(next(iter(group.values())))
+        for group in (
+            dialog.buildings_modifier_checkboxes,
+            dialog.divisions_subtype_checkboxes,
+            dialog.base_subtype_checkboxes,
+        )
+    ]
+    assert len(set(first_of_each)) == 1, f"groups start at {first_of_each}"
+    dialog.close()
+
+
+def test_only_a_line_with_presets_below_it_holds_its_room_open(
+    qgs_app, mock_iface, unsaved_checkboxes
+):
+    """How the invariant below is actually held, and what it is allowed to cost.
+
+    A category whose layers wrap makes its line taller and pushes everything
+    below it down, so a line with presets under it keeps its room whether or
+    not its layers are showing. The last line on the page pushes nothing, so
+    it grows with its layers instead of holding a blank band open - which is
+    the whole reason for drawing the distinction rather than reserving
+    everywhere.
+    """
+    dialog = DataSourceDialog(None, mock_iface)
+    last_line = [row for row in overture_page_rows(dialog) if row_checkboxes(row)][-1]
+
+    for category in OVERTURE_CATEGORIES:
+        layers = getattr(dialog, f"{category}_subtype_widget")
+        on_last_line = dialog.overture_checkboxes[category] in row_checkboxes(last_line)
+        assert layers.sizePolicy().retainSizeWhenHidden() is not on_last_line, category
+    dialog.close()
+
+
+@pytest.mark.parametrize("width", [500, 560, 640, 820])
+def test_toggling_a_preset_never_moves_another_preset(
+    qgs_app, mock_iface, unsaved_checkboxes, width
+):
+    """A checkbox the user is aiming at must not shift under the cursor.
+
+    A category whose layers wrap grows its line, and everything below it moves:
+    Base jumped whenever Divisions wrapped. Checked across widths because
+    whether a group wraps depends on the width it is given and on the font.
+    """
+    dialog = overture_dialog(mock_iface)
+    dialog.resize(width, dialog.height())
+    dialog.show()
+    qgs_app.processEvents()
+
+    at_rest = preset_tops(dialog)
+    for key, checkbox in dialog.overture_checkboxes.items():
+        checkbox.setChecked(True)
+        qgs_app.processEvents()
+        ticked = preset_tops(dialog)
+        assert {k: v for k, v in ticked.items() if k != key} == {
+            k: v for k, v in at_rest.items() if k != key
+        }, f"ticking {key} at {width}px moved another preset"
+
+        checkbox.setChecked(False)
+        qgs_app.processEvents()
+        assert preset_tops(dialog) == at_rest, f"unticking {key} at {width}px moved a preset"
+    dialog.close()
+
+
 @pytest.mark.parametrize("category", OVERTURE_CATEGORIES)
 def test_a_category_keeps_its_layers_on_its_own_line(
     qgs_app, mock_iface, unsaved_checkboxes, category
