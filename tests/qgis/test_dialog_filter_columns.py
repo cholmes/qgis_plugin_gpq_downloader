@@ -87,46 +87,71 @@ def one_osm(dialog, *keys):
 
 
 def with_schema(dialog, schema=SCHEMA):
-    """Tick the filter on and hand it a column list, as a fetch would."""
+    """Tick the filter on and give every selected dataset `schema`."""
     dialog.filter_checkbox.setChecked(True)
-    dialog._schema_arrived(dialog._schema_key, list(schema))
+    for key in dialog._schema_keys:
+        dialog._schema_arrived(key, list(schema))
     return dialog
 
 
 # --- a filter is a single-dataset option -----------------------------------
 
-def test_the_filter_is_offered_only_for_exactly_one_dataset(dialog):
+def test_a_filter_needs_a_dataset_but_not_only_one(dialog):
+    """A filter covers whatever is selected; what it may use is what they all
+    have (test_filter_across_datasets.py has the schema rules)."""
     one_osm(dialog)
     assert not dialog.filter_is_available()
     one_osm(dialog, "pois")
     assert dialog.filter_is_available()
     one_osm(dialog, "pois", "buildings")
-    assert not dialog.filter_is_available()
-    one_osm(dialog, "buildings")
+    assert dialog.filter_is_available()
+    one_osm(dialog, "pois", "buildings", "waterways")
     assert dialog.filter_is_available()
 
 
+# --- the note beside the checkbox, not on a line of its own ---------------
+
 @pytest.mark.parametrize("keys, expected", [
     ((), "Select a dataset to filter it."),
-    (("pois", "buildings"), "applies to one dataset at a time; 2 are selected"),
-    (("pois", "buildings", "waterways"), "3 are selected"),
+    (("pois",), ""),
+    (("pois", "buildings"), "applies to all 2 selected datasets"),
+    (("pois", "buildings", "waterways"), "applies to all 3 selected datasets"),
 ])
-def test_the_inline_note_says_why_the_filter_is_off(dialog, keys, expected):
+def test_the_availability_note_sits_on_the_checkbox_line(dialog, keys, expected):
     one_osm(dialog, *keys)
-    assert expected in dialog.filter_status.text()
-    assert dialog.filter_status.isVisibleTo(dialog)
+    assert dialog.filter_note.text() == expected
+    assert dialog.filter_note.isVisibleTo(dialog) == bool(expected)
+    # and not underneath, where the typing feedback goes
+    assert expected not in dialog.filter_status.text() or not expected
 
 
-def test_a_filter_typed_for_one_dataset_does_not_carry_over_to_two(dialog):
-    """The field is put away, so the text cannot be corrected or even seen as
-    applying; it must not quietly shrink both downloads either."""
+def test_the_note_is_on_the_same_row_as_the_checkbox(dialog):
+    """Rather than popping out below it."""
+    assert dialog.filter_note.parentWidget() is dialog.filter_checkbox.parentWidget()
+    row = dialog.layout().indexOf(dialog.filter_checkbox)
+    assert row == dialog.layout().indexOf(dialog.filter_note)
+
+
+def test_the_note_does_not_stretch_the_dialog(dialog):
+    """However long it gets, it takes the room left on the row."""
+    one_osm(dialog, "pois")
+    narrow = dialog.minimumSizeHint().width()
+    one_osm(dialog, "pois", "buildings", "waterways")
+    assert dialog.filter_note.text()
+    assert dialog.minimumSizeHint().width() == narrow
+    dialog.filter_note.setText("a note far longer than any of these messages " * 4)
+    assert dialog.minimumSizeHint().width() == narrow
+
+
+def test_a_filter_typed_for_one_dataset_carries_over_to_two(dialog):
+    """The owner's case: Buildings and Building Parts filtered together. The
+    plugin hands the fragment to every job, so it applies to both."""
     one_osm(dialog, "pois")
     dialog.filter_checkbox.setChecked(True)
     dialog.filter_input.setText("confidence > 0.9")
     assert dialog.get_where_fragment() == "confidence > 0.9"
     one_osm(dialog, "pois", "buildings")
-    assert dialog.get_where_fragment() is None
-    one_osm(dialog, "pois")
+    assert dialog.filter_row.isVisibleTo(dialog)
     assert dialog.get_where_fragment() == "confidence > 0.9"
 
 
@@ -148,10 +173,11 @@ def test_overture_subtypes_each_count_as_a_dataset(dialog):
     dialog.overture_radio.setChecked(True)
     dialog.base_checkbox.setChecked(True)
     dialog.base_subtype_checkboxes["water"].setChecked(True)
-    assert dialog.filter_is_available()
+    assert len(dialog.selected_datasets()) == 1
+    assert dialog.filter_note.text() == ""
     dialog.base_subtype_checkboxes["land"].setChecked(True)
-    assert not dialog.filter_is_available()
-    assert "2 are selected" in dialog.filter_status.text()
+    assert len(dialog.selected_datasets()) == 2
+    assert dialog.filter_note.text() == "applies to all 2 selected datasets"
 
 
 def test_counting_the_selection_never_looks_up_the_overture_release(dialog):
@@ -168,11 +194,11 @@ def test_counting_the_selection_never_looks_up_the_overture_release(dialog):
 
 
 def test_the_release_is_resolved_by_the_fetch_not_by_the_dialog(dialog):
-    """_single_dataset() hands the task a callable that closes over strings
+    """selected_sources() hands each task a callable that closes over strings
     only, so the blocking lookup happens on the task's own thread."""
     dialog.overture_radio.setChecked(True)
     dialog.overture_checkboxes["places"].setChecked(True)
-    key, resolve_url = dialog._single_dataset()
+    (key, resolve_url), = dialog.selected_sources()
     assert "{release}" in key  # the cache key outlives any one release
     with patch.object(dialog_module, "latest_overture_release", return_value="2026-09-23.1"):
         assert resolve_url() == (
@@ -202,10 +228,10 @@ def test_the_fetch_is_debounced_rather_than_fired_at_once(dialog):
     one_osm(dialog, "pois")
     dialog.filter_checkbox.setChecked(True)
     assert dialog._schema_timer.isActive()
-    assert dialog.schema_worker is None  # nothing submitted yet
+    assert dialog._schema_workers == {}  # nothing submitted yet
 
 
-def test_the_fetch_waits_until_a_dataset_is_ticked(dialog):
+def test_the_fetch_waits_until_a_dataset_is_selected(dialog):
     """A filter asked for with nothing selected is served the moment one is."""
     one_osm(dialog)
     dialog.filter_checkbox.setChecked(True)
@@ -230,32 +256,54 @@ def test_the_fetch_runs_on_a_task_and_is_dropped_when_that_task_ends(dialog):
     assert worker_class.call_args.args[0]() == OSM_POIS  # the resolver
     submit.assert_called_once()
     task = submit.call_args.args[0]
-    assert task is dialog.schema_task and task.worker is dialog.schema_worker
+    assert dialog._schema_tasks == {OSM_POIS: task}
+    assert set(dialog._schema_workers) == {OSM_POIS}
 
     dialog._schema_task_finished(task, True)
-    assert dialog.schema_worker is None and dialog.schema_task is None
+    assert dialog._schema_tasks == {} and dialog._schema_workers == {}
 
 
-def test_cancelling_kills_the_worker_and_lets_go_of_the_task(dialog):
-    one_osm(dialog, "pois")
+def test_one_fetch_per_selected_dataset(dialog):
+    one_osm(dialog, "pois", "buildings", "waterways")
     _, submit = fetch(dialog)
-    task = submit.call_args.args[0]
-    with patch.object(task, "cancel") as cancel:
+    assert submit.call_count == 3
+    assert set(dialog._schema_tasks) == set(dialog.selected_datasets())
+
+
+def test_a_dataset_already_read_is_not_fetched_again_with_the_others(dialog):
+    one_osm(dialog, "pois")
+    with_schema(dialog)
+    one_osm(dialog, "pois", "buildings")
+    worker_class, submit = fetch(dialog)
+    assert submit.call_count == 1  # buildings only
+    assert set(dialog._schema_tasks) == {
+        "https://data.openstreetmap.us/layercake/buildings.parquet"
+    }
+
+
+def test_cancelling_kills_every_worker_and_lets_go_of_every_task(dialog):
+    one_osm(dialog, "pois", "buildings")
+    _, submit = fetch(dialog)
+    tasks = [call.args[0] for call in submit.call_args_list]
+    with patch.object(tasks[0], "cancel") as first, \
+            patch.object(tasks[1], "cancel") as second:
         dialog.cancel_schema_fetch()
-    cancel.assert_called_once()  # WorkerTask.cancel() calls worker.kill()
-    assert dialog.schema_worker is None and dialog.schema_task is None
+    first.assert_called_once()  # WorkerTask.cancel() calls worker.kill()
+    second.assert_called_once()
+    assert dialog._schema_tasks == {} and dialog._schema_workers == {}
 
 
-def test_a_report_for_a_dataset_no_longer_ticked_is_not_shown(dialog):
-    """The fetch is keyed, not guarded on the worker still being the current
+def test_a_report_for_a_dataset_no_longer_selected_is_not_shown(dialog):
+    """The fetch is keyed, not guarded on the worker still being a current
     one: nothing orders a queued emission against the task's finished()."""
     one_osm(dialog, "pois")
+    dialog.filter_checkbox.setChecked(True)
     one_osm(dialog, "buildings")
     dialog._schema_arrived(OSM_POIS, SCHEMA)
     assert dialog.filter_columns() == []
     dialog._schema_unavailable(OSM_POIS, "IO Error")
     assert dialog.filter_status.text() != dialog_module.FILTER_NO_COLUMNS
-    # but it is kept, so re-ticking it needs no second DESCRIBE
+    # but it is kept, so reselecting it needs no second DESCRIBE
     one_osm(dialog, "pois")
     assert dialog.filter_columns() == SCHEMA
 
@@ -270,7 +318,7 @@ def test_leaving_the_dialog_stops_a_running_fetch(qgs_app, mock_iface, leave):
         with patch.object(task, "cancel") as cancel:
             getattr(leaving, leave)()
         cancel.assert_called_once()
-        assert leaving.schema_worker is None and leaving.schema_task is None
+        assert leaving._schema_tasks == {} and leaving._schema_workers == {}
         assert not leaving._schema_timer.isActive()
     finally:
         leaving.deleteLater()
@@ -299,7 +347,7 @@ def test_a_schema_that_cannot_be_read_leaves_the_filter_usable(dialog):
     one_osm(dialog, "pois")
     dialog.filter_checkbox.setChecked(True)
     dialog._schema_unavailable(
-        dialog._schema_key, "IO Error: No files found that match the pattern"
+        OSM_POIS, "IO Error: No files found that match the pattern"
     )
     assert dialog.filter_row.isVisibleTo(dialog)
     assert dialog.filter_columns() == []
@@ -547,7 +595,7 @@ def test_unticking_it_hides_the_field_and_stops_the_fetch(dialog):
     dialog.filter_checkbox.setChecked(False)
     assert not dialog.filter_row.isVisibleTo(dialog)
     assert not dialog._schema_timer.isActive()
-    assert dialog.schema_worker is None
+    assert dialog._schema_workers == {}
 
 
 def test_an_unticked_filter_never_reaches_a_download(dialog):
@@ -572,30 +620,14 @@ def test_an_unticked_filter_cannot_block_ok(dialog):
     warning.assert_not_called()
 
 
-def test_the_checkbox_itself_carries_the_single_dataset_rule(dialog):
+def test_the_checkbox_needs_a_dataset(dialog):
     one_osm(dialog, "pois")
     assert dialog.filter_checkbox.isEnabled()
     one_osm(dialog, "pois", "buildings")
-    assert not dialog.filter_checkbox.isEnabled()
-    assert "2 are selected" in dialog.filter_status.text()
+    assert dialog.filter_checkbox.isEnabled()
     one_osm(dialog)
     assert not dialog.filter_checkbox.isEnabled()
-    assert dialog.filter_status.text() == dialog_module.FILTER_NEEDS_A_DATASET
-
-
-def test_a_ticked_filter_is_put_away_while_several_are_selected(dialog):
-    """The tick is kept, so going back to one dataset brings the field back,
-    but nothing filtered is downloaded meanwhile."""
-    one_osm(dialog, "pois")
-    dialog.filter_checkbox.setChecked(True)
-    dialog.filter_input.setText("confidence > 0.9")
-    one_osm(dialog, "pois", "buildings")
-    assert dialog.filter_checkbox.isChecked()
-    assert not dialog.filter_row.isVisibleTo(dialog)
-    assert dialog.get_where_fragment() is None
-    one_osm(dialog, "pois")
-    assert dialog.filter_row.isVisibleTo(dialog)
-    assert dialog.get_where_fragment() == "confidence > 0.9"
+    assert dialog.filter_note.text() == dialog_module.FILTER_NEEDS_A_DATASET
 
 
 def test_the_tick_is_not_remembered_between_sessions(qgs_app, mock_iface):
@@ -636,9 +668,7 @@ DIVISIONS = [
 def ticked(dialog, schema=DIVISIONS):
     """One dataset, the filter ticked, and its column list in place."""
     one_osm(dialog, "pois")
-    dialog.filter_checkbox.setChecked(True)
-    dialog._schema_arrived(dialog._schema_key, list(schema))
-    return dialog
+    return with_schema(dialog, schema)
 
 
 @pytest.mark.parametrize("text, cursor, expected", [
@@ -867,3 +897,216 @@ def test_a_problem_elsewhere_is_still_reported_while_a_word_is_typed(dialog):
     assert dialog.filter_status.text() == (
         'Unknown column "zzzz" - the data has no column by that name.'
     )
+
+
+# --- a filter over several datasets (#217) ---------------------------------
+#
+# The owner asked for Buildings and Building Parts to be filterable together.
+# They share 23 of their columns and differ in four, so the rule is the
+# schemas themselves rather than a hardcoded pair: completion comes from the
+# intersection, and a column only some of them have is a warning naming the
+# one without it.
+
+BUILDINGS = [
+    ("id", "VARCHAR"),
+    ("geometry", "GEOMETRY"),
+    ("names", 'STRUCT("primary" VARCHAR)'),
+    ("height", "DOUBLE"),
+    ("class", "VARCHAR"),
+]
+BUILDING_PARTS = [
+    ("id", "VARCHAR"),
+    ("geometry", "GEOMETRY"),
+    ("names", 'STRUCT("primary" VARCHAR)'),
+    ("height", "DOUBLE"),
+    ("building_id", "VARCHAR"),
+]
+OSM_BUILDINGS = "https://data.openstreetmap.us/layercake/buildings.parquet"
+
+
+def two_datasets(dialog, first=BUILDINGS, second=BUILDING_PARTS):
+    """pois and buildings selected, the filter ticked, a schema each."""
+    one_osm(dialog, "pois", "buildings")
+    dialog.filter_checkbox.setChecked(True)
+    dialog._schema_arrived(OSM_POIS, list(first))
+    dialog._schema_arrived(OSM_BUILDINGS, list(second))
+    return dialog
+
+
+def test_completion_offers_only_the_columns_both_datasets_have(dialog):
+    two_datasets(dialog)
+    assert [name for name, _type in dialog.filter_columns()] == [
+        "id", "geometry", "names", "height"
+    ]
+    dialog.filter_input.setText("")
+    dialog.filter_input.setCursorPosition(0)
+    assert dialog.completions_at_cursor() == ["id", "geometry", "names", "height"]
+
+
+def test_a_struct_shared_by_both_still_completes_its_fields(dialog):
+    two_datasets(dialog)
+    dialog.filter_input.setText("names.")
+    dialog.filter_input.setCursorPosition(6)
+    assert dialog.completions_at_cursor() == ["primary"]
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("class = 'school'",
+     'Column "class" is not in every selected dataset (missing from "buildings").'),
+    ("building_id IS NOT NULL",
+     'Column "building_id" is not in every selected dataset (missing from "pois").'),
+])
+def test_a_column_only_one_of_them_has_names_the_one_without(dialog, text, expected):
+    two_datasets(dialog)
+    dialog.filter_input.setText(text)
+    assert dialog.filter_status.text() == expected
+
+
+def test_a_column_neither_has_keeps_the_unknown_message(dialog):
+    two_datasets(dialog)
+    dialog.filter_input.setText("zzzzzz = 1")
+    assert dialog.filter_status.text() == (
+        'Unknown column "zzzzzz" - the data has no column by that name.'
+    )
+
+
+def test_a_shared_column_draws_no_complaint(dialog):
+    two_datasets(dialog)
+    dialog.filter_input.setText("height > 10 AND names.primary = 'Flatiron'")
+    assert dialog.filter_status.text() == dialog_module.FILTER_SHARED_COLUMNS.format(
+        count=4, datasets=2
+    )
+
+
+def test_the_status_says_how_many_columns_the_datasets_share(dialog):
+    two_datasets(dialog)
+    assert dialog.filter_status.text() == (
+        "4 columns shared by all 2 datasets - press Tab to complete a name."
+    )
+
+
+def test_datasets_with_nothing_in_common_say_so(dialog):
+    """The honest result where the intersection is empty, rather than a field
+    that looks broken."""
+    two_datasets(dialog, [("a", "VARCHAR")], [("b", "VARCHAR")])
+    assert dialog.filter_columns() == []
+    assert dialog.filter_status.text() == (
+        dialog_module.FILTER_NO_SHARED_COLUMNS.format(datasets=2)
+    )
+    assert "no columns in common" in dialog.filter_status.text()
+
+
+def test_a_thin_intersection_is_explained_by_the_count(dialog):
+    """Six Base subtypes share seven plumbing columns; the line says so."""
+    two_datasets(dialog, [("id", "VARCHAR"), ("class", "VARCHAR")], [("id", "VARCHAR")])
+    assert dialog.filter_status.text() == (
+        "1 columns shared by all 2 datasets - press Tab to complete a name."
+    )
+
+
+def test_nothing_is_offered_until_every_dataset_has_reported(dialog):
+    """The intersection of the ones that have could offer a column the next
+    one has not got."""
+    one_osm(dialog, "pois", "buildings")
+    dialog.filter_checkbox.setChecked(True)
+    dialog._schema_arrived(OSM_POIS, BUILDINGS)
+    assert dialog.filter_columns() == []
+    assert dialog.filter_status.text() == dialog_module.FILTER_READING_COLUMNS
+    dialog._schema_arrived(OSM_BUILDINGS, BUILDING_PARTS)
+    assert [name for name, _ in dialog.filter_columns()] == [
+        "id", "geometry", "names", "height"
+    ]
+
+
+def test_a_dataset_whose_columns_could_not_be_read_is_left_out(dialog):
+    """Not taken as having no columns, which would make everything look
+    missing from it."""
+    one_osm(dialog, "pois", "buildings")
+    dialog.filter_checkbox.setChecked(True)
+    dialog._schema_arrived(OSM_POIS, BUILDINGS)
+    dialog._schema_unavailable(OSM_BUILDINGS, "IO Error")
+    dialog.filter_input.setText("class = 'school'")
+    assert "not in every selected dataset" not in dialog.filter_status.text()
+    assert "Unknown" not in dialog.filter_status.text()
+
+
+def test_dropping_back_to_one_dataset_offers_its_own_columns_again(dialog):
+    two_datasets(dialog)
+    assert len(dialog.filter_columns()) == 4
+    one_osm(dialog, "pois")
+    assert dialog.filter_columns() == BUILDINGS
+    dialog.filter_input.setText("class = 'school'")
+    assert dialog.filter_status.text() == dialog_module.FILTER_COLUMNS_READY.format(
+        count=5
+    )
+
+
+def test_a_mixed_column_does_not_stop_ok(dialog):
+    """A warning, not a refusal: the download reports what DuckDB says."""
+    two_datasets(dialog)
+    dialog.filter_input.setText("class = 'school'")
+    accepted = []
+    dialog.accepted.connect(lambda: accepted.append(True))
+    with patch.object(dialog_module, "QMessageBox") as boxes:
+        dialog.validate_and_accept()
+    assert not boxes.method_calls, boxes.method_calls
+    assert accepted == [True]
+
+
+def test_the_dataset_names_in_a_message_come_off_the_urls(dialog):
+    """So nothing here depends on how the source pages are built (#230)."""
+    dialog.overture_radio.setChecked(True)
+    dialog.overture_checkboxes["buildings"].setChecked(True)
+    dialog.overture_checkboxes["building_parts"].setChecked(True)
+    dialog.filter_checkbox.setChecked(True)
+    for key in dialog._schema_keys:
+        schema = BUILDINGS if "type=building/" in key else BUILDING_PARTS
+        dialog._schema_arrived(key, list(schema))
+    assert [label for label, _columns in dialog.filter_schemas()] == [
+        "Building", "Building Part"
+    ]
+    dialog.filter_input.setText("class = 'school'")
+    assert dialog.filter_status.text() == (
+        'Column "class" is not in every selected dataset '
+        '(missing from "Building Part").'
+    )
+
+
+# --- the help text register ------------------------------------------------
+
+def help_text():
+    """The help with its line wrapping collapsed, so a phrase can be looked
+    for without caring where the source happens to break."""
+    return " ".join(dialog_module.FILTER_HELP_HTML.split())
+
+
+@pytest.mark.parametrize("phrase", [
+    "This is the one that catches everyone",
+    "For an apostrophe inside a value",
+    "a dot will not follow one",
+    "Give it an element number first",
+    "has a value at all",
+    "any of these",
+    "Reach into a struct",
+    "your own DuckDB",
+    "could do more than filter",
+])
+def test_the_help_drops_the_chatty_phrasing(phrase):
+    assert phrase not in help_text()
+
+
+@pytest.mark.parametrize("phrase", [
+    "To include an apostrophe in a value, double it",
+    "Dot access does not apply to a list; index an element first",
+    "A dot reads a field of a struct",
+    "the local DuckDB",
+])
+def test_the_help_states_it_plainly_instead(phrase):
+    assert phrase in help_text()
+
+
+def test_the_help_explains_filtering_several_datasets():
+    html = help_text()
+    assert "A filter applies to every selected dataset" in html
+    assert "Only the columns they all have can be used" in html
+    assert "Buildings and Building Parts" in html

@@ -14,6 +14,7 @@ from qgis.PyQt.QtNetwork import QNetworkRequest
 from qgis.PyQt.QtWidgets import (
     QMessageBox,
     QCompleter,
+    QSizePolicy,
     QTextBrowser,
     QToolButton,
     QDialog,
@@ -38,10 +39,12 @@ from ..qgis_io.manager import QUEUED, WorkerTask, submit
 from ..qgis_io.worker import SchemaWorker, ValidationWorker
 from ..utils import MINIO_URL_FORMAT
 from ..core.filters import (
+    column_feedback,
     completion_candidates,
     completion_text,
     current_word,
-    unknown_column_message,
+    dataset_label,
+    shared_columns,
     validate_where_fragment,
 )
 from ..core.schema import field_candidates
@@ -71,15 +74,23 @@ RELEASE_PLACEHOLDER = "{release}"
 # three checkboxes in a row is one selection worth a DESCRIBE, not three.
 SCHEMA_FETCH_DELAY_MS = 500
 
-# What the line under the filter box says. The filter is a single-dataset
-# option: a condition on columns two datasets do not share is not a filter
-# either of them can run, and there is no one schema to check it against.
+# Beside the checkbox: whether a filter can be had, and what it covers. A
+# filter applies to every selected dataset, so only the columns they all have
+# can be used - a condition on a column one of them lacks is not a condition
+# that one can run (core/filters.shared_columns).
 FILTER_NEEDS_A_DATASET = "Select a dataset to filter it."
-FILTER_NEEDS_ONE_DATASET = (
-    "An attribute filter applies to one dataset at a time; {count} are selected."
-)
+FILTER_ACROSS_DATASETS = "applies to all {count} selected datasets"
+
+# Under the field: what is wrong with the condition, or what it can complete.
 FILTER_READING_COLUMNS = "Reading the column list..."
 FILTER_COLUMNS_READY = "{count} columns available - press Tab to complete a name."
+FILTER_SHARED_COLUMNS = (
+    "{count} columns shared by all {datasets} datasets - press Tab to complete a name."
+)
+FILTER_NO_SHARED_COLUMNS = (
+    "The {datasets} selected datasets have no columns in common, so no "
+    "condition applies to all of them."
+)
 FILTER_NO_COLUMNS = "Could not read the column list, so column names are not checked."
 
 # A half-typed fragment trips the lexical check on its way through: the
@@ -93,24 +104,24 @@ _INCOMPLETE_HINTS = ("unclosed", "without a matching")
 # it carries no links and reaches no network.
 FILTER_HELP_HTML = """
 <h3>Writing an attribute filter</h3>
-<p>Type one SQL condition on the dataset&rsquo;s own columns. Press
-<b>Tab</b> in the field for the column names, and again after a
-<code>.</code> for the fields of a struct.</p>
+<p>A filter is one SQL condition on the dataset&rsquo;s own columns.
+<b>Tab</b> in the field lists the column names, and <b>Tab</b> after a
+<code>.</code> lists the fields of a struct.</p>
 
 <h4>Single quotes for text, not double</h4>
-<p>This is the one that catches everyone. In SQL <b>'single quotes' are a
-text value</b> and <b>"double quotes" are a column name</b>, so a value
-typed in double quotes is read as a column that does not exist:</p>
+<p>In SQL <b>'single quotes' are a text value</b> and <b>"double quotes" are
+a column name</b>. A value written in double quotes is read as a column, and
+the column does not exist:</p>
 <table cellpadding="4">
 <tr><td><code>names.primary = 'Jack Park'</code></td><td>&nbsp;correct</td></tr>
 <tr><td><code>names.primary = "Jack Park"</code></td>
     <td>&nbsp;wrong: <i>Referenced column "Jack Park" not found</i></td></tr>
 </table>
-<p>For an apostrophe inside a value, double it:
+<p>To include an apostrophe in a value, double it:
 <code>names.primary = 'Jack''s Park'</code>.</p>
 
 <h4>Sub-properties</h4>
-<p>Reach into a struct with a dot:</p>
+<p>A dot reads a field of a struct:</p>
 <ul>
 <li><code>names.primary = 'Jack Park'</code></li>
 <li><code>bbox.xmin &gt; 7</code></li>
@@ -118,8 +129,8 @@ typed in double quotes is read as a column that does not exist:</p>
 </ul>
 
 <h4>Lists need an index</h4>
-<p>A column whose type ends in <code>[]</code> is a list, and a dot will not
-follow one. Give it an element number first:</p>
+<p>A column whose type ends in <code>[]</code> is a list. Dot access does not
+apply to a list; index an element first:</p>
 <table cellpadding="4">
 <tr><td><code>sources[1].property = 'name'</code></td><td>&nbsp;correct</td></tr>
 <tr><td><code>sources.property = 'name'</code></td>
@@ -128,13 +139,14 @@ follow one. Give it an element number first:</p>
 
 <h4>Matching text</h4>
 <ul>
-<li><code>subtype = 'locality'</code> &mdash; exactly equal</li>
+<li><code>subtype = 'locality'</code> &mdash; equal to</li>
 <li><code>names.primary LIKE 'Jack%'</code> &mdash; starts with Jack
-    (<code>%</code> is any run of characters)</li>
+    (<code>%</code> matches any run of characters)</li>
 <li><code>names.primary ILIKE '%park%'</code> &mdash; contains park,
-    ignoring case</li>
-<li><code>subtype IN ('locality', 'county')</code> &mdash; any of these</li>
-<li><code>names.primary IS NOT NULL</code> &mdash; has a value at all</li>
+    disregarding case</li>
+<li><code>subtype IN ('locality', 'county')</code> &mdash; equal to any of
+    the listed values</li>
+<li><code>names.primary IS NOT NULL</code> &mdash; not null</li>
 </ul>
 
 <h4>Numbers, true/false, and joining conditions</h4>
@@ -143,21 +155,27 @@ follow one. Give it an element number first:</p>
     <code>min_zoom &lt;&gt; 0</code></li>
 <li><code>is_land = true</code></li>
 <li><code>subtype = 'locality' AND population &gt; 10000</code></li>
-<li><code>subtype = 'locality' OR subtype = 'county'</code> &mdash; use
-    parentheses to group: <code>(a OR b) AND c</code></li>
+<li><code>subtype = 'locality' OR subtype = 'county'</code></li>
+<li><code>(a OR b) AND c</code> &mdash; parentheses group conditions</li>
 </ul>
-<p>Do not type <code>WHERE</code>: enter only the condition itself. It is
-combined with the area of interest, so only features that match <i>and</i>
-fall in the area are downloaded.</p>
+<p><code>WHERE</code> is not part of the filter: the field takes the
+condition alone. It is combined with the area of interest, so a feature is
+downloaded when it matches the condition <i>and</i> falls in the area.</p>
 
-<h4>What is not allowed</h4>
-<p>The condition runs as SQL in your own DuckDB, so a filter pasted from
-somewhere else could do more than filter. Subqueries
-(<code>SELECT</code>, <code>TABLE</code>), the functions that read files or
-the network (<code>read_text()</code>, <code>read_csv()</code>,
-<code>glob()</code>, <code>current_setting()</code>), a semicolon, and SQL
-comments (<code>--</code>, <code>/*</code>) are all refused, so that what you
-type stays one condition on this data.</p>
+<h4>Several datasets</h4>
+<p>A filter applies to every selected dataset. Only the columns they all have
+can be used: <code>height</code> works across Buildings and Building Parts,
+<code>class</code> exists only on Buildings. The line under the field says
+how many columns the selected datasets share.</p>
+
+<h4>What is refused</h4>
+<p>The condition runs as SQL in the local DuckDB, where a pasted filter could
+reach further than the data. Subqueries (<code>SELECT</code>,
+<code>TABLE</code>), the functions that read files or the network
+(<code>read_text()</code>, <code>read_csv()</code>, <code>glob()</code>,
+<code>current_setting()</code>), a semicolon, and SQL comments
+(<code>--</code>, <code>/*</code>) are refused, which keeps the filter to one
+condition on this data.</p>
 """
 
 _STATUS_ERROR = "color: #c0392b;"
@@ -247,13 +265,13 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self.validation_worker = None
         self._bbox_warning_open = False  # the bbox warning holds a queued finished() (see show_bbox_warning)
         self._held_validation = None
-        self.schema_task = None
-        self.schema_worker = None
-        self._schema_columns = []  # [(name, DuckDB type)] for the ticked dataset
-        self._schema_key = None  # which dataset _schema_columns describe
-        self._schema_cache = {}  # key -> columns, so reticking does not refetch
-        self._schema_pending_key = None  # the fetch now running
-        self._schema_error = None  # why the last fetch gave no columns
+        # One fetch per selected dataset, all cancelled and superseded together
+        self._schema_tasks = {}  # key -> the WorkerTask reading it
+        self._schema_workers = {}  # key -> its SchemaWorker
+        self._schema_columns = []  # the columns every selected dataset has
+        self._schema_keys = ()  # the datasets _schema_columns are shared by
+        self._schema_cache = {}  # key -> columns, so reselecting does not refetch
+        self._schema_errors = {}  # key -> why its column list could not be read
         self._completer_path = None  # the struct path the completer is filled for
         self._filter_help = None  # the help window, while it is open
         self._latest_release = None  # looked up once per dialog; OK uses it twice, back to back
@@ -523,11 +541,24 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # nobody had asked to filter.
         self.filter_checkbox = QCheckBox("Attribute filter")
         self.filter_checkbox.setToolTip(
-            "Download only the features that match an SQL condition you type, "
-            "as well as falling in the area. Unchecked, everything in the area "
-            "is downloaded."
+            "Download only the features matching an SQL condition, as well as "
+            "falling in the area. Unchecked, everything in the area is "
+            "downloaded."
         )
-        layout.addWidget(self.filter_checkbox)
+        # Beside the checkbox rather than on a line of its own: why a filter
+        # cannot be had, or how many datasets it would cover
+        self.filter_note = QLabel()
+        self.filter_note.setStyleSheet(_STATUS_HINT)
+        # Ignored: the note takes the room left on the row and never adds to
+        # the width the dialog asks for, however long it is
+        self.filter_note.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        checkbox_row = QHBoxLayout()
+        checkbox_row.addWidget(self.filter_checkbox)
+        checkbox_row.addWidget(self.filter_note)
+        checkbox_row.addStretch()
+        layout.addLayout(checkbox_row)
 
         self.filter_row = QWidget()
         filter_layout = QHBoxLayout()
@@ -539,8 +570,8 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             "Optional. A DuckDB SQL condition on the data's own columns, without WHERE. "
             "Only features that match it and fall in the area are downloaded "
             "(it is ANDed with the spatial filter). Leave empty to download everything in the area. "
-            "Press Tab for the column names of the selected dataset. "
-            "Available when exactly one dataset is selected. "
+            "Press Tab for the column names, and again after a '.' for the fields of a struct. "
+            "With several datasets selected, only the columns they all have can be used. "
             "The condition runs as SQL in your local DuckDB, so only paste filters from sources you trust."
         )
         self.filter_label.setToolTip(filter_tooltip)
@@ -647,19 +678,16 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
     def get_where_fragment(self):
         """The attribute filter as typed, stripped, or None when it is empty.
 
-        Also None whenever the filter is out of sight (#217): the Attribute
-        filter box is unticked, or more than one dataset is selected so the
-        field is put away. An invisible filter must never shrink a download -
-        the text cannot be seen, corrected, or even known to apply. The text
-        itself is kept, so re-ticking restores what was typed.
+        Also None while the Attribute filter box is unticked (#217): an
+        invisible filter must never shrink a download, since the text cannot
+        be seen, corrected, or even known to apply. The text itself is kept,
+        so re-ticking restores what was typed.
 
-        Nothing selected is not a third case: there is no download to filter,
-        and validate_and_accept() stops at "select at least one dataset"
-        before any of this is read.
+        A filter does carry across several selected datasets - the plugin
+        passes it to every job - which is what the shared-column completion
+        and the per-dataset warnings are for.
         """
         if not self.filter_checkbox.isChecked():
-            return None
-        if len(self.selected_datasets()) > 1:
             return None
         return self.filter_input.text().strip() or None
 
@@ -721,34 +749,36 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             return []
         return [url for url in urls if url]
 
-    def _single_dataset(self):
-        """(key, resolve_url) for the one dataset ticked, or None.
+    def selected_sources(self):
+        """[(key, resolve_url)] for every dataset selected, one per download.
 
-        `key` identifies it for the schema cache and never depends on the
-        Overture release, which changes monthly while the columns do not.
-        `resolve_url` is called by the schema task on its own thread, so it
+        `key` identifies a dataset for the schema cache and never depends on
+        the Overture release, which changes monthly while the columns do not.
+        `resolve_url` is called by a schema task on its own thread, so it
         closes over strings only and never touches a widget.
         """
-        urls = self.selected_datasets()
-        if len(urls) != 1:
-            return None
-        url = urls[0]
+        sources = []
+        for url in self.selected_datasets():
 
-        def resolve_url(url=url):
-            if RELEASE_PLACEHOLDER in url:
-                return url.replace(RELEASE_PLACEHOLDER, latest_overture_release())
-            return url
+            def resolve_url(url=url):
+                if RELEASE_PLACEHOLDER in url:
+                    return url.replace(RELEASE_PLACEHOLDER, latest_overture_release())
+                return url
 
-        return url, resolve_url
+            sources.append((url, resolve_url))
+        return sources
 
     def filter_is_available(self):
-        """Can a filter be offered at all? Only for exactly one dataset.
+        """Can a filter be offered at all? Whenever a dataset is selected.
 
-        That is the only selection a condition can be completed and checked
-        against, and a filter across datasets that do not share a column is
-        not a filter either of them can run.
+        A filter covers every selected dataset, so what it may use is what
+        they all have: the completion comes from the intersection of their
+        schemas and a column only some of them have is a warning naming the
+        one without it. Buildings and Building Parts share 23 of their
+        columns and are filterable together; the six Base subtypes share
+        seven, and the honest result there is that almost nothing completes.
         """
-        return len(self.selected_datasets()) == 1
+        return bool(self.selected_datasets())
 
     def filter_is_active(self):
         """Is a filter being asked for, and can it be?"""
@@ -759,17 +789,14 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         return list(self._schema_columns)
 
     def _selection_changed(self, *args):
-        """What is ticked changed: the filter is for exactly one dataset."""
-        source = self._single_dataset()
-        key = source[0] if source else None
-        if key != self._schema_key:
-            self._schema_key = key
-            self._schema_error = None
-            self._set_filter_columns([])
+        """What is selected changed: the filter covers all of it."""
+        keys = tuple(key for key, _resolve in self.selected_sources())
+        if keys != self._schema_keys:
+            self._schema_keys = keys
+            self._schema_errors = {}
             self.cancel_schema_fetch()
-            if key is not None and key in self._schema_cache:
-                self._set_filter_columns(self._schema_cache[key])
-        self.filter_checkbox.setEnabled(key is not None)
+            self._refresh_filter_columns()
+        self.filter_checkbox.setEnabled(bool(keys))
         self._update_filter_visibility()
 
     def _filter_asked_for(self, checked):
@@ -799,70 +826,77 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self._show_completions()
 
     def request_filter_columns(self, delay_ms=None):
-        """Ask for the selected dataset's column list, shortly.
+        """Ask for the selected datasets' column lists, shortly.
 
         Debounced, so that ticking the box and then changing the selection
-        twice is one DESCRIBE rather than three.
+        twice is one round of DESCRIBEs rather than three.
         """
-        if self._schema_columns or self._single_dataset() is None:
+        if not self.filter_checkbox.isChecked() or not self._schema_keys:
             return
-        if not self.filter_checkbox.isChecked():
+        if not self._schemas_outstanding():
             return
         self._schema_timer.start(
             SCHEMA_FETCH_DELAY_MS if delay_ms is None else delay_ms
         )
         self._update_filter_status()
 
-    def _start_schema_fetch(self):
-        """Read the ticked dataset's columns on a task thread."""
-        source = self._single_dataset()
-        if source is None:
-            return
-        key, resolve_url = source
-        if key in self._schema_cache:
-            self._set_filter_columns(self._schema_cache[key])
-            self._update_filter_status()
-            return
-        if self.schema_worker is not None and self._schema_pending_key == key:
-            return  # already on its way
-        self.cancel_schema_fetch()
-        worker = SchemaWorker(resolve_url)
-        self.schema_worker = worker
-        self._schema_pending_key = key
+    def _schemas_outstanding(self):
+        """The selected datasets whose column list is neither read nor refused."""
+        return [
+            key
+            for key in self._schema_keys
+            if key not in self._schema_cache and key not in self._schema_errors
+        ]
 
-        # It emits from the task's thread; queued, these run on the main
-        # thread. Both carry the key they are about rather than being guarded
-        # on the worker still being the current one, the way the validation
-        # signals are (_unless_superseded): nothing here orders the queued
-        # emission against the task's own finished(), which lets go of the
-        # worker, and a column list dropped for that would be a completer
-        # that silently never fills.
-        worker.schema_ready.connect(
-            lambda schema: self._schema_arrived(key, list(schema)), QUEUED
-        )
-        worker.failed.connect(
-            lambda message: self._schema_unavailable(key, message), QUEUED
-        )
-        self.schema_task = WorkerTask(
-            f"Reading the columns of {key}", worker, self._schema_task_finished
-        )
-        submit(self.schema_task)
+    def _start_schema_fetch(self):
+        """Read each selected dataset's columns, one task per dataset.
+
+        Six Base subtypes means six DESCRIBEs in the background. They are
+        started, cancelled and superseded together: anything already read, or
+        already running, is left alone.
+        """
+        for key, resolve_url in self.selected_sources():
+            if key in self._schema_cache or key in self._schema_errors:
+                continue
+            if key in self._schema_workers:
+                continue  # already on its way
+            worker = SchemaWorker(resolve_url)
+            self._schema_workers[key] = worker
+
+            # It emits from the task's thread; queued, these run on the main
+            # thread. Both carry the key they are about rather than being
+            # guarded on the worker still being a current one, the way the
+            # validation signals are (_unless_superseded): nothing here
+            # orders the queued emission against the task's own finished(),
+            # which lets go of the worker, and a column list dropped for that
+            # would be a completer that silently never fills.
+            worker.schema_ready.connect(
+                lambda schema, key=key: self._schema_arrived(key, list(schema)),
+                QUEUED,
+            )
+            worker.failed.connect(
+                lambda message, key=key: self._schema_unavailable(key, message),
+                QUEUED,
+            )
+            task = WorkerTask(
+                f"Reading the columns of {key}", worker, self._schema_task_finished
+            )
+            self._schema_tasks[key] = task
+            submit(task)
         self._update_filter_status()
 
     def _schema_arrived(self, key, schema):
         """`key`'s columns, from a fetch that may since have been superseded.
 
         A killed worker reports nothing (SchemaWorker.run checks), so what
-        arrives is always a real column list and worth keeping; it only
-        reaches the completer while `key` is still what is ticked.
+        arrives is always a real column list and worth keeping, whether or not
+        `key` is still selected.
         """
         self._schema_cache[key] = list(schema)
-        if key != self._schema_key:
+        self._schema_errors.pop(key, None)
+        if key not in self._schema_keys:
             return
-        # Only this key's fetch can be pending (a change of key cancels it)
-        self._schema_timer.stop()
-        self._schema_error = None
-        self._set_filter_columns(schema)
+        self._refresh_filter_columns()
         self._update_filter_status()
 
     def _schema_unavailable(self, key, message):
@@ -872,36 +906,63 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         the field and nothing more. The download reports whatever is really
         wrong with the source.
         """
-        if key != self._schema_key:
+        self._schema_errors[key] = message
+        if key not in self._schema_keys:
             return
-        self._schema_timer.stop()
-        self._schema_error = message
-        self._set_filter_columns([])
+        self._refresh_filter_columns()
         self._update_filter_status()
 
     def _schema_task_finished(self, task, result):
-        """The task ended: let go of it, whether or not the worker reported."""
-        if task.worker is self.schema_worker:
-            self.schema_worker = None
-            self.schema_task = None
-            self._schema_pending_key = None
-            self._update_filter_status()
+        """A task ended: let go of it, whether or not its worker reported."""
+        for key, running in list(self._schema_tasks.items()):
+            if running is task:
+                self._schema_tasks.pop(key, None)
+                self._schema_workers.pop(key, None)
+        self._update_filter_status()
 
     def cancel_schema_fetch(self):
-        """Stop a running column fetch and let go of its worker and task."""
+        """Stop every running column fetch and let go of its worker and task."""
         self._schema_timer.stop()
-        if self.schema_task is not None:
-            self.schema_task.cancel()  # kills the worker
-        elif self.schema_worker is not None:
-            self.schema_worker.kill()
+        tasks, self._schema_tasks = self._schema_tasks, {}
+        workers, self._schema_workers = self._schema_workers, {}
+        for task in tasks.values():
+            task.cancel()  # kills the worker
+        for key, worker in workers.items():
+            if key not in tasks:
+                worker.kill()
         # A killed worker may still be returning from DuckDB; its task holds
         # it until then, and the task manager deletes the task
-        self.schema_worker = None
-        self.schema_task = None
-        self._schema_pending_key = None
+
+    def filter_schemas(self):
+        """[(a name for the dataset, its columns)] for what has been read.
+
+        The names come off the URLs (core/filters.dataset_label), so a
+        message can say which dataset has not got a column without this
+        depending on how the source pages are built.
+        """
+        return [
+            (dataset_label(key), self._schema_cache[key])
+            for key in self._schema_keys
+            if key in self._schema_cache
+        ]
+
+    def _refresh_filter_columns(self):
+        """The columns a filter may use: those every selected dataset has.
+
+        Nothing until every selected dataset has reported, because the
+        intersection of the ones that have could offer a column the next one
+        has not got.
+        """
+        if self._schemas_outstanding():
+            self._set_filter_columns([])
+            return
+        self._schema_timer.stop()  # every selected dataset has reported
+        self._set_filter_columns(
+            shared_columns([columns for _label, columns in self.filter_schemas()])
+        )
 
     def _set_filter_columns(self, schema):
-        """Hold `schema` as the selected dataset's columns."""
+        """Hold `schema` as the columns the selected datasets share."""
         self._schema_columns = list(schema)
         self._completer_model.clear()
         self._completer_path = None
@@ -1029,33 +1090,39 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         Nothing here opens a dialog: a filter being typed is corrected where
         it is typed, and only OK still stops for a message box.
         """
-        if not self.filter_is_available():
-            count = len(self.selected_datasets())
-            if count == 0:
-                return FILTER_NEEDS_A_DATASET, _STATUS_HINT
-            return FILTER_NEEDS_ONE_DATASET.format(count=count), _STATUS_HINT
-        if not self.filter_checkbox.isChecked():
+        if not self.filter_is_active() or not self.filter_checkbox.isChecked():
             return "", _STATUS_HINT
         fragment = self.filter_input.text()
         error = validate_where_fragment(fragment)
         if error:
             return error, (_STATUS_WARNING if _is_unfinished(error) else _STATUS_ERROR)
-        # The whole schema, not just the names: the types are what tell a
-        # misspelled struct field from a list that needs an index
-        unknown = unknown_column_message(fragment, self._schema_columns)
+        # Every selected dataset, with its whole schema: the types are what
+        # tell a misspelled struct field from a list that needs an index, and
+        # a column only some of them have is its own warning
+        unknown = column_feedback(fragment, self.filter_schemas())
         if unknown and self._still_typing(unknown):
             unknown = None
         if unknown:
             return unknown, _STATUS_WARNING
-        if self.schema_worker is not None or self._schema_timer.isActive():
+        if self._schema_workers or self._schema_timer.isActive():
             return FILTER_READING_COLUMNS, _STATUS_HINT
+        datasets = len(self._schema_keys)
         if self._schema_columns:
+            if datasets > 1:
+                return (
+                    FILTER_SHARED_COLUMNS.format(
+                        count=len(self._schema_columns), datasets=datasets
+                    ),
+                    _STATUS_HINT,
+                )
             return (
                 FILTER_COLUMNS_READY.format(count=len(self._schema_columns)),
                 _STATUS_HINT,
             )
-        if self._schema_error:
+        if self._schema_errors:
             return FILTER_NO_COLUMNS, _STATUS_HINT
+        if datasets > 1 and self.filter_schemas():
+            return FILTER_NO_SHARED_COLUMNS.format(datasets=datasets), _STATUS_HINT
         return "", _STATUS_HINT
 
     def _still_typing(self, unknown):
@@ -1072,7 +1139,19 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         typed = ".".join(word.path + (word.text,))
         return f'"{typed}"' in unknown and bool(self.completions_at_cursor())
 
+    def filter_availability_message(self):
+        """The line beside the checkbox: why no filter, or what it would cover."""
+        count = len(self.selected_datasets())
+        if count == 0:
+            return FILTER_NEEDS_A_DATASET
+        if count > 1:
+            return FILTER_ACROSS_DATASETS.format(count=count)
+        return ""
+
     def _update_filter_status(self, *args):
+        note = self.filter_availability_message()
+        self.filter_note.setText(note)
+        self.filter_note.setVisible(bool(note))
         text, style = self.filter_status_message()
         self.filter_status.setText(text)
         self.filter_status.setStyleSheet(style)

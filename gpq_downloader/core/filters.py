@@ -656,28 +656,153 @@ def _list_message(fragment, columns):
     return None
 
 
-def unknown_column_message(fragment: str, columns) -> Optional[str]:
-    """Why `fragment` names something this data has not got, or None.
+def _unknown_text(name, suggestion):
+    """The line for a name the data has not got at all."""
+    kind = "field" if "." in name else "column"
+    if suggestion:
+        return f'Unknown {kind} "{name}" - did you mean "{suggestion}"?'
+    if kind == "field":
+        parent = name.rsplit(".", 1)[0]
+        return f'Unknown field "{name}" - "{parent}" has no field by that name.'
+    return f'Unknown column "{name}" - the data has no column by that name.'
 
-    One line, and only the first thing wrong: the point is to replace a
-    DuckDB Binder Error nobody reads with something short under the field,
-    and the next problem is reported once this one is fixed. `columns` is
-    plain names or (name, type) rows; the dotted-path checks need the types.
+
+def shared_columns(schemas) -> list:
+    """The (name, type) rows every schema in `schemas` has.
+
+    `schemas` is a sequence of column lists. The result keeps the first
+    schema's order and its type text, which is what a filter across several
+    datasets may use: a condition on a column only some of them have is not a
+    condition all of them can run. Names are matched the way DuckDB matches
+    them, without regard to case.
     """
-    trap = _quote_trap_message(fragment, columns)
+    lists = [list(columns) for columns in schemas or () if columns]
+    if not lists:
+        return []
+    shared = set.intersection(
+        *[{str(row[0]).lower() for row in columns} for columns in lists]
+    )
+    return [row for row in lists[0] if str(row[0]).lower() in shared]
+
+
+def _union_columns(schemas):
+    """One column list holding every column any schema has, first type wins."""
+    union = []
+    seen = set()
+    for _label, columns in schemas:
+        for row in columns or ():
+            name = str(row[0] if not isinstance(row, str) else row)
+            if name.lower() not in seen:
+                seen.add(name.lower())
+                union.append(row)
+    return union
+
+
+def _reference_feedback(ref, schemas, union):
+    """What is wrong with one reference across `schemas`, or None.
+
+    Reported in order of how wrong it is: a name none of them has at all,
+    then a dot that cannot follow a list, then a name only some of them have.
+    """
+    resolved = [(label, resolve_path(columns, ref.path)) for label, columns in schemas]
+    missing = [
+        (label, outcome)
+        for label, outcome in resolved
+        if outcome.outcome in ("unknown_column", "unknown_field")
+    ]
+    if missing and len(missing) == len(resolved):
+        label, outcome = missing[0]
+        if outcome.outcome == "unknown_column":
+            return _unknown_text(outcome.missing, _suggest_column(
+                outcome.missing, _column_names(union)
+            ))
+        parent = ".".join(ref.path[: outcome.index])
+        suggestion = _suggest_column(outcome.missing, field_names(outcome.parent.text))
+        typed = f"{parent}.{outcome.missing}"
+        return _unknown_text(typed, f"{parent}.{suggestion}" if suggestion else None)
+    for label, outcome in resolved:
+        if outcome.outcome == "list" and outcome.list_path:
+            depth = len(outcome.list_path)
+            if len(ref.path) > depth:
+                head = ".".join(ref.path[:depth])
+                tail = ".".join(ref.path[depth:])
+                return (
+                    f'"{head}" is a list - use {head}[1].{tail}, not {head}.{tail}.'
+                )
+    if missing:
+        # Present in some of the selected datasets and not others, which is
+        # the Buildings-and-Building-Parts case: class is only on buildings
+        label, outcome = missing[0]
+        typed = ".".join(ref.path[: (outcome.index or 0) + 1])
+        kind = "Field" if "." in typed else "Column"
+        return (
+            f'{kind} "{typed}" is not in every selected dataset '
+            f'(missing from "{label}").'
+        )
+    return None
+
+
+def column_feedback(fragment: str, schemas) -> Optional[str]:
+    """Why `fragment` will not run over every schema in `schemas`, or None.
+
+    `schemas` is [(a name for the dataset, its columns), ...] - one entry for
+    each dataset the download will cover. One line, and only the first thing
+    wrong: the point is to replace a DuckDB Binder Error nobody reads with
+    something short under the field, and the next problem is reported once
+    this one is fixed.
+
+    A schema with no columns is left out rather than taken at its word: that
+    is a DESCRIBE that has not arrived or could not be read, and it would
+    otherwise make every column look missing.
+    """
+    schemas = [
+        (label, list(columns))
+        for label, columns in (schemas or ())
+        if _column_names(columns)
+    ]
+    if not schemas:
+        return None
+    union = _union_columns(schemas)
+    trap = _quote_trap_message(fragment, union)
     if trap:
         return trap
-    unknown = unknown_identifiers(fragment, columns)
-    if unknown:
-        name, suggestion = unknown[0]
-        kind = "field" if "." in name else "column"
-        if suggestion:
-            return f'Unknown {kind} "{name}" - did you mean "{suggestion}"?'
-        if kind == "field":
-            parent = name.rsplit(".", 1)[0]
-            return f'Unknown field "{name}" - "{parent}" has no field by that name.'
-        return f'Unknown column "{name}" - the data has no column by that name.'
-    return _list_message(fragment, columns)
+    for ref in identifier_paths_in(fragment):
+        message = _reference_feedback(ref, schemas, union)
+        if message:
+            return message
+    return None
+
+
+def unknown_column_message(fragment: str, columns) -> Optional[str]:
+    """column_feedback() for a single dataset, whose name is never needed."""
+    return column_feedback(fragment, [("", columns)])
+
+
+def dataset_label(url) -> str:
+    """A short name for `url`, to say which of several datasets lacks a column.
+
+    An Overture path names the record type it holds
+    (theme=buildings/type=building_part), which is what the checkbox beside
+    it is called; addresses has no single type, so its theme names it.
+    Anything else is named by its file or folder. Read off the URL rather
+    than the widgets, so nothing here depends on how the source pages are
+    built.
+    """
+    text = str(url or "")
+    if not text:
+        return ""
+    overture = re.search(r"[/&?]type=([^/&?]+)", text)
+    if overture:
+        name = overture.group(1)
+        if name in ("", "*"):
+            theme = re.search(r"[/&?]theme=([^/&?]+)", text)
+            name = theme.group(1) if theme else ""
+        if name:
+            return name.replace("_", " ").title()
+    parts = [part for part in text.rstrip("/").split("/") if part and part != "*"]
+    if not parts:
+        return ""
+    return parts[-1].rsplit(".", 1)[0]
 
 
 class Word(NamedTuple):
