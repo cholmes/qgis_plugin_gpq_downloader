@@ -197,58 +197,49 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         overture_page = QWidget()
         overture_layout = QVBoxLayout()
 
-        # A grid, not a row: each new Overture preset would otherwise raise the
-        # dialog's minimum width (#80 made it six)
-        checkbox_layout = QGridLayout()
-
-        # Create a widget to hold checkboxes
+        # Buildings, Divisions and Base each own a full-width row with their
+        # subtypes indented directly below it; the presets with no subtypes go
+        # in a grid between them, so that a long list of them does not raise
+        # the dialog's minimum width (#80 made it six). Keeping a parent and
+        # its subtypes together is the point: while every subtype row was
+        # appended below the whole grid, the Building Parts row came out under
+        # the grid row holding Divisions and read as one of its subtypes (#230).
         self.overture_checkboxes = {}
-        # base and divisions get a parent checkbox of their own below; the
-        # BUILDINGS_SUBTYPE_PRESETS get an indented checkbox under Buildings
-        placed_elsewhere = ["base", "divisions", *BUILDINGS_SUBTYPE_PRESETS]
-        for key in self.PRESET_DATASETS["overture"].keys():
-            if key not in placed_elsewhere:
-                checkbox = QCheckBox(OVERTURE_DISPLAY_NAMES.get(key) or key.title())
-                self.overture_checkboxes[key] = checkbox
 
-        # Add Divisions to the first block (before Base which has subtypes)
-        self.divisions_checkbox = QCheckBox("Divisions")
-        self.overture_checkboxes["divisions"] = self.divisions_checkbox
+        # Buildings, first on the page, with Building Parts under it. No width
+        # adjustment: one short checkbox fits the width the dialog already asks
+        # for, where the Divisions and Base rows below need the room.
+        (
+            self.buildings_checkbox,
+            self.buildings_subtype_checkboxes,
+            self.buildings_subtype_widget,
+        ) = self._add_overture_preset_with_subtypes(
+            overture_layout,
+            "buildings",
+            "Buildings",
+            {
+                key: OVERTURE_DISPLAY_NAMES.get(key) or key.title()
+                for key in BUILDINGS_SUBTYPE_PRESETS
+            },
+            align_subtypes_left=True,  # a lone subtype would else span the page
+        )
 
-        for index, checkbox in enumerate(self.overture_checkboxes.values()):
+        # The presets with no subtypes of their own, in a grid
+        checkbox_layout = QGridLayout()
+        has_own_row = ["buildings", "divisions", "base"]
+        plain_presets = [
+            key
+            for key in self.PRESET_DATASETS["overture"]
+            if key not in [*has_own_row, *BUILDINGS_SUBTYPE_PRESETS]
+        ]
+        for index, key in enumerate(plain_presets):
+            checkbox = QCheckBox(OVERTURE_DISPLAY_NAMES.get(key) or key.title())
+            self.overture_checkboxes[key] = checkbox
             checkbox_layout.addWidget(
                 checkbox, index // OVERTURE_CHECKBOX_COLUMNS, index % OVERTURE_CHECKBOX_COLUMNS
             )
-
-        # Add the checkbox grid to main layout
         overture_layout.addLayout(checkbox_layout)
 
-        # Buildings subtype checkboxes (shown when Buildings is checked)
-        self.buildings_checkbox = self.overture_checkboxes["buildings"]
-        self.buildings_subtype_widget = QWidget()
-        buildings_subtype_layout = QHBoxLayout()
-        buildings_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Indent subtypes
-
-        self.buildings_subtype_checkboxes = {}
-        for key in BUILDINGS_SUBTYPE_PRESETS:
-            checkbox = QCheckBox(OVERTURE_DISPLAY_NAMES.get(key) or key.title())
-            self.buildings_subtype_checkboxes[key] = checkbox
-            buildings_subtype_layout.addWidget(checkbox)
-        buildings_subtype_layout.addStretch()
-
-        self.buildings_subtype_widget.setLayout(buildings_subtype_layout)
-        self.buildings_subtype_widget.hide()
-        overture_layout.addWidget(self.buildings_subtype_widget)
-
-        # Connect buildings checkbox to show/hide subtype checkboxes
-        self.buildings_checkbox.toggled.connect(self.buildings_subtype_widget.setVisible)
-
-        # Divisions subtype checkboxes (right after first row, shown when Divisions is checked)
-        self.divisions_subtype_widget = QWidget()
-        divisions_subtype_layout = QHBoxLayout()
-        divisions_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Indent subtypes
-
-        self.divisions_subtype_checkboxes = {}
         divisions_subtype_display_names = {
             # "Division Points" for the point geometry, so it is not read as
             # the Divisions theme that holds all three. The key stays
@@ -258,40 +249,22 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             "division_area": "Division Area",
             "division_boundary": "Division Boundary",
         }
-
-        for subtype in self.PRESET_DATASETS["overture"]["divisions"]["subtypes"]:
-            checkbox = QCheckBox(divisions_subtype_display_names[subtype])
-            self.divisions_subtype_checkboxes[subtype] = checkbox
-            divisions_subtype_layout.addWidget(checkbox)
-
-        self.divisions_subtype_widget.setLayout(divisions_subtype_layout)
-        self.divisions_subtype_widget.hide()
-        overture_layout.addWidget(self.divisions_subtype_widget)
-
-        # Connect divisions checkbox to show/hide subtype checkboxes
-        self.divisions_checkbox.toggled.connect(
-            self.divisions_subtype_widget.setVisible
-        )
-        self.divisions_checkbox.toggled.connect(
-            lambda checked: self.adjust_dialog_width(checked, 100)
+        (
+            self.divisions_checkbox,
+            self.divisions_subtype_checkboxes,
+            self.divisions_subtype_widget,
+        ) = self._add_overture_preset_with_subtypes(
+            overture_layout,
+            "divisions",
+            "Divisions",
+            {
+                subtype: divisions_subtype_display_names[subtype]
+                for subtype in self.PRESET_DATASETS["overture"]["divisions"]["subtypes"]
+            },
+            width_adjustment=100,
+            top_margin=5,
         )
 
-        # Second row: Base checkbox
-        second_row = QHBoxLayout()
-        second_row.setContentsMargins(0, 5, 0, 0)
-
-        self.base_checkbox = QCheckBox("Base")
-        self.overture_checkboxes["base"] = self.base_checkbox
-        second_row.addWidget(self.base_checkbox)
-        second_row.addStretch()
-        overture_layout.addLayout(second_row)
-
-        # Base subtype checkboxes (shown when Base is checked)
-        self.base_subtype_widget = QWidget()
-        base_subtype_layout = QHBoxLayout()
-        base_subtype_layout.setContentsMargins(20, 0, 0, 0)  # Indent subtypes
-
-        self.base_subtype_checkboxes = {}
         base_subtype_display_names = {
             "infrastructure": "Infrastructure",
             "land": "Land",
@@ -300,20 +273,20 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             "water": "Water",
             "bathymetry": "Bathymetry",
         }
-
-        for subtype in self.PRESET_DATASETS["overture"]["base"]["subtypes"]:
-            checkbox = QCheckBox(base_subtype_display_names[subtype])
-            self.base_subtype_checkboxes[subtype] = checkbox
-            base_subtype_layout.addWidget(checkbox)
-
-        self.base_subtype_widget.setLayout(base_subtype_layout)
-        self.base_subtype_widget.hide()
-        overture_layout.addWidget(self.base_subtype_widget)
-
-        # Connect base checkbox to show/hide subtype checkboxes
-        self.base_checkbox.toggled.connect(self.base_subtype_widget.setVisible)
-        self.base_checkbox.toggled.connect(
-            lambda checked: self.adjust_dialog_width(checked, 100)
+        (
+            self.base_checkbox,
+            self.base_subtype_checkboxes,
+            self.base_subtype_widget,
+        ) = self._add_overture_preset_with_subtypes(
+            overture_layout,
+            "base",
+            "Base",
+            {
+                subtype: base_subtype_display_names[subtype]
+                for subtype in self.PRESET_DATASETS["overture"]["base"]["subtypes"]
+            },
+            width_adjustment=100,
+            top_margin=5,
         )
 
         overture_page.setLayout(overture_layout)
@@ -458,6 +431,54 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             button_name = self.custom_radio.text()
 
         settings_store.save_value(settings_store.RADIO_SELECTION, button_name)
+
+    def _add_overture_preset_with_subtypes(
+        self,
+        layout,
+        key,
+        label,
+        subtype_labels,
+        width_adjustment=0,
+        top_margin=0,
+        align_subtypes_left=False,
+    ):
+        """Add an Overture preset that has subtypes, as two rows of its own.
+
+        The preset gets a full-width row and its subtypes the row directly
+        below it, shown while the preset is checked. Going through here is what
+        keeps the two together: a subtype row added anywhere else on the page
+        can end up under the wrong preset (#230).
+
+        Returns (checkbox, {subtype: checkbox}, subtype row widget).
+        """
+        preset_row = QHBoxLayout()
+        preset_row.setContentsMargins(0, top_margin, 0, 0)
+        checkbox = QCheckBox(label)
+        self.overture_checkboxes[key] = checkbox
+        preset_row.addWidget(checkbox)
+        preset_row.addStretch()
+        layout.addLayout(preset_row)
+
+        subtype_widget = QWidget()
+        subtype_row = QHBoxLayout()
+        subtype_row.setContentsMargins(20, 0, 0, 0)  # Indent subtypes
+        subtype_checkboxes = {}
+        for subtype, subtype_label in subtype_labels.items():
+            subtype_checkbox = QCheckBox(subtype_label)
+            subtype_checkboxes[subtype] = subtype_checkbox
+            subtype_row.addWidget(subtype_checkbox)
+        if align_subtypes_left:
+            subtype_row.addStretch()
+        subtype_widget.setLayout(subtype_row)
+        subtype_widget.hide()
+        layout.addWidget(subtype_widget)
+
+        checkbox.toggled.connect(subtype_widget.setVisible)
+        if width_adjustment:
+            checkbox.toggled.connect(
+                lambda checked: self.adjust_dialog_width(checked, width_adjustment)
+            )
+        return checkbox, subtype_checkboxes, subtype_widget
 
     def handle_overture_selection(self, text):
         """Show/hide base subtype combo based on selection"""
