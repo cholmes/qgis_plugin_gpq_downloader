@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from qgis.core import QgsCoordinateReferenceSystem, QgsFeature, QgsGeometry, QgsVectorLayer
 from qgis.gui import QgsMapCanvas
+from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import QCheckBox
 
 from gpq_downloader.dialog import DataSourceDialog
@@ -409,7 +410,7 @@ def overture_dialog(mock_iface):
     dialog.overture_radio.setChecked(True)
     for checkbox in dialog.overture_checkboxes.values():
         checkbox.setChecked(False)
-    for checkbox in dialog.buildings_subtype_checkboxes.values():
+    for checkbox in dialog.buildings_modifier_checkboxes.values():
         checkbox.setChecked(False)
     for checkbox in dialog.divisions_subtype_checkboxes.values():
         checkbox.setChecked(False)
@@ -418,8 +419,10 @@ def overture_dialog(mock_iface):
     return dialog
 
 
-# The Overture presets that have an indented row of subtypes under them
-OVERTURE_PARENTS = ["buildings", "divisions", "base"]
+# The Overture presets that are a category: a choice of layers, which sit on
+# that preset's own line. Buildings is not one of them - it is a single layer
+# with a modifier beside it.
+OVERTURE_CATEGORIES = ["divisions", "base"]
 
 
 def overture_page_rows(dialog):
@@ -429,112 +432,168 @@ def overture_page_rows(dialog):
 
 
 def row_checkboxes(row):
-    """The checkboxes one row holds, whether it is a nested layout or a widget."""
-    layout = row.layout()
-    if layout is None:
-        widget = row.widget()
-        if widget is None:
+    """Every checkbox a row holds, in order, however deeply it is nested.
+
+    A category's layers are a widget of their own inside the row, and wrap onto
+    further lines inside that, so this has to recurse rather than look one
+    level down.
+    """
+    widget = row.widget()
+    if widget is not None:
+        if isinstance(widget, QCheckBox):
+            return [widget]
+        row = widget.layout()
+        if row is None:
             return []
-        layout = widget.layout()
-        if layout is None:
-            return [widget] if isinstance(widget, QCheckBox) else []
-    found = [layout.itemAt(i).widget() for i in range(layout.count())]
-    return [w for w in found if isinstance(w, QCheckBox)]
+    else:
+        row = row.layout()
+        if row is None:
+            return []
+    found = []
+    for i in range(row.count()):
+        found.extend(row_checkboxes(row.itemAt(i)))
+    return found
 
 
-@pytest.mark.parametrize("parent", OVERTURE_PARENTS)
-def test_each_overture_parent_owns_the_row_above_its_subtypes(
-    qgs_app, mock_iface, unsaved_checkboxes, parent
+@pytest.mark.parametrize("category", OVERTURE_CATEGORIES)
+def test_a_category_keeps_its_layers_on_its_own_line(
+    qgs_app, mock_iface, unsaved_checkboxes, category
 ):
-    """A subtype row belongs directly below its own parent, and that parent has
-    the row to itself.
+    """A category's layers belong to its line, to the right of it.
 
-    Every subtype row used to be appended below the whole preset grid, which
-    only read correctly for the preset that happened to sit in the grid's last
-    row: Building Parts came out under the grid row holding Divisions and read
-    as one of its subtypes (#230).
+    Which is what keeps them attached to the right preset: they are inside its
+    row, not a separate block below it that has to be read as belonging to
+    whatever happens to sit above (#230).
     """
     dialog = DataSourceDialog(None, mock_iface)
-    parent_checkbox = dialog.overture_checkboxes[parent]
-    subtype_widget = getattr(dialog, f"{parent}_subtype_widget")
+    parent = dialog.overture_checkboxes[category]
+    layers = getattr(dialog, f"{category}_subtype_widget")
     rows = overture_page_rows(dialog)
 
-    holding = [i for i, row in enumerate(rows) if parent_checkbox in row_checkboxes(row)]
-    assert len(holding) == 1, f"{parent} is on {len(holding)} rows"
-    index = holding[0]
+    holding = [i for i, row in enumerate(rows) if parent in row_checkboxes(row)]
+    assert len(holding) == 1, f"{category} is on {len(holding)} rows"
+    row = rows[holding[0]]
 
-    # The parent has its row to itself, so the indented row under it cannot be
-    # read as belonging to some other preset sharing that row
-    assert row_checkboxes(rows[index]) == [parent_checkbox]
-    # ...and its own subtypes are the very next row
-    assert rows[index + 1].widget() is subtype_widget
-    # ...indented like every other subtype row
-    assert subtype_widget.layout().contentsMargins().left() == 20
+    # Its own layers are on that line, and no other preset's are
+    assert row_checkboxes(row) == [parent, *layers.findChildren(QCheckBox)]
+    # The category starts that line rather than floating in the middle of it,
+    # which is what it would do once its layers wrap onto a second line
+    assert row.layout().itemAt(0).alignment() & Qt.AlignmentFlag.AlignTop
+    other_categories = [c for c in OVERTURE_CATEGORIES if c != category]
+    for other in other_categories:
+        assert dialog.overture_checkboxes[other] not in row_checkboxes(row)
     dialog.close()
 
 
-def test_the_overture_page_reads_each_parent_then_its_own_subtypes(
-    qgs_app, mock_iface, unsaved_checkboxes
+@pytest.mark.parametrize("category", OVERTURE_CATEGORIES)
+def test_a_category_shows_its_layers_only_while_it_is_checked(
+    qgs_app, mock_iface, unsaved_checkboxes, category
 ):
-    """The whole page, row by row. Pinned so that adding a preset is a decision
-    about where it goes rather than something that quietly reshuffles the page."""
     dialog = DataSourceDialog(None, mock_iface)
-    rows = [[c.text() for c in row_checkboxes(row)] for row in overture_page_rows(dialog)]
-    assert [row for row in rows if row] == [
-        ["Buildings"],
-        ["Building Parts"],
-        ["Places", "Transportation", "Addresses"],
-        ["Divisions"],
-        ["Division Points", "Division Area", "Division Boundary"],
-        ["Base"],
-        ["Infrastructure", "Land", "Land Cover", "Land Use", "Water", "Bathymetry"],
-    ]
+    parent = dialog.overture_checkboxes[category]
+    layers = getattr(dialog, f"{category}_subtype_widget")
+
+    parent.setChecked(False)
+    assert layers.isHidden()
+    parent.setChecked(True)
+    assert not layers.isHidden()
+    parent.setChecked(False)
+    assert layers.isHidden()
     dialog.close()
 
 
-def test_only_the_wide_subtype_rows_adjust_the_dialog_width(
+def test_a_long_line_of_layers_wraps_instead_of_widening_the_dialog(
     qgs_app, mock_iface, unsaved_checkboxes
 ):
-    """Divisions and Base reveal rows wider than the dialog, so they widen it
-    and put the width back. The single Building Parts checkbox fits the width
-    the dialog already has, so Buildings leaves it alone rather than make the
-    dialog jump for nothing."""
-    dialog = overture_dialog(mock_iface)
-    adjustments = {}
-    for key in OVERTURE_PARENTS:
-        before = dialog.width()
-        dialog.overture_checkboxes[key].setChecked(True)
-        adjustments[key] = dialog.width() - before
-        dialog.overture_checkboxes[key].setChecked(False)
-        assert dialog.width() == before, f"{key} did not put the width back"
-    assert adjustments == {"buildings": 0, "divisions": 100, "base": 100}
+    """Base has six layers, wider together than the dialog. They wrap onto a
+    continuation line inside Base's own block rather than run off the edge or
+    push the dialog wider (#80, #193 guard the same thing for the presets)."""
+    dialog = DataSourceDialog(None, mock_iface)
+    budget = dialog.minimumWidth()
+    for category in OVERTURE_CATEGORIES:
+        layers = getattr(dialog, f"{category}_subtype_widget")
+        lines = layers.layout()
+        for i in range(lines.count()):
+            line = lines.itemAt(i)
+            width = sum(c.sizeHint().width() for c in row_checkboxes(line))
+            assert width <= budget, f"{category} line {i} is {width}px wide"
     dialog.close()
 
 
-def test_building_parts_nests_under_buildings(qgs_app, mock_iface, unsaved_checkboxes):
-    """Building Parts is an indented child of Buildings, not a top-level checkbox."""
+def test_no_preset_resizes_the_dialog(qgs_app, mock_iface, unsaved_checkboxes):
+    """Nothing on this page widens the dialog any more. A line of layers that
+    would not fit wraps instead, so there is no width to claw back and the
+    dialog no longer jumps as presets are ticked."""
+    dialog = overture_dialog(mock_iface)
+    width = dialog.width()
+    for key, checkbox in dialog.overture_checkboxes.items():
+        checkbox.setChecked(True)
+        assert dialog.width() == width, f"{key} resized the dialog"
+    for checkbox in dialog.overture_checkboxes.values():
+        checkbox.setChecked(False)
+    assert dialog.width() == width
+    dialog.close()
+
+
+def test_building_parts_is_a_modifier_on_the_buildings_line(
+    qgs_app, mock_iface, unsaved_checkboxes
+):
+    """Buildings is one layer, not a category: Building Parts modifies that
+    download rather than being a layer picked from a list. So it reads as a
+    sentence, sits beside Buildings on its line, and is not a preset of its own.
+    """
     dialog = DataSourceDialog(None, mock_iface)
     assert "building_parts" not in dialog.overture_checkboxes
     assert list(dialog.overture_checkboxes)[0] == "buildings"
-    checkbox = dialog.buildings_subtype_checkboxes["building_parts"]
-    assert checkbox.text() == "Building Parts"
-    assert checkbox.parentWidget() is dialog.buildings_subtype_widget
+
+    modifier = dialog.buildings_modifier_checkboxes["building_parts"]
+    assert modifier.text() == "include building parts"
+
+    rows = overture_page_rows(dialog)
+    holding = [
+        i for i, row in enumerate(rows)
+        if dialog.buildings_checkbox in row_checkboxes(row)
+    ]
+    assert len(holding) == 1
+    assert row_checkboxes(rows[holding[0]]) == [dialog.buildings_checkbox, modifier]
     dialog.close()
 
 
-def test_dialog_buildings_subtypes_visibility(qgs_app, mock_iface, unsaved_checkboxes):
-    """The Building Parts row follows the Buildings checkbox, like the other
-    parents' subtype rows."""
+def test_the_buildings_modifier_shows_only_while_buildings_is_checked(
+    qgs_app, mock_iface, unsaved_checkboxes
+):
     dialog = DataSourceDialog(None, mock_iface)
+    modifier = dialog.buildings_modifier_checkboxes["building_parts"]
 
     dialog.buildings_checkbox.setChecked(False)
-    assert dialog.buildings_subtype_widget.isHidden()
+    assert modifier.isHidden()
 
     dialog.buildings_checkbox.setChecked(True)
-    assert not dialog.buildings_subtype_widget.isHidden()
+    assert not modifier.isHidden()
 
     dialog.buildings_checkbox.setChecked(False)
-    assert dialog.buildings_subtype_widget.isHidden()
+    assert modifier.isHidden()
+    dialog.close()
+
+
+def test_the_overture_page_reads_each_preset_then_what_belongs_to_it(
+    qgs_app, mock_iface, unsaved_checkboxes
+):
+    """The whole page, line by line: each preset, then whatever belongs to it.
+
+    Pinned so that adding a preset is a decision about where it goes rather
+    than something that quietly reshuffles the page. A category's layers may
+    wrap onto a continuation line within its own block, which does not change
+    the line they belong to.
+    """
+    dialog = DataSourceDialog(None, mock_iface)
+    rows = [[c.text() for c in row_checkboxes(row)] for row in overture_page_rows(dialog)]
+    assert [row for row in rows if row] == [
+        ["Buildings", "include building parts"],
+        ["Places", "Transportation", "Addresses"],
+        ["Divisions", "Division Points", "Division Area", "Division Boundary"],
+        ["Base", "Infrastructure", "Land", "Land Cover", "Land Use", "Water", "Bathymetry"],
+    ]
     dialog.close()
 
 
@@ -579,7 +638,7 @@ def test_buildings_and_building_parts_are_two_urls(qgs_app, mock_iface, unsaved_
     """Checking both downloads two datasets, one URL each, not a type=building* glob."""
     dialog = overture_dialog(mock_iface)
     dialog.buildings_checkbox.setChecked(True)
-    dialog.buildings_subtype_checkboxes["building_parts"].setChecked(True)
+    dialog.buildings_modifier_checkboxes["building_parts"].setChecked(True)
     with patch("gpq_downloader.gui.dialog.latest_overture_release", return_value="2026-09-23.1"):
         urls = dialog.get_urls()
     assert urls == [
@@ -604,7 +663,7 @@ def test_building_parts_without_buildings_downloads_nothing(qgs_app, mock_iface,
     """Nesting Building Parts under Buildings means it is only reached through
     Buildings; a ticked child with its parent off is not a download."""
     dialog = overture_dialog(mock_iface)
-    dialog.buildings_subtype_checkboxes["building_parts"].setChecked(True)
+    dialog.buildings_modifier_checkboxes["building_parts"].setChecked(True)
     with patch("gpq_downloader.gui.dialog.latest_overture_release", return_value="2026-09-23.1"):
         urls = dialog.get_urls()
     assert urls == []

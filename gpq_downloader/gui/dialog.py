@@ -43,13 +43,20 @@ OSM_CHECKBOX_COLUMNS = 5
 # How many Overture preset checkboxes go on a row before wrapping.
 OVERTURE_CHECKBOX_COLUMNS = 3
 
-# Overture presets whose checkbox label is not just the key title-cased
-OVERTURE_DISPLAY_NAMES = {"building_parts": "Building Parts"}
+# The Overture presets that are a category: a choice of layers, none of which
+# is downloaded unless it is ticked. Their layers sit on the category's own
+# line, to the right of it.
+OVERTURE_CATEGORIES = {"divisions": "Divisions", "base": "Base"}
 
-# Overture presets shown as an indented checkbox under Buildings instead of a
-# top-level checkbox of their own. Buildings is not a pure container like Base
-# and Divisions: it downloads type=building itself and these add to it.
-BUILDINGS_SUBTYPE_PRESETS = ("building_parts",)
+# Buildings is not a category but a single layer, and these modify that
+# download rather than being layers picked from a list - so they read as a
+# sentence beside Buildings, not as a preset name.
+BUILDINGS_MODIFIERS = {"building_parts": "include building parts"}
+
+# Room to leave for the page's own margins when working out how much width a
+# line of a category's layers may take: the dialog's minimum width, less this
+# and the preset column.
+OVERTURE_PAGE_MARGINS = 40
 
 # Overture's STAC catalog, whose "latest" names the newest release
 OVERTURE_CATALOG_URL = "https://stac.overturemaps.org/catalog.json"
@@ -197,75 +204,67 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         overture_page = QWidget()
         overture_layout = QVBoxLayout()
 
-        # Buildings, Divisions and Base each own a full-width row with their
-        # subtypes indented directly below it; the presets with no subtypes go
-        # in a grid between them, so that a long list of them does not raise
-        # the dialog's minimum width (#80 made it six). Keeping a parent and
-        # its subtypes together is the point: while every subtype row was
-        # appended below the whole grid, the Building Parts row came out under
-        # the grid row holding Divisions and read as one of its subtypes (#230).
+        # Each preset starts a line and whatever belongs to it follows on that
+        # same line: the layers of a category, or the modifier on Buildings.
+        # Keeping them on the preset's own line is what attaches them to the
+        # right preset - a block below a preset reads as belonging to whatever
+        # happens to sit above it (#230) - and it keeps the page compact.
         self.overture_checkboxes = {}
 
-        # Buildings, first on the page, with Building Parts under it. No width
-        # adjustment: one short checkbox fits the width the dialog already asks
-        # for, where the Divisions and Base rows below need the room.
-        (
-            self.buildings_checkbox,
-            self.buildings_subtype_checkboxes,
-            self.buildings_subtype_widget,
-        ) = self._add_overture_preset_with_subtypes(
-            overture_layout,
-            "buildings",
-            "Buildings",
-            {
-                key: OVERTURE_DISPLAY_NAMES.get(key) or key.title()
-                for key in BUILDINGS_SUBTYPE_PRESETS
-            },
-            align_subtypes_left=True,  # a lone subtype would else span the page
+        # One column width for every preset that has something beside it, so
+        # those groups line up under each other down the page
+        preset_column_width = max(
+            QCheckBox(label).sizeHint().width()
+            for label in ["Buildings", *OVERTURE_CATEGORIES.values()]
+        )
+        # What is left of the dialog's minimum width for one line of layers.
+        # A category with more layers than fit wraps rather than widen the
+        # dialog, so the page never asks for more width than it already has.
+        layer_line_budget = (
+            self.minimumWidth() - preset_column_width - OVERTURE_PAGE_MARGINS
         )
 
-        # The presets with no subtypes of their own, in a grid
+        # Buildings, with its modifier beside it
+        buildings_row = QHBoxLayout()
+        self.buildings_checkbox = QCheckBox("Buildings")
+        self.buildings_checkbox.setMinimumWidth(preset_column_width)
+        self.overture_checkboxes["buildings"] = self.buildings_checkbox
+        buildings_row.addWidget(self.buildings_checkbox)
+
+        self.buildings_modifier_checkboxes = {}
+        for key, label in BUILDINGS_MODIFIERS.items():
+            modifier = QCheckBox(label)
+            modifier.hide()  # shown only while Buildings is checked
+            self.buildings_modifier_checkboxes[key] = modifier
+            buildings_row.addWidget(modifier)
+            self.buildings_checkbox.toggled.connect(modifier.setVisible)
+        buildings_row.addStretch()
+        overture_layout.addLayout(buildings_row)
+
+        # The presets that are a single layer with nothing beside them, in a
+        # grid: each new one would otherwise raise the dialog's minimum width
+        # (#80 made it six)
         checkbox_layout = QGridLayout()
-        has_own_row = ["buildings", "divisions", "base"]
+        has_its_own_line = ["buildings", *OVERTURE_CATEGORIES, *BUILDINGS_MODIFIERS]
         plain_presets = [
-            key
-            for key in self.PRESET_DATASETS["overture"]
-            if key not in [*has_own_row, *BUILDINGS_SUBTYPE_PRESETS]
+            key for key in self.PRESET_DATASETS["overture"] if key not in has_its_own_line
         ]
         for index, key in enumerate(plain_presets):
-            checkbox = QCheckBox(OVERTURE_DISPLAY_NAMES.get(key) or key.title())
+            checkbox = QCheckBox(key.title())
             self.overture_checkboxes[key] = checkbox
             checkbox_layout.addWidget(
                 checkbox, index // OVERTURE_CHECKBOX_COLUMNS, index % OVERTURE_CHECKBOX_COLUMNS
             )
         overture_layout.addLayout(checkbox_layout)
 
-        divisions_subtype_display_names = {
+        layer_display_names = {
             # "Division Points" for the point geometry, so it is not read as
-            # the Divisions theme that holds all three. The key stays
+            # the Divisions category that holds all three. The key stays
             # "division": it is Overture's type name, and both the URL and
             # the saved setting are built from it.
             "division": "Division Points",
             "division_area": "Division Area",
             "division_boundary": "Division Boundary",
-        }
-        (
-            self.divisions_checkbox,
-            self.divisions_subtype_checkboxes,
-            self.divisions_subtype_widget,
-        ) = self._add_overture_preset_with_subtypes(
-            overture_layout,
-            "divisions",
-            "Divisions",
-            {
-                subtype: divisions_subtype_display_names[subtype]
-                for subtype in self.PRESET_DATASETS["overture"]["divisions"]["subtypes"]
-            },
-            width_adjustment=100,
-            top_margin=5,
-        )
-
-        base_subtype_display_names = {
             "infrastructure": "Infrastructure",
             "land": "Land",
             "land_cover": "Land Cover",
@@ -273,20 +272,36 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             "water": "Water",
             "bathymetry": "Bathymetry",
         }
+
+        def layers_of(key):
+            return {
+                layer: layer_display_names[layer]
+                for layer in self.PRESET_DATASETS["overture"][key]["subtypes"]
+            }
+
+        (
+            self.divisions_checkbox,
+            self.divisions_subtype_checkboxes,
+            self.divisions_subtype_widget,
+        ) = self._add_overture_category(
+            overture_layout,
+            "divisions",
+            OVERTURE_CATEGORIES["divisions"],
+            layers_of("divisions"),
+            preset_column_width,
+            layer_line_budget,
+        )
         (
             self.base_checkbox,
             self.base_subtype_checkboxes,
             self.base_subtype_widget,
-        ) = self._add_overture_preset_with_subtypes(
+        ) = self._add_overture_category(
             overture_layout,
             "base",
-            "Base",
-            {
-                subtype: base_subtype_display_names[subtype]
-                for subtype in self.PRESET_DATASETS["overture"]["base"]["subtypes"]
-            },
-            width_adjustment=100,
-            top_margin=5,
+            OVERTURE_CATEGORIES["base"],
+            layers_of("base"),
+            preset_column_width,
+            layer_line_budget,
         )
 
         overture_page.setLayout(overture_layout)
@@ -406,7 +421,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Connect each checkbox to save its state when toggled
         for checkbox in self.overture_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
-        for checkbox in self.buildings_subtype_checkboxes.values():
+        for checkbox in self.buildings_modifier_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
         for checkbox in self.base_subtype_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
@@ -432,53 +447,56 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         settings_store.save_value(settings_store.RADIO_SELECTION, button_name)
 
-    def _add_overture_preset_with_subtypes(
-        self,
-        layout,
-        key,
-        label,
-        subtype_labels,
-        width_adjustment=0,
-        top_margin=0,
-        align_subtypes_left=False,
+    def _add_overture_category(
+        self, layout, key, label, layer_labels, column_width, line_budget
     ):
-        """Add an Overture preset that has subtypes, as two rows of its own.
+        """Add an Overture category: a choice of layers, on the category's line.
 
-        The preset gets a full-width row and its subtypes the row directly
-        below it, shown while the preset is checked. Going through here is what
-        keeps the two together: a subtype row added anywhere else on the page
-        can end up under the wrong preset (#230).
+        The layers go to the right of the category checkbox, on its own line,
+        and show only while it is checked. Being inside that line is what keeps
+        them attached to the right preset: a block placed below a preset reads
+        as belonging to whatever sits above it (#230).
 
-        Returns (checkbox, {subtype: checkbox}, subtype row widget).
+        Layers that do not fit within line_budget wrap onto a continuation line
+        inside the same block, so a category with many of them never widens the
+        dialog or runs off its edge (#80, #193).
+
+        Returns (checkbox, {layer: checkbox}, the widget holding the layers).
         """
-        preset_row = QHBoxLayout()
-        preset_row.setContentsMargins(0, top_margin, 0, 0)
+        row = QHBoxLayout()
         checkbox = QCheckBox(label)
+        checkbox.setMinimumWidth(column_width)
         self.overture_checkboxes[key] = checkbox
-        preset_row.addWidget(checkbox)
-        preset_row.addStretch()
-        layout.addLayout(preset_row)
+        # Top, not centre: a category whose layers wrap onto a second line
+        # would otherwise float between the two lines instead of starting them
+        row.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignTop)
 
-        subtype_widget = QWidget()
-        subtype_row = QHBoxLayout()
-        subtype_row.setContentsMargins(20, 0, 0, 0)  # Indent subtypes
-        subtype_checkboxes = {}
-        for subtype, subtype_label in subtype_labels.items():
-            subtype_checkbox = QCheckBox(subtype_label)
-            subtype_checkboxes[subtype] = subtype_checkbox
-            subtype_row.addWidget(subtype_checkbox)
-        if align_subtypes_left:
-            subtype_row.addStretch()
-        subtype_widget.setLayout(subtype_row)
-        subtype_widget.hide()
-        layout.addWidget(subtype_widget)
+        layer_widget = QWidget()
+        lines = QVBoxLayout()
+        lines.setContentsMargins(0, 0, 0, 0)
+        layer_checkboxes = {}
+        line, used = None, 0
+        for layer, layer_label in layer_labels.items():
+            layer_checkbox = QCheckBox(layer_label)
+            width = layer_checkbox.sizeHint().width()
+            if line is None or (used and used + width > line_budget):
+                line = QHBoxLayout()
+                line.setContentsMargins(0, 0, 0, 0)
+                lines.addLayout(line)
+                used = 0
+            line.addWidget(layer_checkbox)
+            used += width + lines.spacing()
+            layer_checkboxes[layer] = layer_checkbox
+        for index in range(lines.count()):
+            lines.itemAt(index).addStretch()  # pack each line to the left
 
-        checkbox.toggled.connect(subtype_widget.setVisible)
-        if width_adjustment:
-            checkbox.toggled.connect(
-                lambda checked: self.adjust_dialog_width(checked, width_adjustment)
-            )
-        return checkbox, subtype_checkboxes, subtype_widget
+        layer_widget.setLayout(lines)
+        layer_widget.hide()
+        row.addWidget(layer_widget)
+        layout.addLayout(row)
+
+        checkbox.toggled.connect(layer_widget.setVisible)
+        return checkbox, layer_checkboxes, layer_widget
 
     def handle_overture_selection(self, text):
         """Show/hide base subtype combo based on selection"""
@@ -689,22 +707,21 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                 if checkbox.isChecked():
                     dataset = self.PRESET_DATASETS["overture"][theme]
                     if theme == "buildings":
-                        # Not a pure container like base and divisions:
-                        # Buildings downloads type=building itself, and each
-                        # ticked nested preset adds a URL of its own. Which
-                        # also means a nested preset is only ever reached
-                        # through Buildings.
+                        # Buildings is a layer, not a category: it downloads
+                        # type=building itself, and each ticked modifier adds a
+                        # URL of its own. Which also means a modifier is only
+                        # ever reached through Buildings.
                         urls.append(
                             dataset["url_template"].format(
                                 subtype="building", release=latest_release
                             )
                         )
                         for (
-                            nested_key,
-                            nested_checkbox,
-                        ) in self.buildings_subtype_checkboxes.items():
-                            if nested_checkbox.isChecked():
-                                nested = self.PRESET_DATASETS["overture"][nested_key]
+                            modifier_key,
+                            modifier_checkbox,
+                        ) in self.buildings_modifier_checkboxes.items():
+                            if modifier_checkbox.isChecked():
+                                nested = self.PRESET_DATASETS["overture"][modifier_key]
                                 urls.append(
                                     nested["url_template"].format(release=latest_release)
                                 )
@@ -834,13 +851,6 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             )
             self.accept()
 
-    def adjust_dialog_width(self, checked, width):
-        """Adjust the dialog width based on the base checkbox state."""
-        if checked:
-            self.resize(self.width() + width, self.height())
-        else:
-            self.resize(self.width() - width, self.height())
-
     def save_checkbox_states(self) -> None:
         # Saved on accept, like the other checkboxes, so cancelling the dialog
         # keeps the remembered setting
@@ -851,10 +861,10 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         for key, checkbox in self.overture_checkboxes.items():
             settings_store.save_value(settings_store.CHECKBOX.format(key=key), checkbox.isChecked())
 
-        # Save buildings subtype checkboxes. They keep the top-level key
-        # they were saved under while Building Parts was a top-level checkbox
-        # (#80), so nesting it does not lose what the user chose.
-        for key, checkbox in self.buildings_subtype_checkboxes.items():
+        # Save the Buildings modifiers. They keep the top-level key they were
+        # saved under while Building Parts was a top-level checkbox (#80), so
+        # moving it does not lose what the user chose.
+        for key, checkbox in self.buildings_modifier_checkboxes.items():
             settings_store.save_value(settings_store.CHECKBOX.format(key=key), checkbox.isChecked())
 
         # Save base subtype checkboxes
@@ -878,9 +888,9 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             checked = settings_store.load_flag(settings_store.CHECKBOX.format(key=key))
             checkbox.setChecked(checked)
 
-        # Load buildings subtype checkboxes, on by default (see load_flag:
-        # a stored False, from a user who unticked one, still wins)
-        for key, checkbox in self.buildings_subtype_checkboxes.items():
+        # Load the Buildings modifiers, on by default (see load_flag: a
+        # stored False, from a user who unticked one, still wins)
+        for key, checkbox in self.buildings_modifier_checkboxes.items():
             checked = settings_store.load_flag(settings_store.CHECKBOX.format(key=key), default=True)
             checkbox.setChecked(checked)
 
@@ -902,8 +912,9 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             checked = settings_store.load_flag(settings_store.OSM_CHECKBOX.format(key=key))
             checkbox.setChecked(checked)
 
-        # Update buildings subtype widget visibility based on buildings checkbox state
-        self.buildings_subtype_widget.setVisible(self.buildings_checkbox.isChecked())
+        # The Buildings modifiers show only while Buildings itself is checked
+        for checkbox in self.buildings_modifier_checkboxes.values():
+            checkbox.setVisible(self.buildings_checkbox.isChecked())
 
         # Update base subtype widget visibility based on base checkbox state
         self.base_subtype_widget.setVisible(self.base_checkbox.isChecked())

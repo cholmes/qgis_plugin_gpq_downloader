@@ -21,9 +21,10 @@ from gpq_downloader.plugin import QgisPluginGeoParquet
 PREFIXES = ("plugins/gpq_downloader/", "gpq_downloader/")
 
 OVERTURE_KEYS = ["buildings", "places", "transportation", "addresses", "divisions", "base"]
-# Building Parts nests under Buildings, but keeps the top-level key it was saved
-# under while it was a top-level checkbox (#80), so nesting it loses no choice
-BUILDINGS_SUBTYPES = ["building_parts"]
+# Building Parts modifies the Buildings download rather than being a preset of
+# its own, but keeps the top-level key it was saved under while it was a
+# top-level checkbox (#80), so moving it loses nobody's choice
+BUILDINGS_MODIFIERS = ["building_parts"]
 BASE_SUBTYPES = ["infrastructure", "land", "land_cover", "land_use", "water", "bathymetry"]
 DIVISIONS_SUBTYPES = ["division", "division_area", "division_boundary"]
 OSM_KEYS = [
@@ -32,7 +33,7 @@ OSM_KEYS = [
 
 ALL_SAVED_KEYS = sorted(
     ["plugins/gpq_downloader/clip_to_area", "plugins/gpq_downloader/aoi_enabled"]
-    + [f"plugins/gpq_downloader/checkbox_{k}" for k in OVERTURE_KEYS + BUILDINGS_SUBTYPES]
+    + [f"plugins/gpq_downloader/checkbox_{k}" for k in OVERTURE_KEYS + BUILDINGS_MODIFIERS]
     + [f"plugins/gpq_downloader/base_subtype_checkbox_{k}" for k in BASE_SUBTYPES]
     + [f"plugins/gpq_downloader/divisions_subtype_checkbox_{k}" for k in DIVISIONS_SUBTYPES]
     + [f"plugins/gpq_downloader/osm_checkbox_{k}" for k in OSM_KEYS]
@@ -40,7 +41,7 @@ ALL_SAVED_KEYS = sorted(
 
 # The checkboxes that start out ticked, so a new user downloads the whole of
 # Buildings and of Divisions when they tick either parent
-ON_BY_DEFAULT = {f"checkbox_{k}" for k in BUILDINGS_SUBTYPES} | {
+ON_BY_DEFAULT = {f"checkbox_{k}" for k in BUILDINGS_MODIFIERS} | {
     f"divisions_subtype_checkbox_{k}" for k in DIVISIONS_SUBTYPES
 }
 
@@ -119,15 +120,15 @@ def test_building_parts_is_on_by_default_and_remembers_being_turned_off(clean_se
     its default - and a stored False still wins, or unticking it would not last.
     """
     first = dialogs()
-    assert first.buildings_subtype_checkboxes["building_parts"].isChecked()
+    assert first.buildings_modifier_checkboxes["building_parts"].isChecked()
     assert flag("plugins/gpq_downloader/checkbox_buildings") is False
 
-    first.buildings_subtype_checkboxes["building_parts"].setChecked(False)
+    first.buildings_modifier_checkboxes["building_parts"].setChecked(False)
     first.save_checkbox_states()
     assert flag("plugins/gpq_downloader/checkbox_building_parts") is False
 
     second = dialogs()
-    assert not second.buildings_subtype_checkboxes["building_parts"].isChecked()
+    assert not second.buildings_modifier_checkboxes["building_parts"].isChecked()
 
 
 @pytest.mark.parametrize("stored", [True, False])
@@ -140,7 +141,7 @@ def test_building_parts_keeps_what_was_saved_under_its_old_top_level_key(
     clean_settings.setValue(
         "gpq_downloader/checkbox_building_parts", stored, section=QgsSettings.Section.Plugins
     )
-    assert dialogs().buildings_subtype_checkboxes["building_parts"].isChecked() is stored
+    assert dialogs().buildings_modifier_checkboxes["building_parts"].isChecked() is stored
 
 
 def test_load_flag_defaults_only_when_nothing_is_stored(clean_settings):
@@ -218,7 +219,8 @@ def test_a_new_dialog_restores_them(clean_settings, dialogs):
     # The subtype rows follow their parent checkbox
     assert not second.divisions_subtype_widget.isHidden()
     assert second.base_subtype_widget.isHidden()
-    assert second.buildings_subtype_widget.isHidden()  # Buildings is off
+    # The Buildings modifier follows Buildings, which is off
+    assert second.buildings_modifier_checkboxes["building_parts"].isHidden()
 
 
 def test_clip_is_restored_from_its_own_key(clean_settings, dialogs):
