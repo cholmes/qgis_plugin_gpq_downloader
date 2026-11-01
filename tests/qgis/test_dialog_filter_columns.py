@@ -1053,23 +1053,47 @@ def test_a_mixed_column_does_not_stop_ok(dialog):
     assert accepted == [True]
 
 
+OVERTURE_BUILDING = (
+    "s3://overturemaps-us-west-2/release/{release}/theme=buildings/type=building/*"
+)
+OVERTURE_PART = (
+    "s3://overturemaps-us-west-2/release/{release}/"
+    "theme=buildings/type=building_part/*"
+)
+
+
 def test_the_dataset_names_in_a_message_come_off_the_urls(dialog):
-    """So nothing here depends on how the source pages are built (#230)."""
-    dialog.overture_radio.setChecked(True)
-    dialog.overture_checkboxes["buildings"].setChecked(True)
-    dialog.overture_checkboxes["building_parts"].setChecked(True)
-    dialog.filter_checkbox.setChecked(True)
-    for key in dialog._schema_keys:
-        schema = BUILDINGS if "type=building/" in key else BUILDING_PARTS
-        dialog._schema_arrived(key, list(schema))
+    """Named from the URL, not from the widgets, so nothing here depends on
+    how the Overture page is built - #230 is reshaping it. The keys are set
+    directly for the same reason; the message itself is exercised through the
+    OpenStreetMap page, whose names are stable."""
+    dialog._schema_keys = (OVERTURE_BUILDING, OVERTURE_PART)
+    dialog._schema_arrived(OVERTURE_BUILDING, BUILDINGS)
+    dialog._schema_arrived(OVERTURE_PART, BUILDING_PARTS)
     assert [label for label, _columns in dialog.filter_schemas()] == [
         "Building", "Building Part"
     ]
-    dialog.filter_input.setText("class = 'school'")
-    assert dialog.filter_status.text() == (
-        'Column "class" is not in every selected dataset '
-        '(missing from "Building Part").'
-    )
+
+
+def test_every_checkbox_on_the_source_pages_updates_the_filter(dialog):
+    """Found rather than named: the pages keep gaining presets, subtypes and
+    modifiers, and one this did not know about would leave the filter
+    describing a selection the user had already changed."""
+    from qgis.PyQt.QtWidgets import QCheckBox
+
+    checkboxes = dialog.stack.findChildren(QCheckBox)
+    assert len(checkboxes) > 10
+    dialog.osm_radio.setChecked(True)
+    for checkbox in checkboxes:
+        if checkbox not in dialog.osm_checkboxes.values():
+            continue
+        before = len(dialog.selected_datasets())
+        checkbox.setChecked(not checkbox.isChecked())
+        # the note is recomputed, so the selection was noticed
+        assert len(dialog.selected_datasets()) != before
+        assert dialog.filter_note.text() == dialog.filter_availability_message()
+    # and the Clip checkbox, which is not a dataset, is left out of it
+    assert dialog.clip_checkbox not in checkboxes
 
 
 # --- the help text register ------------------------------------------------

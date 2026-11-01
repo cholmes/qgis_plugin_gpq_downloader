@@ -708,16 +708,13 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
     def _connect_filter_signals(self):
         """Wire the filter box up, once the remembered checkboxes are restored.
 
-        The checkboxes themselves are connected here rather than where they
-        are built, so this stays out of that block.
+        Every checkbox on the source pages, found rather than named: the
+        pages keep gaining presets, subtypes and modifiers, and one that this
+        did not know about would leave the filter describing a selection the
+        user had already changed. Nothing outside self.stack is reached, so
+        the Area of Interest box and its Clip checkbox are not included.
         """
-        checkboxes = (
-            list(self.overture_checkboxes.values())
-            + list(self.base_subtype_checkboxes.values())
-            + list(self.divisions_subtype_checkboxes.values())
-            + list(self.osm_checkboxes.values())
-        )
-        for checkbox in checkboxes:
+        for checkbox in self.stack.findChildren(QCheckBox):
             checkbox.toggled.connect(self._selection_changed)
         for radio in (
             self.custom_radio,
