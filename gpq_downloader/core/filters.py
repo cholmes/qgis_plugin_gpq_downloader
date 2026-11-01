@@ -25,6 +25,9 @@ types is DuckDB's call; the dialog asks it before accepting
 
 import difflib
 import re
+from typing import NamedTuple, Optional, Tuple
+
+from .schema import field_names, resolve_path, strip_subscripts
 
 # Subquery openers and the functions that read files, settings or the network.
 # Matched only outside string literals, so `note = 'select few'` stays legal.
@@ -386,74 +389,317 @@ def _followed_by(text, end, chars):
     return i < len(text) and text[i] in chars
 
 
-def identifiers_in(fragment: str) -> list:
-    """The column names `fragment` reads, in order, each one once.
+# What tells a value apart from a column name: the thing in front of it. The
+# operators cover `= "Jack Park"` and its relatives; LIKE and ILIKE are the
+# two keywords that take a string on the right and nothing else.
+_COMPARISON_CHARS = frozenset("=<>!")
+_COMPARISON_WORDS = frozenset({"like", "ilike"})
 
-    Left out: string literals, numbers, SQL keywords and type names, the word
-    in front of a '(' (a function) or a quote (the E of E'...'), and every
-    part of a dotted path after the first (names.primary reads names).
-    Unquoted names fold the way DuckDB's do, so a name repeated in another
-    case is one name, under the spelling it first had.
+
+def _preceded_by_comparison(text, start):
+    """Does a comparison sit immediately in front of the name at `start`?
+
+    True where a *value* belongs, which is what makes a double-quoted token
+    there a mistake rather than an oddly named column.
+    """
+    i = start - 1
+    while i >= 0 and text[i].isspace():
+        i -= 1
+    if i < 0:
+        return False
+    if text[i] in _COMPARISON_CHARS:
+        return True
+    end = i + 1
+    while i >= 0 and text[i] in _IDENT_CHARS:
+        i -= 1
+    return text[i + 1:end].lower() in _COMPARISON_WORDS
+
+
+# A list subscript written after a path part, so that sources[1].property is
+# read as the two parts DuckDB reads it as. A quoted MAP key
+# (names.common['en']) is not one: its key is nowhere in the schema.
+_SUBSCRIPT_AT = re.compile(r"\[\s*\d*\s*\]")
+
+
+def _read_subscripts(text, end):
+    """("[1]", index past it) for the subscripts written after `end`."""
+    taken = []
+    i = end
+    while True:
+        j = i
+        while j < len(text) and text[j].isspace():
+            j += 1
+        match = _SUBSCRIPT_AT.match(text, j)
+        if match is None:
+            return "".join(taken), i
+        taken.append("".join(match.group(0).split()))
+        i = match.end()
+
+
+def _subscripts_before(text, end):
+    """("[1]", index of its first '[') for the subscripts ending at `end`."""
+    taken = []
+    i = end
+    while True:
+        j = i - 1
+        while j >= 0 and text[j].isspace():
+            j -= 1
+        if j < 0 or text[j] != "]":
+            return "".join(reversed(taken)), i
+        opening = text.rfind("[", 0, j)
+        if opening < 0:
+            return "".join(reversed(taken)), i
+        inner = text[opening + 1:j].strip()
+        if inner and not inner.isdigit():
+            return "".join(reversed(taken)), i
+        taken.append(f"[{inner}]")
+        i = opening
+
+
+def _path_before(text, start):
+    """The dotted parts in front of the name starting at `start`.
+
+    ("names",) for the pri of names.pri, ("names", "rules") for
+    names.rules.var, and () where no dot precedes it. A '.' that belongs to a
+    number ends the walk rather than reading the digits as a name.
+    """
+    parts = []
+    i = start
+    while True:
+        j = i - 1
+        while j >= 0 and text[j].isspace():
+            j -= 1
+        if j < 0 or text[j] != ".":
+            break
+        suffix, j = _subscripts_before(text, j)
+        k = j - 1
+        while k >= 0 and text[k].isspace():
+            k -= 1
+        if k < 0:
+            break
+        if text[k] == '"':
+            opening = text.rfind('"', 0, k)
+            if opening < 0:
+                break
+            parts.append(text[opening + 1:k] + suffix)
+            i = opening
+            continue
+        if text[k] not in _IDENT_CHARS:
+            break
+        end = k + 1
+        while k >= 0 and text[k] in _IDENT_CHARS:
+            k -= 1
+        part = text[k + 1:end]
+        if not part or part[0] not in _IDENT_START:
+            break  # a number, not a name
+        parts.append(part + suffix)
+        i = k + 1
+    parts.reverse()
+    return tuple(parts)
+
+
+class Reference(NamedTuple):
+    """One thing `fragment` reads as a column, with the context that judges it.
+
+    `path` is the dotted parts as typed, ("names", "primary"). `quoted` says
+    the first part was written in double quotes, which in SQL is an
+    identifier and not a string. `after_comparison` says an operator sits
+    immediately in front of it, so a value belongs there.
+    """
+
+    path: Tuple[str, ...]
+    quoted: bool = False
+    after_comparison: bool = False
+
+
+def identifier_paths_in(fragment: str) -> list:
+    """The column paths `fragment` reads, each once, in order, as References.
+
+    Left out: string literals, numbers, SQL keywords and type names, and the
+    word in front of a '(' (a function) or a quote (the E of E'...'). A
+    dotted path comes out whole, so names.primary is one reference of two
+    parts rather than a column and a mystery. Unquoted names fold the way
+    DuckDB's do, so a path repeated in another case is one path, under the
+    spelling it first had.
     """
     text = _normalise(fragment)
-    names = []
+    refs = []
     seen = set()
+    chain = None
+
+    def flush():
+        nonlocal chain
+        if chain is None:
+            return
+        key = tuple(part.lower() for part in chain.path)
+        if key not in seen:
+            seen.add(key)
+            refs.append(chain)
+        chain = None
+
     for name, quoted, start, end in _scan_names(text):
+        # sources[1].property is two parts, with the index on the first
+        suffix, _after = _read_subscripts(text, end)
         if _preceded_by_dot(text, start):
-            continue  # a struct field, not a column
+            if chain is not None:  # a field of the path being built
+                chain = chain._replace(path=chain.path + (name + suffix,))
+            continue
+        flush()
         if _followed_by(text, end, "('"):
             continue  # a function call, or the E of an E'...' string
         if not quoted and name.lower() in _NON_COLUMN_WORDS:
             continue
-        key = name.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        names.append(name)
+        chain = Reference(
+            (name + suffix,), quoted, _preceded_by_comparison(text, start)
+        )
+    flush()
+    return refs
+
+
+def identifiers_in(fragment: str) -> list:
+    """The root column names `fragment` reads, in order, each one once.
+
+    names.primary reads names; identifier_paths_in() has the whole path.
+    """
+    names = []
+    seen = set()
+    for ref in identifier_paths_in(fragment):
+        name, _indexed = strip_subscripts(ref.path[0])
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            names.append(name)
     return names
 
 
-def unknown_identifiers(fragment: str, columns) -> list:
-    """[(name, closest column or None)] for the names `columns` does not have.
-
-    An empty `columns` means the column list has not arrived (or could not be
-    read), so nothing is unknown: a guess made without the schema would be
-    worse than the silence the filter box had before.
-    """
-    names = list(columns)
-    known = {str(column).lower() for column in names}
-    if not known:
-        return []
+def _column_names(columns):
+    """The top-level names of a column list, which may be names or rows."""
     return [
-        (name, _suggest_column(name, names))
-        for name in identifiers_in(fragment)
-        if name.lower() not in known
+        str(column) if isinstance(column, str) else str(column[0])
+        for column in columns or ()
     ]
 
 
-def unknown_column_message(fragment: str, columns) -> "str | None":
-    """Why `fragment` names a column this data has not got, or None.
+def unknown_identifiers(fragment: str, columns) -> list:
+    """[(path as typed, closest path or None)] for what `columns` has not got.
 
-    Only the first such name is reported: the point is to replace a DuckDB
-    Binder Error nobody reads with one short line under the field, and the
-    next name is reported once this one is fixed.
+    `columns` is either plain names or (name, type) rows as DESCRIBE returns
+    them; with only names a dotted path cannot be judged and is left alone.
+    An empty `columns` means the column list has not arrived, so nothing is
+    unknown: a guess made without the schema would be worse than the silence
+    the filter box had before.
     """
-    unknown = unknown_identifiers(fragment, columns)
-    if not unknown:
+    names = _column_names(columns)
+    if not names:
+        return []
+    unknown = []
+    for ref in identifier_paths_in(fragment):
+        resolved = resolve_path(columns, ref.path)
+        if resolved.outcome == "unknown_column":
+            unknown.append((resolved.missing, _suggest_column(resolved.missing, names)))
+        elif resolved.outcome == "unknown_field":
+            suggestion = _suggest_column(
+                resolved.missing, field_names(resolved.parent.text)
+            )
+            parent = ".".join(ref.path[: resolved.index])
+            unknown.append((
+                f"{parent}.{resolved.missing}",
+                f"{parent}.{suggestion}" if suggestion else None,
+            ))
+    return unknown
+
+
+def _quote_trap_message(fragment, columns):
+    """The double-quoted value trap, or None.
+
+    `names.primary = "Jack Park"` is the report that asked for this: double
+    quotes are an identifier in SQL and single quotes a string, so DuckDB
+    answers a typed value with `Referenced column "Jack Park" not found`.
+    Telling someone that their value is not a column is accurate and
+    useless, so where a quoted name the data has not got sits exactly where a
+    value belongs, say what to type instead.
+    """
+    names = {name.lower() for name in _column_names(columns)}
+    if not names:
         return None
-    name, suggestion = unknown[0]
-    if suggestion:
-        return f'Unknown column "{name}" - did you mean "{suggestion}"?'
-    return f'Unknown column "{name}" - the data has no column by that name.'
+    for ref in identifier_paths_in(fragment):
+        if not (ref.quoted and ref.after_comparison and len(ref.path) == 1):
+            continue
+        if ref.path[0].lower() in names:
+            continue
+        literal = ref.path[0].replace("\'", "\'\'")
+        return (
+            f'"{ref.path[0]}" is not a column. '
+            f"For a text value use single quotes: '{literal}'"
+        )
+    return None
 
 
-def current_word(text: str, cursor: int) -> "tuple | None":
-    """(start, word) of the bare column name being typed at `cursor` in `text`.
+def _list_message(fragment, columns):
+    """Why a dot will not follow a list, and what to type instead, or None.
 
-    None where a column name cannot be typed at all - inside a string
-    literal, inside a quoted name, or after the '.' of a struct path - so the
-    completer can stay out of the way. The word may be empty: at a cursor
-    just after AND there is nothing typed yet but everything to offer.
+    Dot access into a STRUCT(...)[] is a binder error (Cannot extract field
+    ... because it is not a struct), which is a dead end until someone
+    mentions the index.
+    """
+    if not _column_names(columns):
+        return None
+    for ref in identifier_paths_in(fragment):
+        resolved = resolve_path(columns, ref.path)
+        if resolved.outcome != "list" or not resolved.list_path:
+            continue
+        depth = len(resolved.list_path)
+        if len(ref.path) <= depth:
+            continue  # the list itself, with no dot after it: nothing wrong
+        head = ".".join(ref.path[:depth])
+        tail = ".".join(ref.path[depth:])
+        return f'"{head}" is a list - use {head}[1].{tail}, not {head}.{tail}.'
+    return None
+
+
+def unknown_column_message(fragment: str, columns) -> Optional[str]:
+    """Why `fragment` names something this data has not got, or None.
+
+    One line, and only the first thing wrong: the point is to replace a
+    DuckDB Binder Error nobody reads with something short under the field,
+    and the next problem is reported once this one is fixed. `columns` is
+    plain names or (name, type) rows; the dotted-path checks need the types.
+    """
+    trap = _quote_trap_message(fragment, columns)
+    if trap:
+        return trap
+    unknown = unknown_identifiers(fragment, columns)
+    if unknown:
+        name, suggestion = unknown[0]
+        kind = "field" if "." in name else "column"
+        if suggestion:
+            return f'Unknown {kind} "{name}" - did you mean "{suggestion}"?'
+        if kind == "field":
+            parent = name.rsplit(".", 1)[0]
+            return f'Unknown field "{name}" - "{parent}" has no field by that name.'
+        return f'Unknown column "{name}" - the data has no column by that name.'
+    return _list_message(fragment, columns)
+
+
+class Word(NamedTuple):
+    """Where the completer should work: the word, and the struct above it.
+
+    `start` is where `text` begins in the line, so a completion replaces just
+    that word. `path` is the dotted prefix in front of it, so names.pri
+    completes against the fields of names rather than against the columns.
+    """
+
+    start: int
+    text: str
+    path: Tuple[str, ...] = ()
+
+
+def current_word(text: str, cursor: int) -> Optional[Word]:
+    """The column name or struct field being typed at `cursor` in `text`.
+
+    None where neither can be typed at all - inside a string literal, inside
+    a quoted name, or in the middle of a number - so the completer can stay
+    out of the way. The word may be empty: at a cursor just after AND, or
+    just after `names.`, there is nothing typed yet but everything to offer.
 
     A QCompleter attached to a QLineEdit completes the whole line, which is no
     use past the first operator; the dialog feeds it this word instead.
@@ -480,9 +726,7 @@ def current_word(text: str, cursor: int) -> "tuple | None":
         start -= 1
     if before[start:].lstrip("0123456789") != before[start:]:
         return None  # the cursor sits in a number, not a name
-    if _preceded_by_dot(before, start):
-        return None
-    return start, before[start:]
+    return Word(start, before[start:], _path_before(before, start))
 
 
 def completion_text(name: str) -> str:

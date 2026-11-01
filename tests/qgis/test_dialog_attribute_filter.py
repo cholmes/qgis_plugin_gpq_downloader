@@ -42,6 +42,9 @@ def mock_iface():
 def dialog(qgs_app, mock_iface):
     dialog = DataSourceDialog(None, mock_iface)
     dialog.extent_group.setChecked(False)  # a remembered AOI box would stop for a prompt
+    # The filter is asked for with a tick now (#217); every test in this file
+    # is about a filter that has been typed, so the box starts on
+    dialog.filter_checkbox.setChecked(True)
     dialog.accepted_count = 0
 
     def count_accept():

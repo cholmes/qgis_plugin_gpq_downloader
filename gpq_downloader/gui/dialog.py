@@ -14,6 +14,8 @@ from qgis.PyQt.QtNetwork import QNetworkRequest
 from qgis.PyQt.QtWidgets import (
     QMessageBox,
     QCompleter,
+    QTextBrowser,
+    QToolButton,
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
@@ -42,6 +44,7 @@ from ..core.filters import (
     unknown_column_message,
     validate_where_fragment,
 )
+from ..core.schema import field_candidates
 from ..core.presets import load_presets
 from . import settings_store
 from .extent import AoiHighlighter, AreaOfInterestMixin
@@ -84,6 +87,79 @@ FILTER_NO_COLUMNS = "Could not read the column list, so column names are not che
 # "not finished", not as the "this will not run" of a ';' or a SELECT.
 _INCOMPLETE_HINTS = ("unclosed", "without a matching")
 
+# The in-plugin help the owner asked for, in the order that matters: the
+# quote trap first, because that is the one that actually bit. Plugin-authored
+# static text, with nothing interpolated into it, so the rich text is safe;
+# it carries no links and reaches no network.
+FILTER_HELP_HTML = """
+<h3>Writing an attribute filter</h3>
+<p>Type one SQL condition on the dataset&rsquo;s own columns. Press
+<b>Tab</b> in the field for the column names, and again after a
+<code>.</code> for the fields of a struct.</p>
+
+<h4>Single quotes for text, not double</h4>
+<p>This is the one that catches everyone. In SQL <b>'single quotes' are a
+text value</b> and <b>"double quotes" are a column name</b>, so a value
+typed in double quotes is read as a column that does not exist:</p>
+<table cellpadding="4">
+<tr><td><code>names.primary = 'Jack Park'</code></td><td>&nbsp;correct</td></tr>
+<tr><td><code>names.primary = "Jack Park"</code></td>
+    <td>&nbsp;wrong: <i>Referenced column "Jack Park" not found</i></td></tr>
+</table>
+<p>For an apostrophe inside a value, double it:
+<code>names.primary = 'Jack''s Park'</code>.</p>
+
+<h4>Sub-properties</h4>
+<p>Reach into a struct with a dot:</p>
+<ul>
+<li><code>names.primary = 'Jack Park'</code></li>
+<li><code>bbox.xmin &gt; 7</code></li>
+<li><code>cartography.min_zoom &lt;= 10</code></li>
+</ul>
+
+<h4>Lists need an index</h4>
+<p>A column whose type ends in <code>[]</code> is a list, and a dot will not
+follow one. Give it an element number first:</p>
+<table cellpadding="4">
+<tr><td><code>sources[1].property = 'name'</code></td><td>&nbsp;correct</td></tr>
+<tr><td><code>sources.property = 'name'</code></td>
+    <td>&nbsp;wrong: <i>Cannot extract field ... it is not a struct</i></td></tr>
+</table>
+
+<h4>Matching text</h4>
+<ul>
+<li><code>subtype = 'locality'</code> &mdash; exactly equal</li>
+<li><code>names.primary LIKE 'Jack%'</code> &mdash; starts with Jack
+    (<code>%</code> is any run of characters)</li>
+<li><code>names.primary ILIKE '%park%'</code> &mdash; contains park,
+    ignoring case</li>
+<li><code>subtype IN ('locality', 'county')</code> &mdash; any of these</li>
+<li><code>names.primary IS NOT NULL</code> &mdash; has a value at all</li>
+</ul>
+
+<h4>Numbers, true/false, and joining conditions</h4>
+<ul>
+<li><code>confidence &gt; 0.9</code>, <code>population &gt;= 10000</code>,
+    <code>min_zoom &lt;&gt; 0</code></li>
+<li><code>is_land = true</code></li>
+<li><code>subtype = 'locality' AND population &gt; 10000</code></li>
+<li><code>subtype = 'locality' OR subtype = 'county'</code> &mdash; use
+    parentheses to group: <code>(a OR b) AND c</code></li>
+</ul>
+<p>Do not type <code>WHERE</code>: enter only the condition itself. It is
+combined with the area of interest, so only features that match <i>and</i>
+fall in the area are downloaded.</p>
+
+<h4>What is not allowed</h4>
+<p>The condition runs as SQL in your own DuckDB, so a filter pasted from
+somewhere else could do more than filter. Subqueries
+(<code>SELECT</code>, <code>TABLE</code>), the functions that read files or
+the network (<code>read_text()</code>, <code>read_csv()</code>,
+<code>glob()</code>, <code>current_setting()</code>), a semicolon, and SQL
+comments (<code>--</code>, <code>/*</code>) are all refused, so that what you
+type stays one condition on this data.</p>
+"""
+
 _STATUS_ERROR = "color: #c0392b;"
 _STATUS_WARNING = "color: #b9770e;"
 _STATUS_HINT = "color: gray;"
@@ -93,6 +169,35 @@ _FIELD_ERROR = "QLineEdit { border: 1px solid #c0392b; }"
 def _is_unfinished(error):
     """Is `error` only the lexical check seeing a fragment mid-typing?"""
     return any(hint in error for hint in _INCOMPLETE_HINTS)
+
+
+class FilterHelpDialog(QDialog):
+    """How to write an attribute filter, in a window of its own.
+
+    Deliberately not a QMessageBox instance and never exec()ed: the tests
+    patch the *static* QMessageBox methods, so an instance - or any modal
+    event loop - would wait for a click nobody can give and hang CI with no
+    timeout. This is shown with show(), parented to the dialog that opened
+    it so it goes when that goes.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Attribute filter help")
+        self.setModal(False)
+        self.resize(560, 620)
+        layout = QVBoxLayout()
+        self.browser = QTextBrowser()
+        self.browser.setOpenExternalLinks(False)
+        self.browser.setHtml(FILTER_HELP_HTML)
+        layout.addWidget(self.browser)
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.close)
+        close_row.addWidget(close_button)
+        layout.addLayout(close_row)
+        self.setLayout(layout)
 
 
 class ReleaseLookupError(Exception):
@@ -149,7 +254,8 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self._schema_cache = {}  # key -> columns, so reticking does not refetch
         self._schema_pending_key = None  # the fetch now running
         self._schema_error = None  # why the last fetch gave no columns
-        self._schema_wanted = False  # the user has used the filter box
+        self._completer_path = None  # the struct path the completer is filled for
+        self._filter_help = None  # the help window, while it is open
         self._latest_release = None  # looked up once per dialog; OK uses it twice, back to back
         self.progress_message = None
         self.requires_validation = True
@@ -409,8 +515,24 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Attribute filter (#16). Deliberately not saved to QgsSettings like the
         # checkboxes: a filter left over from a past session would silently
         # shrink every later download, so it lasts only as long as this dialog.
+        # Off by default and asked for with a tick, like "Clip features to
+        # the area": an empty field invited a condition typed blind, and
+        # ticking the box is now what both shows the field and reads the
+        # column list. Not saved to QgsSettings, for the same reason the text
+        # is not: a filter restored out of sight would shrink a download
+        # nobody had asked to filter.
+        self.filter_checkbox = QCheckBox("Attribute filter")
+        self.filter_checkbox.setToolTip(
+            "Download only the features that match an SQL condition you type, "
+            "as well as falling in the area. Unchecked, everything in the area "
+            "is downloaded."
+        )
+        layout.addWidget(self.filter_checkbox)
+
+        self.filter_row = QWidget()
         filter_layout = QHBoxLayout()
-        self.filter_label = QLabel("Attribute filter (SQL):")
+        filter_layout.setContentsMargins(20, 0, 0, 0)  # indented under the box
+        self.filter_label = QLabel("Condition (SQL):")
         self.filter_input = QLineEdit()
         self.filter_input.setPlaceholderText("confidence > 0.9 AND class = 'school'")
         filter_tooltip = (
@@ -426,7 +548,18 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self.filter_label.setBuddy(self.filter_input)
         filter_layout.addWidget(self.filter_label)
         filter_layout.addWidget(self.filter_input)
-        layout.addLayout(filter_layout)
+
+        self.filter_help_button = QToolButton()
+        self.filter_help_button.setText("?")
+        self.filter_help_button.setToolTip(
+            "How to write an attribute filter, with examples"
+        )
+        self.filter_help_button.clicked.connect(self.show_filter_help)
+        filter_layout.addWidget(self.filter_help_button)
+
+        self.filter_row.setLayout(filter_layout)
+        self.filter_row.hide()
+        layout.addWidget(self.filter_row)
 
         # What is wrong with the filter, or what it can complete, said inline:
         # a modal after the download has started is how "cg = cv" used to be
@@ -514,13 +647,18 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
     def get_where_fragment(self):
         """The attribute filter as typed, stripped, or None when it is empty.
 
-        Also None when more than one dataset is selected: the filter box is
-        disabled then (#217), and a condition typed while one dataset was
-        ticked must not quietly shrink every download of a later selection
-        the user never typed it for. With nothing ticked there is no download
-        to filter and validate_and_accept() stops before any of this, so the
-        text is returned as typed.
+        Also None whenever the filter is out of sight (#217): the Attribute
+        filter box is unticked, or more than one dataset is selected so the
+        field is put away. An invisible filter must never shrink a download -
+        the text cannot be seen, corrected, or even known to apply. The text
+        itself is kept, so re-ticking restores what was typed.
+
+        Nothing selected is not a third case: there is no download to filter,
+        and validate_and_accept() stops at "select at least one dataset"
+        before any of this is read.
         """
+        if not self.filter_checkbox.isChecked():
+            return None
         if len(self.selected_datasets()) > 1:
             return None
         return self.filter_input.text().strip() or None
@@ -562,6 +700,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             radio.toggled.connect(self._selection_changed)
         self.sourcecoop_combo.currentTextChanged.connect(self._selection_changed)
         self.url_input.textChanged.connect(self._selection_changed)
+        self.filter_checkbox.toggled.connect(self._filter_asked_for)
         self.filter_input.textChanged.connect(self._update_filter_status)
         self.filter_input.textEdited.connect(self._filter_text_edited)
         # After QCompleter.setWidget(), which installs a filter of its own:
@@ -602,6 +741,19 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         return url, resolve_url
 
+    def filter_is_available(self):
+        """Can a filter be offered at all? Only for exactly one dataset.
+
+        That is the only selection a condition can be completed and checked
+        against, and a filter across datasets that do not share a column is
+        not a filter either of them can run.
+        """
+        return len(self.selected_datasets()) == 1
+
+    def filter_is_active(self):
+        """Is a filter being asked for, and can it be?"""
+        return self.filter_checkbox.isChecked() and self.filter_is_available()
+
     def filter_columns(self):
         """[(column name, DuckDB type)] for the ticked dataset, or []."""
         return list(self._schema_columns)
@@ -617,27 +769,44 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             self.cancel_schema_fetch()
             if key is not None and key in self._schema_cache:
                 self._set_filter_columns(self._schema_cache[key])
-        available = key is not None
-        self.filter_label.setEnabled(available)
-        self.filter_input.setEnabled(available)
-        if available and self._schema_wanted and not self._schema_columns:
+        self.filter_checkbox.setEnabled(key is not None)
+        self._update_filter_visibility()
+
+    def _filter_asked_for(self, checked):
+        """The Attribute filter box was ticked or unticked.
+
+        Ticking it is the one thing that starts a column fetch: a dialog
+        merely opened, and a remembered selection merely restored, read
+        nothing. Unticking stops any fetch still running - the schema already
+        read stays in the cache, so re-ticking costs nothing.
+        """
+        if not checked:
+            self.cancel_schema_fetch()
+        self._update_filter_visibility()
+        if checked and self.filter_is_available():
+            self.filter_input.setFocus()
+
+    def _update_filter_visibility(self):
+        """Show the field only while a filter is on offer, and ask if it is."""
+        active = self.filter_is_active()
+        self.filter_row.setVisible(active)
+        if active and not self._schema_columns:
             self.request_filter_columns()
         self._update_filter_status()
 
     def _filter_text_edited(self, _text=""):
-        """The user typed in the filter box: get the columns, offer the names."""
-        self.request_filter_columns()
+        """The user typed in the filter box: offer the matching names."""
         self._show_completions()
 
     def request_filter_columns(self, delay_ms=None):
-        """Ask for the ticked dataset's column list, shortly.
+        """Ask for the selected dataset's column list, shortly.
 
-        Only ever reached from the user's own use of the filter box - typing
-        in it, or giving it the keyboard - so opening the dialog reads no
-        schema, and neither does restoring the remembered checkboxes.
+        Debounced, so that ticking the box and then changing the selection
+        twice is one DESCRIBE rather than three.
         """
-        self._schema_wanted = True
         if self._schema_columns or self._single_dataset() is None:
+            return
+        if not self.filter_checkbox.isChecked():
             return
         self._schema_timer.start(
             SCHEMA_FETCH_DELAY_MS if delay_ms is None else delay_ms
@@ -690,6 +859,8 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self._schema_cache[key] = list(schema)
         if key != self._schema_key:
             return
+        # Only this key's fetch can be pending (a change of key cancels it)
+        self._schema_timer.stop()
         self._schema_error = None
         self._set_filter_columns(schema)
         self._update_filter_status()
@@ -703,6 +874,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         """
         if key != self._schema_key:
             return
+        self._schema_timer.stop()
         self._schema_error = message
         self._set_filter_columns([])
         self._update_filter_status()
@@ -729,10 +901,32 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self._schema_pending_key = None
 
     def _set_filter_columns(self, schema):
-        """Put `schema` behind the completer, as names with their types."""
+        """Hold `schema` as the selected dataset's columns."""
         self._schema_columns = list(schema)
         self._completer_model.clear()
-        for name, label in completion_candidates(self._schema_columns):
+        self._completer_path = None
+
+    def candidates_for_path(self, path):
+        """[(name, popup label)] for `path`: its fields, or the columns.
+
+        An empty path is the top level. A path into a plain STRUCT gives its
+        fields; a LIST gives nothing, because a bare dot on one is a binder
+        error, and a MAP gives nothing, because its keys are nowhere in the
+        schema (core/schema.py has the DuckDB rules that were probed).
+        """
+        if not self._schema_columns:
+            return []
+        if not path:
+            return completion_candidates(self._schema_columns)
+        return field_candidates(self._schema_columns, path)
+
+    def _set_completion_candidates(self, path):
+        """Fill the completer for `path`, unless it is already filled for it."""
+        if self._completer_path == path and self._completer_model.rowCount():
+            return
+        self._completer_path = path
+        self._completer_model.clear()
+        for name, label in self.candidates_for_path(path):
             item = QStandardItem(label)
             # The popup shows the type beside the name; the completer matches
             # on and inserts the name alone, which is what UserRole holds
@@ -740,22 +934,46 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             item.setEditable(False)
             self._completer_model.appendRow(item)
 
-    def filter_completion_prefix(self):
-        """The word the completer should complete, or None where none can be."""
-        spot = current_word(
+    def _word_at_cursor(self):
+        """The Word being typed in the filter box, or None."""
+        return current_word(
             self.filter_input.text(), self.filter_input.cursorPosition()
         )
-        return None if spot is None else spot[1]
+
+    def filter_completion_prefix(self):
+        """The word the completer should complete, or None where none can be."""
+        word = self._word_at_cursor()
+        return None if word is None else word.text
+
+    def completions_at_cursor(self):
+        """The names the popup would offer where the cursor is, in its order.
+
+        The candidates for the path in front of the cursor, narrowed to the
+        word typed so far - which is what QCompleter does with the prefix.
+        """
+        word = self._word_at_cursor()
+        if word is None:
+            return []
+        prefix = word.text.lower()
+        return [
+            name
+            for name, _label in self.candidates_for_path(word.path)
+            if name.lower().startswith(prefix)
+        ]
 
     def _show_completions(self, offer_all=False):
-        """Offer the columns matching the word under the cursor; did it show?"""
-        if not self._schema_columns or not self.filter_input.isEnabled():
+        """Offer the names matching the word under the cursor; did it show?"""
+        if not self._schema_columns or not self.filter_is_active():
             return False
-        prefix = self.filter_completion_prefix()
-        if prefix is None or (not prefix and not offer_all):
+        word = self._word_at_cursor()
+        if word is None or (not word.text and not offer_all):
             self._hide_completions()
             return False
-        self._completer.setCompletionPrefix(prefix)
+        self._set_completion_candidates(word.path)
+        if not self._completer_model.rowCount():
+            self._hide_completions()
+            return False
+        self._completer.setCompletionPrefix(word.text)
         if self._completer.completionCount() == 0:
             self._hide_completions()
             return False
@@ -768,12 +986,12 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             popup.hide()
 
     def complete_current_word(self):
-        """Tab in the filter box: take the completion, or offer the columns.
+        """Tab in the filter box: take the completion, or offer the names.
 
         Returns True when Tab was used for completion, so that the key is not
         also spent moving the keyboard out of the field.
         """
-        if not self._schema_columns or not self.filter_input.isEnabled():
+        if not self._schema_columns or not self.filter_is_active():
             return False
         popup = self._completer.popup()
         if popup is not None and popup.isVisible():
@@ -791,12 +1009,17 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         return self._show_completions(offer_all=True)
 
     def _insert_completion(self, name):
-        """Put `name` in place of the word under the cursor."""
+        """Put `name` in place of the word under the cursor.
+
+        Only the last part of a dotted path is replaced, so names.pri becomes
+        names.primary. A field goes in unquoted even when it is a reserved
+        word, which is what DuckDB accepts there (names.primary binds).
+        """
         text = self.filter_input.text()
         cursor = self.filter_input.cursorPosition()
-        spot = current_word(text, cursor)
-        start = cursor if spot is None else spot[0]
-        inserted = completion_text(name)
+        word = current_word(text, cursor)
+        start = cursor if word is None else word.start
+        inserted = name if word is not None and word.path else completion_text(name)
         self.filter_input.setText(text[:start] + inserted + text[cursor:])
         self.filter_input.setCursorPosition(start + len(inserted))
 
@@ -806,18 +1029,22 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         Nothing here opens a dialog: a filter being typed is corrected where
         it is typed, and only OK still stops for a message box.
         """
-        if not self.filter_input.isEnabled():
+        if not self.filter_is_available():
             count = len(self.selected_datasets())
             if count == 0:
                 return FILTER_NEEDS_A_DATASET, _STATUS_HINT
             return FILTER_NEEDS_ONE_DATASET.format(count=count), _STATUS_HINT
+        if not self.filter_checkbox.isChecked():
+            return "", _STATUS_HINT
         fragment = self.filter_input.text()
         error = validate_where_fragment(fragment)
         if error:
             return error, (_STATUS_WARNING if _is_unfinished(error) else _STATUS_ERROR)
-        unknown = unknown_column_message(
-            fragment, [name for name, _type in self._schema_columns]
-        )
+        # The whole schema, not just the names: the types are what tell a
+        # misspelled struct field from a list that needs an index
+        unknown = unknown_column_message(fragment, self._schema_columns)
+        if unknown and self._still_typing(unknown):
+            unknown = None
         if unknown:
             return unknown, _STATUS_WARNING
         if self.schema_worker is not None or self._schema_timer.isActive():
@@ -831,6 +1058,20 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             return FILTER_NO_COLUMNS, _STATUS_HINT
         return "", _STATUS_HINT
 
+    def _still_typing(self, unknown):
+        """Is `unknown` about the half-typed name under the cursor?
+
+        `names.pri` is not a mistake, it is three letters of names.primary,
+        and the popup is offering it at that moment. Calling it unknown while
+        the completion is on screen is just nagging, so the message waits
+        until the word is either finished or really wrong.
+        """
+        word = self._word_at_cursor()
+        if word is None or not word.text:
+            return False
+        typed = ".".join(word.path + (word.text,))
+        return f'"{typed}"' in unknown and bool(self.completions_at_cursor())
+
     def _update_filter_status(self, *args):
         text, style = self.filter_status_message()
         self.filter_status.setText(text)
@@ -838,20 +1079,34 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self.filter_status.setVisible(bool(text))
         self.filter_input.setStyleSheet(_FIELD_ERROR if style == _STATUS_ERROR else "")
 
+    def show_filter_help(self):
+        """Open the filter help, or raise the window already open.
+
+        A window, not a QMessageBox instance and never an exec(): the tests
+        patch the static QMessageBox methods, and a real modal would hang CI
+        with no timeout (see FilterHelpDialog).
+        """
+        if self._filter_help is None:
+            self._filter_help = FilterHelpDialog(self)
+        self._filter_help.show()
+        self._filter_help.raise_()
+        self._filter_help.activateWindow()
+
+    def close_filter_help(self):
+        """Take the help window down with the dialog that opened it."""
+        if self._filter_help is not None:
+            self._filter_help.close()
+            self._filter_help = None
+
     def eventFilter(self, obj, event):
         """Tab completes a column name instead of leaving the filter box."""
-        if obj is self.filter_input:
-            event_type = event.type()
-            if event_type == QEvent.Type.KeyPress and event.key() in (
-                Qt.Key.Key_Tab,
-                Qt.Key.Key_Backtab,
-            ):
-                if self.complete_current_word():
-                    return True
-            elif event_type == QEvent.Type.FocusIn:
-                # The one fetch that starts without anything being typed: the
-                # columns are wanted by the time the first word is
-                self.request_filter_columns()
+        if (
+            obj is self.filter_input
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab)
+            and self.complete_current_word()
+        ):
+            return True
         return super().eventFilter(obj, event)
 
     def validate_and_accept(self):
@@ -1012,6 +1267,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         if self.validation_task is not None:
             self.cancel_validation()
         self.cancel_schema_fetch()
+        self.close_filter_help()
 
         # Disconnect from layer changes
         if self.iface:
@@ -1256,6 +1512,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # QDialog.accept() hides the dialog without a closeEvent, so the
         # column fetch is stopped here too rather than left running
         self.cancel_schema_fetch()
+        self.close_filter_help()
 
         # Store the extent to be used by the plugin
         if hasattr(self, 'current_extent') and self.current_extent:
@@ -1278,6 +1535,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
     def reject(self):
         """Override reject to clean up resources"""
         self.cancel_schema_fetch()
+        self.close_filter_help()
 
         # Reset the map tool to default when rejecting dialog
         if self.polygon_tool and self.iface and self.iface.mapCanvas():
