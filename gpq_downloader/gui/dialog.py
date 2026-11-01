@@ -485,6 +485,13 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         layer_widget.setSizePolicy(policy)
         layer_widget.hide()
         row.addWidget(layer_widget)
+        # Left, not centred. The last line on the page holds no room open for
+        # its hidden layers (see _reserve_room_above_other_presets), so without
+        # a stretch its row is one fixed-width checkbox in a full-width box,
+        # and QHBoxLayout centres it - Base sat mid-page while every preset
+        # above it stayed left (#230). The Buildings row takes a stretch for
+        # the same reason.
+        row.addStretch()
         layout.addLayout(row)
 
         checkbox.toggled.connect(layer_widget.setVisible)

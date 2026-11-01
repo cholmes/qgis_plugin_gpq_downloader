@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 from qgis.core import QgsCoordinateReferenceSystem, QgsFeature, QgsGeometry, QgsVectorLayer
 from qgis.gui import QgsMapCanvas
 from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtWidgets import QCheckBox
+from qgis.PyQt.QtWidgets import QCheckBox, QHBoxLayout
 
 from gpq_downloader.dialog import DataSourceDialog
 from gpq_downloader.logger import message_level
@@ -763,4 +763,33 @@ def test_building_parts_without_buildings_downloads_nothing(qgs_app, mock_iface,
     with patch("gpq_downloader.gui.dialog.latest_overture_release", return_value="2026-09-23.1"):
         urls = dialog.get_urls()
     assert urls == []
+    dialog.close()
+
+
+def test_every_preset_line_stays_left(qgs_app, mock_iface, unsaved_checkboxes):
+    """A preset line ends with a stretch, so its presets start at the left.
+
+    The last line on the page holds no room open for its hidden layers, so
+    without a stretch its row is one fixed-width checkbox in a full-width box
+    and QHBoxLayout centres it: Base sat mid-page while every preset above it
+    stayed left (#230). Asserted on the layout rather than on x positions,
+    because an offscreen page is not wide enough to spread a row and the
+    positional form of this test cannot fail. Only QHBoxLayout rows are
+    checked: a FlowLayout starts every line at its left edge already.
+    """
+    dialog = DataSourceDialog(None, mock_iface)
+    rows = [
+        row
+        for row in overture_page_rows(dialog)
+        if isinstance(row.layout(), QHBoxLayout) and row_checkboxes(row)
+    ]
+    assert rows, "no preset rows found"
+    for row in rows:
+        layout = row.layout()
+        last = layout.itemAt(layout.count() - 1)
+        labels = [box.text() for box in row_checkboxes(row)]
+        assert last.spacerItem() is not None, (
+            f"the row holding {labels} does not end in a stretch, "
+            "so its presets will centre once there is room to spread"
+        )
     dialog.close()
