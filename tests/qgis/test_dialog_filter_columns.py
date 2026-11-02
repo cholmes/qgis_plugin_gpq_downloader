@@ -567,7 +567,7 @@ def test_the_filter_row_is_still_a_plain_line_edit(dialog):
     assert type(dialog.filter_input) is QLineEdit
 
 
-# --- the "Attribute filter" checkbox (#217) --------------------------------
+# --- the "Filter data by attribute" checkbox (#217) --------------------------------
 #
 # The owner asked for the filter to work like "Clip features to the area":
 # off by default, and ticking it is what reveals the field and reads the
@@ -620,14 +620,64 @@ def test_an_unticked_filter_cannot_block_ok(dialog):
     warning.assert_not_called()
 
 
-def test_the_checkbox_needs_a_dataset(dialog):
+def test_the_checkbox_says_it_needs_a_dataset_rather_than_greying(dialog):
+    """Never disabled, like "Clip features to the area".
+
+    The owner asked for the two to behave alike (#231). With nothing
+    selected the note carries the reason, where a grey box gave none, and
+    the tick survives until a dataset makes it mean something.
+    """
     one_osm(dialog, "pois")
     assert dialog.filter_checkbox.isEnabled()
     one_osm(dialog, "pois", "buildings")
     assert dialog.filter_checkbox.isEnabled()
     one_osm(dialog)
-    assert not dialog.filter_checkbox.isEnabled()
+    assert dialog.filter_checkbox.isEnabled()
     assert dialog.filter_note.text() == dialog_module.FILTER_NEEDS_A_DATASET
+
+
+def test_both_option_checkboxes_stay_tickable_with_nothing_selected(dialog):
+    """The pair the owner compared: neither greys out."""
+    one_osm(dialog)
+    assert dialog.clip_checkbox.isEnabled()
+    assert dialog.filter_checkbox.isEnabled()
+
+
+def test_ticking_with_no_dataset_shows_no_field_and_fetches_nothing(dialog):
+    """Enabled is not the same as active: an unbacked filter stays inert and
+    cannot reach a download."""
+    one_osm(dialog)
+    dialog.filter_checkbox.setChecked(True)
+    assert not dialog.filter_row.isVisibleTo(dialog)
+    assert not dialog._schema_timer.isActive()
+    assert dialog.get_where_fragment() is None
+    assert dialog.filter_note.text() == dialog_module.FILTER_NEEDS_A_DATASET
+
+
+def test_a_filter_left_behind_by_a_deselected_dataset_cannot_shrink_a_download(dialog):
+    """The hazard the grey-out used to cover.
+
+    Typing a filter and then unticking the dataset leaves a ticked box, kept
+    text and no field on screen. It must not reach a download; re-selecting
+    brings it back.
+    """
+    one_osm(dialog, "pois")
+    dialog.filter_checkbox.setChecked(True)
+    dialog.filter_input.setText("confidence > 0.9")
+    assert dialog.get_where_fragment() == "confidence > 0.9"
+    one_osm(dialog)
+    assert not dialog.filter_row.isVisibleTo(dialog)
+    assert dialog.get_where_fragment() is None
+    one_osm(dialog, "pois")
+    assert dialog.get_where_fragment() == "confidence > 0.9"
+
+
+def test_a_tick_made_early_takes_effect_once_a_dataset_is_picked(dialog):
+    one_osm(dialog)
+    dialog.filter_checkbox.setChecked(True)
+    one_osm(dialog, "pois")
+    assert dialog.filter_row.isVisibleTo(dialog)
+    assert dialog._schema_timer.isActive()
 
 
 def test_the_tick_is_not_remembered_between_sessions(qgs_app, mock_iface):

@@ -42,6 +42,16 @@ def mock_iface():
 def dialog(qgs_app, mock_iface):
     dialog = DataSourceDialog(None, mock_iface)
     dialog.extent_group.setChecked(False)  # a remembered AOI box would stop for a prompt
+    # No real column fetch. This file mocks DuckDB, and wait_for() below spins
+    # the event loop for seconds - long enough for the debounced fetch to fire
+    # and reach the network, which nothing here means to test.
+    dialog.request_filter_columns = lambda *args, **kwargs: None
+    # A filter applies to the datasets selected, and since the box stopped
+    # greying out with none (#231) that is what get_where_fragment() checks.
+    # Every test here is about a filter typed against a dataset; the ones
+    # about a custom URL set their own radio over this.
+    dialog.osm_radio.setChecked(True)
+    dialog.osm_checkboxes["pois"].setChecked(True)
     # The filter is asked for with a tick now (#217); every test in this file
     # is about a filter that has been typed, so the box starts on
     dialog.filter_checkbox.setChecked(True)

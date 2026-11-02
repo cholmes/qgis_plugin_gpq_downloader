@@ -539,7 +539,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # column list. Not saved to QgsSettings, for the same reason the text
         # is not: a filter restored out of sight would shrink a download
         # nobody had asked to filter.
-        self.filter_checkbox = QCheckBox("Attribute filter")
+        self.filter_checkbox = QCheckBox("Filter data by attribute")
         self.filter_checkbox.setToolTip(
             "Download only the features matching an SQL condition, as well as "
             "falling in the area. Unchecked, everything in the area is "
@@ -678,16 +678,21 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
     def get_where_fragment(self):
         """The attribute filter as typed, stripped, or None when it is empty.
 
-        Also None while the Attribute filter box is unticked (#217): an
-        invisible filter must never shrink a download, since the text cannot
-        be seen, corrected, or even known to apply. The text itself is kept,
-        so re-ticking restores what was typed.
+        Also None whenever the field is not on screen (#217): an invisible
+        filter must never shrink a download, since the text cannot be seen,
+        corrected, or even known to apply. The text itself is kept, so
+        re-ticking restores what was typed.
+
+        That means filter_is_active(), not just the tick. The box no longer
+        greys out when nothing is selected (#231), so a filter typed against
+        a dataset and left behind when that dataset is unticked would
+        otherwise still be returned here, with no field on screen to show it.
 
         A filter does carry across several selected datasets - the plugin
         passes it to every job - which is what the shared-column completion
         and the per-dataset warnings are for.
         """
-        if not self.filter_checkbox.isChecked():
+        if not self.filter_is_active():
             return None
         return self.filter_input.text().strip() or None
 
@@ -793,11 +798,16 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             self._schema_errors = {}
             self.cancel_schema_fetch()
             self._refresh_filter_columns()
-        self.filter_checkbox.setEnabled(bool(keys))
+        # Never disabled, so that it matches "Clip features to the area",
+        # which stays tickable whatever is selected. With no dataset the note
+        # beside it reads "Select a dataset to filter it.", which says more
+        # than a grey box does, and a tick made early takes effect as soon as
+        # a dataset is picked. filter_is_active() is what actually keeps an
+        # unbacked filter out of a download.
         self._update_filter_visibility()
 
     def _filter_asked_for(self, checked):
-        """The Attribute filter box was ticked or unticked.
+        """The "Filter data by attribute" box was ticked or unticked.
 
         Ticking it is the one thing that starts a column fetch: a dialog
         merely opened, and a remembered selection merely restored, read
