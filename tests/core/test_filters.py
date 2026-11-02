@@ -7,7 +7,11 @@ real conditions through for DuckDB to judge.
 
 import pytest
 
-from gpq_downloader.core.filters import apply_where_fragment, validate_where_fragment
+from gpq_downloader.core.filters import (
+    apply_where_fragment,
+    common_prefix,
+    validate_where_fragment,
+)
 
 
 @pytest.mark.parametrize("fragment", [
@@ -102,3 +106,24 @@ BASE = '"bbox".xmin <= 11.0 AND "bbox".xmax >= 10.0'
 ])
 def test_apply_where_fragment(base, fragment, expected):
     assert apply_where_fragment(base, fragment) == expected
+
+
+# --- common_prefix: what Tab can type for the user (#231) ------------------
+
+@pytest.mark.parametrize("names, expected", [
+    ([], ""),
+    (["update_time"], "update_time"),
+    (["update_time", "update_type"], "update_t"),
+    (["dataset", "record_id"], ""),
+    (["confidence", "confidence"], "confidence"),
+    # the shorter name is the whole prefix
+    (["sub", "subtype", "subclass"], "sub"),
+])
+def test_common_prefix(names, expected):
+    assert common_prefix(names) == expected
+
+
+def test_common_prefix_measures_case_insensitively_but_keeps_a_real_spelling():
+    """Completion ignores case, so names agreeing only in letter still share a
+    prefix - and what gets typed has to be a spelling some column really has."""
+    assert common_prefix(["updateTime", "UpdateType"]) == "updateT"

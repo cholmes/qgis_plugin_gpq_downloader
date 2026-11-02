@@ -21,6 +21,7 @@ from qgis.PyQt.QtWidgets import QLineEdit
 
 from gpq_downloader.dialog import DataSourceDialog
 from gpq_downloader.gui import dialog as dialog_module
+from gpq_downloader.gui import settings_store
 from gpq_downloader.gui.dialog import FilterHelpDialog
 
 URL = "https://example.com/data/places.parquet"
@@ -440,16 +441,89 @@ def test_tab_is_left_alone_when_there_is_nothing_to_complete(dialog):
     assert dialog.eventFilter(dialog.filter_input, tab_event()) is False
 
 
-def test_tab_offers_the_columns_for_a_word_it_can_complete(dialog):
+# Tab completes shell-style (#231): one match is typed out, several type what
+# they share and then list what is left.
+
+def test_tab_finishes_a_word_when_only_one_column_matches(dialog):
+    """The report: `sources[1].up` matched one field and still opened a popup
+    with a single row in it, waiting for a second Tab."""
     one_osm(dialog, "pois")
     with_schema(dialog)
     dialog.filter_input.setText("confidence > 0.9 AND sub")
     dialog.filter_input.setCursorPosition(24)
     with patch.object(dialog._completer, "complete") as show:
         assert dialog.complete_current_word() is True
+    show.assert_not_called()
+    assert dialog.filter_input.text() == "confidence > 0.9 AND subclass"
+    assert dialog.filter_input.cursorPosition() == len("confidence > 0.9 AND subclass")
+
+
+def test_tab_finishes_a_struct_field_inside_a_list(dialog):
+    """The owner's own example, as Overture really spells it."""
+    one_osm(dialog, "pois")
+    with_schema(dialog, [
+        ("id", "VARCHAR"),
+        ("sources", "STRUCT(property VARCHAR, update_time VARCHAR)[]"),
+    ])
+    dialog.filter_input.setText("sources[1].up")
+    dialog.filter_input.setCursorPosition(13)
+    assert dialog.complete_current_word() is True
+    assert dialog.filter_input.text() == "sources[1].update_time"
+
+
+def test_tab_types_as_much_as_several_names_share_then_lists_them(dialog):
+    one_osm(dialog, "pois")
+    with_schema(dialog, [
+        ("update_time", "VARCHAR"),
+        ("update_type", "VARCHAR"),
+        ("id", "VARCHAR"),
+    ])
+    dialog.filter_input.setText("up")
+    dialog.filter_input.setCursorPosition(2)
+    with patch.object(dialog._completer, "complete") as show:
+        assert dialog.complete_current_word() is True
+    assert dialog.filter_input.text() == "update_t"
     show.assert_called_once()
-    assert dialog._completer.completionPrefix() == "sub"
-    assert dialog._completer.currentCompletion() == "subclass"
+
+
+def test_tab_only_lists_when_the_matches_share_nothing_more(dialog):
+    """`c` matches class and confidence, which agree on no more than the c
+    already typed: there is nothing to type, so the names are shown."""
+    one_osm(dialog, "pois")
+    with_schema(dialog)
+    dialog.filter_input.setText("c")
+    dialog.filter_input.setCursorPosition(1)
+    with patch.object(dialog._completer, "complete") as show:
+        assert dialog.complete_current_word() is True
+    assert dialog.filter_input.text() == "c"
+    show.assert_called_once()
+    assert dialog._completer.completionPrefix() == "c"
+
+
+def test_tab_with_the_popup_open_still_takes_the_highlighted_name(dialog):
+    """Unchanged: once a list is on screen Tab accepts what is selected."""
+    one_osm(dialog, "pois")
+    with_schema(dialog)
+    dialog.filter_input.setText("c")
+    dialog.filter_input.setCursorPosition(1)
+    dialog.complete_current_word()  # opens the list
+    popup = dialog._completer.popup()
+    with patch.object(popup, "isVisible", return_value=True):
+        popup.setCurrentIndex(dialog._completer.completionModel().index(0, 0))
+        assert dialog.complete_current_word() is True
+    assert dialog.filter_input.text() in ("class", "confidence")
+
+
+def test_a_half_typed_shared_opening_is_never_quoted(dialog):
+    """`select` out of select/selector would be quoted as a finished name,
+    which would close a word the next keystroke means to carry on."""
+    one_osm(dialog, "pois")
+    with_schema(dialog, [("select", "VARCHAR"), ("selector", "VARCHAR")])
+    dialog.filter_input.setText("sel")
+    dialog.filter_input.setCursorPosition(3)
+    with patch.object(dialog._completer, "complete"):
+        dialog.complete_current_word()
+    assert dialog.filter_input.text() == "select"
 
 
 def test_tab_inside_a_literal_offers_nothing(dialog):
@@ -681,16 +755,24 @@ def test_a_tick_made_early_takes_effect_once_a_dataset_is_picked(dialog):
 
 
 def test_the_tick_is_not_remembered_between_sessions(qgs_app, mock_iface):
-    """Like the filter text: a filter restored out of sight would shrink a
-    download the user had not asked to filter."""
+    """The text is remembered now (#231); the tick is what must not be.
+
+    A filter restored out of sight would shrink a download the user had not
+    asked to filter, and the field is only on screen once the box is ticked.
+    """
     dialog = new_dialog(mock_iface)
     try:
         one_osm(dialog, "pois")
         dialog.filter_checkbox.setChecked(True)
-        with patch("gpq_downloader.gui.settings_store.QgsSettings") as settings:
+        # save_value, not QgsSettings: the autouse fixture above patches
+        # save_value, so a QgsSettings mock would see no calls at all and any
+        # "nothing was saved" assertion would hold whatever the code did.
+        with patch("gpq_downloader.gui.settings_store.save_value") as save:
             dialog.save_checkbox_states()
-        saved = [call.args[0] for call in settings.return_value.setValue.call_args_list]
-        assert not any("filter" in str(key).lower() for key in saved)
+        saved = [str(call.args[0]) for call in save.call_args_list]
+        assert settings_store.ATTRIBUTE_FILTER in saved
+        assert not any("checkbox" in key.lower() and "filter" in key.lower()
+                       for key in saved)
     finally:
         dialog.cancel_schema_fetch()
         dialog.close()
@@ -882,6 +964,9 @@ def test_the_help_window_is_closed_with_the_dialog(qgs_app, mock_iface):
     "Jack''s Park",
     "confidence &gt; 0.9",
     "is_land = true",
+    "&lt;&gt; 'locality'",
+    "NOT IN ('locality', 'county')",
+    "sources[1].update_time &gt; '2018'",
     "AND",
     "OR",
     "WHERE",
@@ -1177,6 +1262,28 @@ def test_the_help_drops_the_chatty_phrasing(phrase):
 ])
 def test_the_help_states_it_plainly_instead(phrase):
     assert phrase in help_text()
+
+
+def test_the_help_shows_not_equal_and_the_null_it_leaves_out():
+    """Asked for by the owner (#231). <> is worth little without the warning
+    that a null row matches neither it nor =."""
+    html = help_text()
+    assert "&lt;&gt; 'locality'" in html
+    assert "not equal to" in html
+    assert "<code>!=</code> means the same" in html
+    assert "matches neither <code>=</code> nor" in html
+
+
+def test_the_help_shows_filtering_by_overture_update_time():
+    """The owner's example. update_time is VARCHAR in Overture, not a
+    timestamp, so the help has to say why comparing it with text works at
+    all, or the next person writes a cast that is not needed."""
+    html = help_text()
+    assert "sources[1].update_time &gt; '2018'" in html
+    assert "ISO-8601" in html
+    assert "sort in the same order as the dates" in html
+    # sources is a list, so it reads one entry and says so
+    assert "reads the first source of each feature" in html
 
 
 def test_the_help_explains_filtering_several_datasets():

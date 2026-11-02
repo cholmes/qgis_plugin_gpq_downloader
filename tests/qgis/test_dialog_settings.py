@@ -26,13 +26,18 @@ OSM_KEYS = [
     "addresses", "buildings", "boundaries", "highways", "parks", "pois", "settlements", "waterways", "wetlands",
 ]
 
-ALL_SAVED_KEYS = sorted(
+# Everything saved as a true/false
+FLAG_KEYS = sorted(
     ["plugins/gpq_downloader/clip_to_area", "plugins/gpq_downloader/aoi_enabled"]
     + [f"plugins/gpq_downloader/checkbox_{k}" for k in OVERTURE_KEYS]
     + [f"plugins/gpq_downloader/base_subtype_checkbox_{k}" for k in BASE_SUBTYPES]
     + [f"plugins/gpq_downloader/divisions_subtype_checkbox_{k}" for k in DIVISIONS_SUBTYPES]
     + [f"plugins/gpq_downloader/osm_checkbox_{k}" for k in OSM_KEYS]
 )
+# The filter condition is text, not a flag; the tick that applies it is
+# deliberately not saved at all (#231).
+FILTER_TEXT_KEY = "plugins/gpq_downloader/attribute_filter"
+ALL_SAVED_KEYS = sorted(FLAG_KEYS + [FILTER_TEXT_KEY])
 
 
 def our_keys():
@@ -88,7 +93,9 @@ def test_the_keys_saved(clean_settings, dialogs):
     dialog = dialogs()
     dialog.save_checkbox_states()
     assert our_keys() == ALL_SAVED_KEYS
-    assert all(flag(k) is False for k in ALL_SAVED_KEYS)
+    assert all(flag(k) is False for k in FLAG_KEYS)
+    assert QgsSettings().value(FILTER_TEXT_KEY) == ""
+    assert not any("filter" in k for k in FLAG_KEYS)  # no remembered tick
 
 
 def test_toggling_a_checkbox_saves_every_state(clean_settings, dialogs):

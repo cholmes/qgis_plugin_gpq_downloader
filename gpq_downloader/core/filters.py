@@ -872,6 +872,28 @@ def completion_text(name: str) -> str:
     return text if plain else '"' + text.replace('"', '""') + '"'
 
 
+def common_prefix(names) -> str:
+    """The longest opening every name in `names` shares, spelled as the first.
+
+    What Tab can safely type for the user when several names match: the part
+    they all agree on. Completion matches without regard to case, so the
+    names may differ in case where they agree in letter; the length is
+    measured that way and taken from the first name, whose spelling is one a
+    dataset really uses.
+    """
+    names = list(names)
+    if not names:
+        return ""
+    shortest = min(len(name) for name in names)
+    length = 0
+    while length < shortest:
+        char = names[0][length].lower()
+        if any(name[length].lower() != char for name in names):
+            break
+        length += 1
+    return names[0][:length]
+
+
 def completion_candidates(schema) -> list:
     """[(column name, what the completer's popup shows)] for a DESCRIBE result.
 

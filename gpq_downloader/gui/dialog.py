@@ -40,6 +40,7 @@ from ..qgis_io.worker import SchemaWorker, ValidationWorker
 from ..utils import MINIO_URL_FORMAT
 from ..core.filters import (
     column_feedback,
+    common_prefix,
     completion_candidates,
     completion_text,
     current_word,
@@ -137,6 +138,22 @@ apply to a list; index an element first:</p>
     <td>&nbsp;wrong: <i>Cannot extract field ... it is not a struct</i></td></tr>
 </table>
 
+<h4>Dates and times</h4>
+<p>Overture holds a time as text in ISO-8601 order, such as
+<code>2025-07-25T18:07:43.000Z</code>. Characters in that layout sort in the
+same order as the dates themselves, so comparing against text selects a
+period. Everything a source updated since the start of 2018:</p>
+<ul>
+<li><code>sources[1].update_time &gt; '2018'</code></li>
+</ul>
+<p><code>'2019-03-01T00:00:00.000Z'</code> is greater than
+<code>'2018'</code> and <code>'2017-05-01T00:00:00.000Z'</code> is not. A
+longer value narrows the period: <code>sources[1].update_time &gt;=
+'2024-06'</code> is everything from June 2024 onwards.</p>
+<p><code>sources</code> is a list, so this reads the first source of each
+feature. A feature with several sources may have a later time in another
+entry.</p>
+
 <h4>Matching text</h4>
 <ul>
 <li><code>subtype = 'locality'</code> &mdash; equal to</li>
@@ -146,8 +163,15 @@ apply to a list; index an element first:</p>
     disregarding case</li>
 <li><code>subtype IN ('locality', 'county')</code> &mdash; equal to any of
     the listed values</li>
+<li><code>subtype &lt;&gt; 'locality'</code> &mdash; not equal to
+    (<code>!=</code> means the same)</li>
+<li><code>subtype NOT IN ('locality', 'county')</code> &mdash; equal to none
+    of the listed values</li>
 <li><code>names.primary IS NOT NULL</code> &mdash; not null</li>
 </ul>
+<p>A row where the column is null matches neither <code>=</code> nor
+<code>&lt;&gt;</code>. To keep those rows as well, ask for them:
+<code>subtype &lt;&gt; 'locality' OR subtype IS NULL</code>.</p>
 
 <h4>Numbers, true/false, and joining conditions</h4>
 <ul>
@@ -530,15 +554,17 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Add Area of Interest group
         layout.addWidget(self.setup_area_of_interest())
 
-        # Attribute filter (#16). Deliberately not saved to QgsSettings like the
-        # checkboxes: a filter left over from a past session would silently
-        # shrink every later download, so it lasts only as long as this dialog.
-        # Off by default and asked for with a tick, like "Clip features to
-        # the area": an empty field invited a condition typed blind, and
-        # ticking the box is now what both shows the field and reads the
-        # column list. Not saved to QgsSettings, for the same reason the text
-        # is not: a filter restored out of sight would shrink a download
-        # nobody had asked to filter.
+        # Attribute filter (#16). Off by default and asked for with a tick,
+        # like "Clip features to the area": an empty field invited a condition
+        # typed blind, and ticking the box is now what both shows the field
+        # and reads the column list.
+        #
+        # The tick is never remembered between sessions. A filter restored out
+        # of sight would shrink a download nobody had asked to filter, and the
+        # field is only on screen once the box is ticked. The text is
+        # remembered (#231), so a condition can be tweaked rather than
+        # retyped, but it sits in a field nobody has asked for yet and
+        # get_where_fragment() ignores it until the box is ticked.
         self.filter_checkbox = QCheckBox("Filter data by attribute")
         self.filter_checkbox.setToolTip(
             "Download only the features matching an SQL condition, as well as "
@@ -1054,7 +1080,15 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             popup.hide()
 
     def complete_current_word(self):
-        """Tab in the filter box: take the completion, or offer the names.
+        """Tab in the filter box: finish the name, or type as far as it can.
+
+        Shell-style, which is what Tab means nearly everywhere (#231). A word
+        matched by one name is simply finished: `sources[1].up` becomes
+        `sources[1].update_time` on the first Tab, where a one-row popup used
+        to open and wait for a second. Several matches type the opening they
+        all share and then list what is left, so Tab after Tab keeps
+        narrowing, and a name no longer has to be picked out of a list that
+        the keystroke could have settled.
 
         Returns True when Tab was used for completion, so that the key is not
         also spent moving the keyboard out of the field.
@@ -1074,20 +1108,40 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                 self._insert_completion(name)
                 return True
             return False
+        names = self.completions_at_cursor()
+        if len(names) == 1:
+            self._insert_completion(names[0])
+            return True
+        word = self._word_at_cursor()
+        if len(names) > 1 and word is not None:
+            # As much as they all agree on, and it goes in unfinished: a
+            # part-name is never quoted, since quoting `select` out of
+            # `select`/`selector` would end the word the next keystroke means
+            # to carry on.
+            shared = common_prefix(names)
+            if len(shared) > len(word.text):
+                self._insert_completion(shared, finished=False)
         return self._show_completions(offer_all=True)
 
-    def _insert_completion(self, name):
+    def _insert_completion(self, name, finished=True):
         """Put `name` in place of the word under the cursor.
 
         Only the last part of a dotted path is replaced, so names.pri becomes
         names.primary. A field goes in unquoted even when it is a reserved
         word, which is what DuckDB accepts there (names.primary binds).
+
+        `finished` is False for the shared opening of several names, which is
+        a word half typed rather than a name: quoting it would close a word
+        the user is still in the middle of.
         """
         text = self.filter_input.text()
         cursor = self.filter_input.cursorPosition()
         word = current_word(text, cursor)
         start = cursor if word is None else word.start
-        inserted = name if word is not None and word.path else completion_text(name)
+        if not finished or (word is not None and word.path):
+            inserted = name
+        else:
+            inserted = completion_text(name)
         self.filter_input.setText(text[:start] + inserted + text[cursor:])
         self.filter_input.setCursorPosition(start + len(inserted))
 
@@ -1561,6 +1615,14 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Save AOI checkbox state
         settings_store.save_value(settings_store.AOI_ENABLED, self.extent_group.isChecked())
 
+        # The filter text, so the next dialog opens with it ready to tweak.
+        # Saved whether or not the box is ticked: unticking is how a filter is
+        # turned off for one download, and losing the text would mean retyping
+        # it. The tick itself is never saved.
+        settings_store.save_value(
+            settings_store.ATTRIBUTE_FILTER, self.filter_input.text()
+        )
+
     def load_checkbox_states(self) -> None:
         # Load main checkboxes
         for key, checkbox in self.overture_checkboxes.items():
@@ -1591,6 +1653,11 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Load AOI checkbox state
         aoi_enabled = settings_store.load_flag(settings_store.AOI_ENABLED)
         self.extent_group.setChecked(aoi_enabled)
+
+        # The filter as last typed, ready to tweak. The tick is deliberately
+        # not restored with it, so this text applies to nothing until the box
+        # is ticked and the field is on screen to be read.
+        self.filter_input.setText(settings_store.load_text(settings_store.ATTRIBUTE_FILTER))
 
 
     def accept(self):

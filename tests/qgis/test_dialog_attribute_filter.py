@@ -98,20 +98,26 @@ def test_get_where_fragment(dialog, text, expected):
     assert dialog.get_where_fragment() == expected
 
 
-def test_the_filter_is_not_remembered_between_sessions(qgs_app, mock_iface, dialog):
-    """A remembered filter would silently shrink every later download."""
+def test_the_filter_text_is_remembered_so_it_can_be_tweaked(qgs_app, mock_iface, dialog):
+    """The owner asked to get the last filter back rather than retype it
+    (#231). The text comes back; the tick that would apply it does not, which
+    is what keeps a remembered filter from shrinking a later download."""
     dialog.filter_input.setText("confidence > 0.9")
-    with patch("gpq_downloader.gui.settings_store.QgsSettings") as settings:
-        dialog.save_checkbox_states()
-    stored = [c.args[1] for c in settings.return_value.setValue.call_args_list]
-    assert "confidence > 0.9" not in stored
-    assert not any("filter" in k.lower() for k in QgsSettings().allKeys() if "gpq_downloader" in k)
-    second = DataSourceDialog(None, mock_iface)
     try:
-        assert second.filter_input.text() == ""
+        dialog.save_checkbox_states()  # really written, so a second dialog reads it
+        second = DataSourceDialog(None, mock_iface)
+        try:
+            assert second.filter_input.text() == "confidence > 0.9"
+            assert not second.filter_checkbox.isChecked()
+            assert second.get_where_fragment() is None
+        finally:
+            second.close()
+            second.deleteLater()
     finally:
-        second.close()
-        second.deleteLater()
+        QgsSettings().setValue(
+            "gpq_downloader/attribute_filter", "",
+            section=QgsSettings.Section.Plugins,
+        )
 
 
 @pytest.mark.parametrize("text, message", [
