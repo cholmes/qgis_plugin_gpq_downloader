@@ -12,7 +12,7 @@ instead of demanding the width (#80, #193).
 """
 
 from qgis.PyQt.QtCore import QPoint, QRect, QSize, Qt
-from qgis.PyQt.QtWidgets import QLayout
+from qgis.PyQt.QtWidgets import QLayout, QWidget
 
 
 class FlowLayout(QLayout):
@@ -91,3 +91,34 @@ class FlowLayout(QLayout):
             x += size.width() + self.spacing()
             line_height = max(line_height, size.height())
         return y + line_height - rect.y() + margins.bottom()
+
+
+class FlowWidget(QWidget):
+    """A widget that stays as tall as the FlowLayout inside it needs to be.
+
+    A parent QBoxLayout works out how short a child may be from its
+    minimumSize(), and a FlowLayout's is one line deep on purpose - being
+    allowed to go narrow and wrap is the whole point of it. So the parent
+    would hand this widget one line's height and clip the lines that had
+    wrapped: at the dialog's own minimum width the last Divisions and Base
+    layers were left a 7px sliver of their 20px, and at a 14pt UI font three
+    Base layers were cut off the moment the dialog opened, Bathymetry to
+    nothing at all. A clipped checkbox cannot be read or ticked, so a layer
+    simply went missing (#230).
+
+    minimumSize() cannot fix this, because the height depends on the width
+    and it is not told one: at the narrowest width every layer is on a line
+    of its own, and reserving that much would make the dialog far taller
+    than it ever needs to be. Asking for the wrapped height once the width
+    is known is the part that works. Width does not depend on height here -
+    the row is laid out across the page - so this settles in one pass.
+    """
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        layout = self.layout()
+        if layout is None or not layout.hasHeightForWidth():
+            return
+        needed = layout.heightForWidth(self.width())
+        if needed > 0 and needed != self.minimumHeight():
+            self.setMinimumHeight(needed)

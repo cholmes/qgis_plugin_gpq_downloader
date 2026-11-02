@@ -36,7 +36,7 @@ from ..core.filters import validate_where_fragment
 from ..core.presets import load_presets
 from . import settings_store
 from .extent import AoiHighlighter, AreaOfInterestMixin
-from .flow_layout import FlowLayout
+from .flow_layout import FlowLayout, FlowWidget
 
 # How many OpenStreetMap preset checkboxes go on a row before wrapping.
 OSM_CHECKBOX_COLUMNS = 5
@@ -247,6 +247,11 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             checkbox_layout.addWidget(
                 checkbox, index // OVERTURE_CHECKBOX_COLUMNS, index % OVERTURE_CHECKBOX_COLUMNS
             )
+        # Spare width goes to a column past the last one, so these three stay
+        # packed left like every other preset line. Sharing it between their
+        # own columns spread them ~200px apart on a wide dialog, directly
+        # above the category lines this PR packs left (#230).
+        checkbox_layout.setColumnStretch(OVERTURE_CHECKBOX_COLUMNS, 1)
         overture_layout.addLayout(checkbox_layout)
 
         layer_display_names = {
@@ -471,7 +476,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # would otherwise float between the two lines instead of starting them
         row.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignTop)
 
-        layer_widget = QWidget()
+        layer_widget = FlowWidget()
         lines = FlowLayout()
         layer_checkboxes = {}
         for layer, layer_label in layer_labels.items():

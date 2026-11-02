@@ -598,22 +598,81 @@ def test_a_category_shows_its_layers_only_while_it_is_checked(
     dialog.close()
 
 
+def layer_line_tops(dialog, category):
+    """The distinct line tops the category's layer checkboxes are laid out on."""
+    boxes = getattr(dialog, f"{category}_subtype_checkboxes")
+    return sorted({checkbox.geometry().top() for checkbox in boxes.values()})
+
+
 def test_a_long_line_of_layers_wraps_instead_of_widening_the_dialog(
     qgs_app, mock_iface, unsaved_checkboxes
 ):
     """Base has six layers, wider together than the dialog. They wrap onto a
     continuation line inside Base's own block rather than run off the edge or
-    push the dialog wider (#80, #193 guard the same thing for the presets)."""
-    dialog = DataSourceDialog(None, mock_iface)
-    budget = dialog.minimumWidth()
-    for category in OVERTURE_CATEGORIES:
-        layers = getattr(dialog, f"{category}_subtype_widget")
-        lines = layers.layout()
-        for i in range(lines.count()):
-            line = lines.itemAt(i)
-            width = sum(c.sizeHint().width() for c in row_checkboxes(line))
-            assert width <= budget, f"{category} line {i} is {width}px wide"
+    push the dialog wider (#80, #193 guard the same thing for the presets).
+
+    Read off the laid-out geometry. An earlier version of this test walked the
+    FlowLayout's items as though each one were a line; they are the individual
+    checkboxes, so all it ever asserted was that a single checkbox fits across
+    the dialog, and it passed just the same with the flow layout swapped for a
+    plain QHBoxLayout.
+    """
+    dialog = overture_dialog(mock_iface)
+    dialog.base_checkbox.setChecked(True)
+    dialog.resize(dialog.minimumWidth(), dialog.height())
+    dialog.show()
+    qgs_app.processEvents()
+
+    wrapped = layer_line_tops(dialog, "base")
+    assert len(wrapped) > 1, "Base's six layers stayed on one line at the narrowest width"
+    block = dialog.base_subtype_widget
+    for key, checkbox in dialog.base_subtype_checkboxes.items():
+        assert checkbox.geometry().right() <= block.width(), f"{key} ran off the edge"
+
+    dialog.resize(1200, dialog.height())
+    qgs_app.processEvents()
+    assert layer_line_tops(dialog, "base") == wrapped[:1], "they wrapped with room to spare"
     dialog.close()
+
+
+@pytest.mark.parametrize("point_size", [9, 14])
+def test_no_layer_checkbox_is_clipped_by_its_block(
+    qgs_app, mock_iface, unsaved_checkboxes, point_size
+):
+    """A block given one line's height clips the lines that wrapped, and a
+    checkbox showing 7px of its 20px can be neither read nor ticked - the
+    layer is gone. A parent QBoxLayout takes how short a child may be from
+    minimumSize(), which is one line for a FlowLayout by design, so the block
+    has to ask for the wrapped height once it knows its width (#230).
+
+    At a 14pt UI font this went wrong with no resizing at all: Base lost three
+    layers, Bathymetry to nothing, the moment the dialog opened.
+    """
+    font = qgs_app.font()
+    was = font.pointSize()
+    font.setPointSize(point_size)
+    qgs_app.setFont(font)
+    try:
+        dialog = overture_dialog(mock_iface)
+        dialog.divisions_checkbox.setChecked(True)
+        dialog.base_checkbox.setChecked(True)
+        dialog.show()
+        dialog.resize(dialog.minimumWidth(), dialog.minimumSizeHint().height())
+        qgs_app.processEvents()
+        for category in OVERTURE_CATEGORIES:
+            block = getattr(dialog, f"{category}_subtype_widget")
+            needed = block.layout().heightForWidth(block.width())
+            assert needed <= block.height(), (
+                f"{category}'s block is {block.height()}px tall for {needed}px of layers"
+            )
+            for key, checkbox in getattr(dialog, f"{category}_subtype_checkboxes").items():
+                assert checkbox.geometry().bottom() <= block.height(), (
+                    f"{category}.{key} is cut off at {point_size}pt"
+                )
+        dialog.close()
+    finally:
+        font.setPointSize(was)
+        qgs_app.setFont(font)
 
 
 def test_no_preset_resizes_the_dialog(qgs_app, mock_iface, unsaved_checkboxes):
@@ -792,4 +851,35 @@ def test_every_preset_line_stays_left(qgs_app, mock_iface, unsaved_checkboxes):
             f"the row holding {labels} does not end in a stretch, "
             "so its presets will centre once there is room to spread"
         )
+    dialog.close()
+
+
+def test_the_plain_presets_stay_left_on_a_wide_dialog(
+    qgs_app, mock_iface, unsaved_checkboxes
+):
+    """Places, Transportation and Addresses are a QGridLayout, not a row with
+    a stretch, so the test above steps over them. Without a stretch column of
+    its own the grid shares the spare width between its cells: on a 900px
+    dialog they sat about 200px apart, directly above the category lines that
+    are packed left (#230).
+    """
+    dialog = overture_dialog(mock_iface)
+    dialog.resize(900, dialog.height())
+    dialog.show()
+    qgs_app.processEvents()
+
+    packed = dialog.overture_checkboxes["buildings"]
+    for key in ("places", "transportation", "addresses"):
+        checkbox = dialog.overture_checkboxes[key]
+        # A stretched cell shows up as a checkbox far wider than its label
+        # needs: Places went from 69px to 283px, which is what pushed the
+        # three of them apart.
+        assert checkbox.width() <= checkbox.sizeHint().width() + 20, (
+            f"{key} is {checkbox.width()}px wide for a "
+            f"{checkbox.sizeHint().width()}px label on a 900px dialog, "
+            "so the grid is spreading its cells instead of staying left"
+        )
+    assert dialog.overture_checkboxes["places"].geometry().left() == (
+        packed.geometry().left()
+    ), "the plain presets do not start at the same column as the others"
     dialog.close()
