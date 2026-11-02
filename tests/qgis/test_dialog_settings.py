@@ -15,11 +15,16 @@ import pytest
 from qgis.core import QgsRectangle, QgsSettings
 
 from gpq_downloader.dialog import DataSourceDialog
+from gpq_downloader.gui import settings_store
 from gpq_downloader.plugin import QgisPluginGeoParquet
 
 PREFIXES = ("plugins/gpq_downloader/", "gpq_downloader/")
 
-OVERTURE_KEYS = ["buildings", "building_parts", "places", "transportation", "addresses", "divisions", "base"]
+OVERTURE_KEYS = ["buildings", "places", "transportation", "addresses", "divisions", "base"]
+# Building Parts modifies the Buildings download rather than being a preset of
+# its own, but keeps the top-level key it was saved under while it was a
+# top-level checkbox (#80), so moving it loses nobody's choice
+BUILDINGS_MODIFIERS = ["building_parts"]
 BASE_SUBTYPES = ["infrastructure", "land", "land_cover", "land_use", "water", "bathymetry"]
 DIVISIONS_SUBTYPES = ["division", "division_area", "division_boundary"]
 OSM_KEYS = [
@@ -29,7 +34,7 @@ OSM_KEYS = [
 # Everything saved as a true/false
 FLAG_KEYS = sorted(
     ["plugins/gpq_downloader/clip_to_area", "plugins/gpq_downloader/aoi_enabled"]
-    + [f"plugins/gpq_downloader/checkbox_{k}" for k in OVERTURE_KEYS]
+    + [f"plugins/gpq_downloader/checkbox_{k}" for k in OVERTURE_KEYS + BUILDINGS_MODIFIERS]
     + [f"plugins/gpq_downloader/base_subtype_checkbox_{k}" for k in BASE_SUBTYPES]
     + [f"plugins/gpq_downloader/divisions_subtype_checkbox_{k}" for k in DIVISIONS_SUBTYPES]
     + [f"plugins/gpq_downloader/osm_checkbox_{k}" for k in OSM_KEYS]
@@ -38,6 +43,12 @@ FLAG_KEYS = sorted(
 # deliberately not saved at all (#231).
 FILTER_TEXT_KEY = "plugins/gpq_downloader/attribute_filter"
 ALL_SAVED_KEYS = sorted(FLAG_KEYS + [FILTER_TEXT_KEY])
+
+# The checkboxes that start out ticked, so a new user downloads the whole of
+# Buildings and of Divisions when they tick either parent
+ON_BY_DEFAULT = {f"checkbox_{k}" for k in BUILDINGS_MODIFIERS} | {
+    f"divisions_subtype_checkbox_{k}" for k in DIVISIONS_SUBTYPES
+}
 
 
 def our_keys():
@@ -93,9 +104,13 @@ def test_the_keys_saved(clean_settings, dialogs):
     dialog = dialogs()
     dialog.save_checkbox_states()
     assert our_keys() == ALL_SAVED_KEYS
-    assert all(flag(k) is False for k in FLAG_KEYS)
+    # Of the flags, only the on-by-default ones start out true (#230). The
+    # filter is text rather than a flag, so it is not read with type=bool.
+    assert {k: flag(k) for k in FLAG_KEYS} == {
+        k: k.split("/")[-1] in ON_BY_DEFAULT for k in FLAG_KEYS
+    }
     assert QgsSettings().value(FILTER_TEXT_KEY) == ""
-    assert not any("filter" in k for k in FLAG_KEYS)  # no remembered tick
+    assert not any("filter" in k for k in FLAG_KEYS)  # no remembered tick (#231)
 
 
 def test_toggling_a_checkbox_saves_every_state(clean_settings, dialogs):
@@ -108,17 +123,64 @@ def test_toggling_a_checkbox_saves_every_state(clean_settings, dialogs):
     assert our_keys() == ALL_SAVED_KEYS
 
 
-def test_the_building_parts_checkbox_is_remembered(clean_settings, dialogs):
-    """#80: a new key, saved and restored like the other Overture checkboxes."""
+def test_building_parts_is_on_by_default_and_remembers_being_turned_off(clean_settings, dialogs):
+    """Nested under Buildings and on unless the user says otherwise. Nothing is
+    stored for a user who has never touched it, so the key is read with True as
+    its default - and a stored False still wins, or unticking it would not last.
+    """
     first = dialogs()
-    assert not first.overture_checkboxes["building_parts"].isChecked()
-    first.overture_checkboxes["building_parts"].setChecked(True)
-    first.save_checkbox_states()
-    assert flag("plugins/gpq_downloader/checkbox_building_parts") is True
+    assert first.buildings_modifier_checkboxes["building_parts"].isChecked()
     assert flag("plugins/gpq_downloader/checkbox_buildings") is False
 
+    first.buildings_modifier_checkboxes["building_parts"].setChecked(False)
+    first.save_checkbox_states()
+    assert flag("plugins/gpq_downloader/checkbox_building_parts") is False
+
     second = dialogs()
-    assert {k for k, c in second.overture_checkboxes.items() if c.isChecked()} == {"building_parts"}
+    assert not second.buildings_modifier_checkboxes["building_parts"].isChecked()
+
+
+@pytest.mark.parametrize("stored", [True, False])
+def test_building_parts_keeps_what_was_saved_under_its_old_top_level_key(
+    clean_settings, dialogs, stored
+):
+    """It was a top-level checkbox (#80) saved under checkbox_building_parts.
+    The nested checkbox reads that same key, so an upgrading user keeps their
+    choice either way round."""
+    clean_settings.setValue(
+        "gpq_downloader/checkbox_building_parts", stored, section=QgsSettings.Section.Plugins
+    )
+    assert dialogs().buildings_modifier_checkboxes["building_parts"].isChecked() is stored
+
+
+def test_load_flag_defaults_only_when_nothing_is_stored(clean_settings):
+    """A checkbox that defaults on needs the three states kept apart: never
+    saved is not the same as saved False, or unticking it would not last."""
+    key = "gpq_downloader/checkbox_building_parts"
+    assert settings_store.load_flag(key) is False
+    assert settings_store.load_flag(key, default=True) is True
+
+    clean_settings.setValue(key, False, section=QgsSettings.Section.Plugins)
+    assert settings_store.load_flag(key, default=True) is False
+
+    clean_settings.setValue(key, True, section=QgsSettings.Section.Plugins)
+    assert settings_store.load_flag(key, default=False) is True
+
+
+def test_the_divisions_subtypes_are_on_by_default(clean_settings, dialogs):
+    """All three default on; unticking one of them lasts."""
+    first = dialogs()
+    assert {k for k, c in first.divisions_subtype_checkboxes.items() if c.isChecked()} == set(
+        DIVISIONS_SUBTYPES
+    )
+
+    first.divisions_subtype_checkboxes["division_area"].setChecked(False)
+    first.save_checkbox_states()
+
+    second = dialogs()
+    assert {k for k, c in second.divisions_subtype_checkboxes.items() if c.isChecked()} == {
+        "division", "division_boundary",
+    }
 
 
 def test_the_values_saved(clean_settings, dialogs):
@@ -127,12 +189,13 @@ def test_the_values_saved(clean_settings, dialogs):
         "checkbox_places", "checkbox_base", "base_subtype_checkbox_land_use", "base_subtype_checkbox_water",
         "divisions_subtype_checkbox_division_area", "osm_checkbox_pois", "osm_checkbox_wetlands",
         "clip_to_area", "aoi_enabled",
+        *ON_BY_DEFAULT,  # left alone here
     }
     dialog.overture_checkboxes["places"].setChecked(True)
     dialog.base_checkbox.setChecked(True)
     dialog.base_subtype_checkboxes["land_use"].setChecked(True)
     dialog.base_subtype_checkboxes["water"].setChecked(True)
-    dialog.divisions_subtype_checkboxes["division_area"].setChecked(True)
+    dialog.divisions_subtype_checkboxes["division_area"].setChecked(True)  # already on
     dialog.osm_checkboxes["pois"].setChecked(True)
     dialog.osm_checkboxes["wetlands"].setChecked(True)
     dialog.clip_checkbox.setChecked(True)
@@ -147,7 +210,8 @@ def test_a_new_dialog_restores_them(clean_settings, dialogs):
     first = dialogs()
     first.overture_checkboxes["transportation"].setChecked(True)
     first.divisions_checkbox.setChecked(True)
-    first.divisions_subtype_checkboxes["division_boundary"].setChecked(True)
+    first.divisions_subtype_checkboxes["division"].setChecked(False)  # on by default
+    first.divisions_subtype_checkboxes["division_area"].setChecked(False)
     first.base_subtype_checkboxes["bathymetry"].setChecked(True)  # with Base itself off
     first.osm_checkboxes["highways"].setChecked(True)
     first.clip_checkbox.setChecked(True)
@@ -164,6 +228,8 @@ def test_a_new_dialog_restores_them(clean_settings, dialogs):
     # The subtype rows follow their parent checkbox
     assert not second.divisions_subtype_widget.isHidden()
     assert second.base_subtype_widget.isHidden()
+    # The Buildings modifier follows Buildings, which is off
+    assert second.buildings_modifier_checkboxes["building_parts"].isHidden()
 
 
 def test_clip_is_restored_from_its_own_key(clean_settings, dialogs):
