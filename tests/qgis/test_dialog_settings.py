@@ -31,13 +31,18 @@ OSM_KEYS = [
     "addresses", "buildings", "boundaries", "highways", "parks", "pois", "settlements", "waterways", "wetlands",
 ]
 
-ALL_SAVED_KEYS = sorted(
+# Everything saved as a true/false
+FLAG_KEYS = sorted(
     ["plugins/gpq_downloader/clip_to_area", "plugins/gpq_downloader/aoi_enabled"]
     + [f"plugins/gpq_downloader/checkbox_{k}" for k in OVERTURE_KEYS + BUILDINGS_MODIFIERS]
     + [f"plugins/gpq_downloader/base_subtype_checkbox_{k}" for k in BASE_SUBTYPES]
     + [f"plugins/gpq_downloader/divisions_subtype_checkbox_{k}" for k in DIVISIONS_SUBTYPES]
     + [f"plugins/gpq_downloader/osm_checkbox_{k}" for k in OSM_KEYS]
 )
+# The filter condition is text, not a flag; the tick that applies it is
+# deliberately not saved at all (#231).
+FILTER_TEXT_KEY = "plugins/gpq_downloader/attribute_filter"
+ALL_SAVED_KEYS = sorted(FLAG_KEYS + [FILTER_TEXT_KEY])
 
 # The checkboxes that start out ticked, so a new user downloads the whole of
 # Buildings and of Divisions when they tick either parent
@@ -99,9 +104,13 @@ def test_the_keys_saved(clean_settings, dialogs):
     dialog = dialogs()
     dialog.save_checkbox_states()
     assert our_keys() == ALL_SAVED_KEYS
-    assert {k: flag(k) for k in ALL_SAVED_KEYS} == {
-        k: k.split("/")[-1] in ON_BY_DEFAULT for k in ALL_SAVED_KEYS
+    # Of the flags, only the on-by-default ones start out true (#230). The
+    # filter is text rather than a flag, so it is not read with type=bool.
+    assert {k: flag(k) for k in FLAG_KEYS} == {
+        k: k.split("/")[-1] in ON_BY_DEFAULT for k in FLAG_KEYS
     }
+    assert QgsSettings().value(FILTER_TEXT_KEY) == ""
+    assert not any("filter" in k for k in FLAG_KEYS)  # no remembered tick (#231)
 
 
 def test_toggling_a_checkbox_saves_every_state(clean_settings, dialogs):

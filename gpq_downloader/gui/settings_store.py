@@ -12,6 +12,10 @@ RADIO_SELECTION = "gpq_downloader/radio_selection"
 CLIP_TO_AREA = "gpq_downloader/clip_to_area"
 AOI_ENABLED = "gpq_downloader/aoi_enabled"
 LAST_USED_EXTENT = "gpq_downloader/last_used_extent"
+# The attribute filter as last typed. The text is remembered so it can be
+# tweaked rather than retyped; the tick that makes it apply is not, so a
+# restored filter cannot shrink a download nobody asked to filter (#231).
+ATTRIBUTE_FILTER = "gpq_downloader/attribute_filter"
 
 # One key per checkbox; fill in {key} with the preset's key
 CHECKBOX = "gpq_downloader/checkbox_{key}"
@@ -44,6 +48,23 @@ def load_flag(key, default=False):
         type=bool,
         section=QgsSettings.Section.Plugins,
     )
+
+
+def load_text(key):
+    """The str stored under key in the Plugins section, "" if none is.
+
+    Anything that is not a str reads as "". `type=str` normally sees to that,
+    but the value still travels through QSettings' own storage, and a key
+    written by another version - or by a test that stands a mock in for
+    QgsSettings - can come back as something a QLineEdit will not take.
+    """
+    value = QgsSettings().value(
+        key,
+        "",
+        type=str,
+        section=QgsSettings.Section.Plugins,
+    )
+    return value if isinstance(value, str) else ""
 
 
 def load_radio_selection():

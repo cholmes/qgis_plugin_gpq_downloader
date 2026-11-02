@@ -42,6 +42,19 @@ def mock_iface():
 def dialog(qgs_app, mock_iface):
     dialog = DataSourceDialog(None, mock_iface)
     dialog.extent_group.setChecked(False)  # a remembered AOI box would stop for a prompt
+    # No real column fetch. This file mocks DuckDB, and wait_for() below spins
+    # the event loop for seconds - long enough for the debounced fetch to fire
+    # and reach the network, which nothing here means to test.
+    dialog.request_filter_columns = lambda *args, **kwargs: None
+    # A filter applies to the datasets selected, and since the box stopped
+    # greying out with none (#231) that is what get_where_fragment() checks.
+    # Every test here is about a filter typed against a dataset; the ones
+    # about a custom URL set their own radio over this.
+    dialog.osm_radio.setChecked(True)
+    dialog.osm_checkboxes["pois"].setChecked(True)
+    # The filter is asked for with a tick now (#217); every test in this file
+    # is about a filter that has been typed, so the box starts on
+    dialog.filter_checkbox.setChecked(True)
     dialog.accepted_count = 0
 
     def count_accept():
@@ -85,20 +98,37 @@ def test_get_where_fragment(dialog, text, expected):
     assert dialog.get_where_fragment() == expected
 
 
-def test_the_filter_is_not_remembered_between_sessions(qgs_app, mock_iface, dialog):
-    """A remembered filter would silently shrink every later download."""
+def test_the_filter_text_is_remembered_so_it_can_be_tweaked(qgs_app, mock_iface, dialog):
+    """The owner asked to get the last filter back rather than retype it
+    (#231). The text comes back; the tick that would apply it does not, which
+    is what keeps a remembered filter from shrinking a later download."""
+    prefixes = ("plugins/gpq_downloader/", "gpq_downloader/")
+
+    def ours():
+        return sorted(k for k in QgsSettings().allKeys() if k.startswith(prefixes))
+
+    # save_checkbox_states() writes every key it has, not only the filter, so
+    # the whole set goes back afterwards. Restoring the one key this test is
+    # about would leave the rest of this dialog's state on disk for whatever
+    # runs next, which is an order-dependency waiting to happen.
+    saved = {key: QgsSettings().value(key) for key in ours()}
     dialog.filter_input.setText("confidence > 0.9")
-    with patch("gpq_downloader.gui.settings_store.QgsSettings") as settings:
-        dialog.save_checkbox_states()
-    stored = [c.args[1] for c in settings.return_value.setValue.call_args_list]
-    assert "confidence > 0.9" not in stored
-    assert not any("filter" in k.lower() for k in QgsSettings().allKeys() if "gpq_downloader" in k)
-    second = DataSourceDialog(None, mock_iface)
     try:
-        assert second.filter_input.text() == ""
+        dialog.save_checkbox_states()  # really written, so a second dialog reads it
+        second = DataSourceDialog(None, mock_iface)
+        try:
+            assert second.filter_input.text() == "confidence > 0.9"
+            assert not second.filter_checkbox.isChecked()
+            assert second.get_where_fragment() is None
+        finally:
+            second.close()
+            second.deleteLater()
     finally:
-        second.close()
-        second.deleteLater()
+        settings = QgsSettings()
+        for key in ours():
+            settings.remove(key)
+        for key, value in saved.items():
+            settings.setValue(key, value)
 
 
 @pytest.mark.parametrize("text, message", [
