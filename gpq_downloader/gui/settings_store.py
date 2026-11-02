@@ -29,11 +29,18 @@ def save_value(key, value):
     )
 
 
-def load_flag(key):
-    """The bool stored under key in the Plugins section, False if none is."""
+def load_flag(key, default=False):
+    """The bool stored under key in the Plugins section, default if none is.
+
+    A checkbox that starts out ticked has to pass default=True here rather
+    than fall back to True at the call site: "nothing stored yet" and "the
+    user unticked it" are both a False from a plain read, so the fallback
+    would re-tick the box on every restart. QgsSettings only returns the
+    default when the key is absent, so a stored False still wins.
+    """
     return QgsSettings().value(
         key,
-        False,
+        default,
         type=bool,
         section=QgsSettings.Section.Plugins,
     )
