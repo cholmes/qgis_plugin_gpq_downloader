@@ -47,6 +47,7 @@ from ..core.filters import (
     dataset_label,
     shared_columns,
     validate_where_fragment,
+    word_end,
 )
 from ..core.schema import field_candidates
 from ..core.presets import load_presets
@@ -951,6 +952,7 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             if running is task:
                 self._schema_tasks.pop(key, None)
                 self._schema_workers.pop(key, None)
+                break  # one key per task
         self._update_filter_status()
 
     def cancel_schema_fetch(self):
@@ -1127,22 +1129,34 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         """Put `name` in place of the word under the cursor.
 
         Only the last part of a dotted path is replaced, so names.pri becomes
-        names.primary. A field goes in unquoted even when it is a reserved
-        word, which is what DuckDB accepts there (names.primary binds).
+        names.primary. Fields are quoted on the same terms as top-level names:
+        a plain one still goes in bare (names.primary binds), and DuckDB reads
+        names."primary" the same way, so quoting the rest costs nothing. It
+        buys something, though - a field name comes from the type string of a
+        remote file and is no more trustworthy than the rest of it. A field
+        called `a AND 1=1` would otherwise be typed into the filter as syntax,
+        and one carrying a stray quote would leave the box unvalidatable with
+        nothing on screen to say the data put it there.
 
         `finished` is False for the shared opening of several names, which is
         a word half typed rather than a name: quoting it would close a word
-        the user is still in the middle of.
+        the user is still in the middle of, and it replaces only what is in
+        front of the cursor, so the rest of the word stays to be typed over.
         """
         text = self.filter_input.text()
         cursor = self.filter_input.cursorPosition()
         word = current_word(text, cursor)
         start = cursor if word is None else word.start
-        if not finished or (word is not None and word.path):
+        if not finished:
             inserted = name
+            end = cursor
         else:
             inserted = completion_text(name)
-        self.filter_input.setText(text[:start] + inserted + text[cursor:])
+            # A whole name replaces the whole word, the far side of the cursor
+            # included: completing from the middle of one would otherwise keep
+            # the tail that is already there as well as the name.
+            end = word_end(text, cursor)
+        self.filter_input.setText(text[:start] + inserted + text[end:])
         self.filter_input.setCursorPosition(start + len(inserted))
 
     def filter_status_message(self):
@@ -1180,7 +1194,13 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                 FILTER_COLUMNS_READY.format(count=len(self._schema_columns)),
                 _STATUS_HINT,
             )
-        if self._schema_errors:
+        if self._schema_errors or self._schemas_outstanding():
+            # Outstanding with nothing left running means a fetch ended
+            # without reporting either way, which is what cancelling the task
+            # in QGIS's own panel does, and nothing reads that dataset again
+            # until the selection changes. "Could not read" is true of it;
+            # calling what was read an intersection of all of them is not,
+            # and that message sends the user away from a filter that works.
             return FILTER_NO_COLUMNS, _STATUS_HINT
         if datasets > 1 and self.filter_schemas():
             return FILTER_NO_SHARED_COLUMNS.format(datasets=datasets), _STATUS_HINT

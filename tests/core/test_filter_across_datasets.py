@@ -93,6 +93,34 @@ def test_columns_are_shared_by_name_whatever_their_case():
     ]
 
 
+def test_a_column_whose_type_differs_is_not_shared():
+    """`height > 10` cannot mean one thing across a DOUBLE and a VARCHAR: the
+    VARCHAR side compares as text, where '9' > '10', so that download would
+    come back with the wrong rows and nothing to say so. Not sharing the
+    column says it instead.
+    """
+    assert shared_columns([[("height", "DOUBLE")], [("height", "VARCHAR")]]) == []
+
+
+def test_a_struct_column_that_is_a_scalar_elsewhere_is_not_shared():
+    """Offering names.primary because the first schema has the struct would
+    complete a field the other dataset cannot extract.
+    """
+    both = [[("names", 'STRUCT("primary" VARCHAR)')], [("names", "VARCHAR")]]
+    assert shared_columns(both) == []
+
+
+def test_type_text_is_compared_past_spacing_and_case():
+    """The same type spelled differently is still the same type."""
+    both = [[("bbox", "STRUCT(xmin  DOUBLE)")], [("bbox", "struct(xmin DOUBLE)")]]
+    assert [name for name, _ in shared_columns(both)] == ["bbox"]
+
+
+def test_plain_name_rows_are_matched_whole():
+    """A column list of bare names matches by name, not by first letter."""
+    assert shared_columns([["height", "hclass"], ["height"]]) == ["height"]
+
+
 def test_divisions_share_little_and_not_names():
     shared = [name for name, _ in shared_columns([DIVISION, DIVISION_BOUNDARY])]
     assert shared == ["id", "geometry", "subtype", "country"]

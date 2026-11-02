@@ -36,6 +36,17 @@ from gpq_downloader.core.filters import (
     "note = 'select few'",  # keywords inside a literal are fine
     "src = 'read_text(x)'",  # and so are function names
     "selected_class = 'x'",  # a column that only contains "select"
+    "note = 'from here'",  # FROM inside a literal is fine too
+    # FROM only opens a query where an expression starts. These are the forms
+    # that carry it as an argument separator instead - including the date
+    # filtering the help documents - so refusing FROM outright would reject
+    # filters people are told to write.
+    "EXTRACT(YEAR FROM update_time) = 2024",
+    "substring(name FROM 1 FOR 2) = 'ab'",
+    "trim(BOTH ' ' FROM name) = 'abc'",
+    # a quoted identifier that is not being called as a function
+    '"my col" IN (1, 2)',
+    '"my col" = (1 + 2)',
 ])
 def test_valid_fragments_pass(fragment):
     assert validate_where_fragment(fragment) is None
@@ -80,6 +91,20 @@ def test_an_empty_fragment_is_no_filter_not_an_error(fragment):
     ("glob('*') IS NOT NULL", "cannot call glob()"),
     ("current_setting('s3_secret_access_key') = ''", "cannot call current_setting()"),
     ("duckdb_secrets() IS NOT NULL", "cannot call duckdb_secrets()"),
+    # DuckDB takes FROM-first queries, with no SELECT to match on. Verified
+    # against DuckDB 1.5.3: each of these parsed and ran before, so the
+    # subquery refusal above was only as good as the SELECT keyword.
+    ("FROM (VALUES (1)) q(x) LIMIT 1", "cannot contain FROM"),
+    ("confidence > (FROM (VALUES (1)) q(x) LIMIT 1)", "cannot contain FROM"),
+    ("confidence > ( FROM range(2) LIMIT 1)", "cannot contain FROM"),
+    ("confidence > (VALUES (1))", "cannot contain VALUES"),
+    # A quoted function name is the same function to DuckDB, but the lexer
+    # blanks quoted identifiers before the function check reads them, so the
+    # name never reached the blocklist. Verified: the quoted form bound and
+    # read the file where the bare form was refused.
+    ("name = \"read_csv\"('/etc/passwd')", "quoted name as a function"),
+    ("confidence > (FROM \"read_text\"('/etc/passwd') LIMIT 1)", "cannot contain FROM"),
+    ("\"current_setting\"('s3_secret_access_key') = ''", "quoted name as a function"),
 ])
 def test_rejected_fragments_say_why(fragment, message):
     error = validate_where_fragment(fragment)

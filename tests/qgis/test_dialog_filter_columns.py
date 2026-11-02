@@ -19,6 +19,7 @@ from qgis.PyQt.QtCore import QCoreApplication, QEvent, Qt
 from qgis.PyQt.QtGui import QKeyEvent
 from qgis.PyQt.QtWidgets import QLineEdit
 
+from gpq_downloader.core.filters import validate_where_fragment
 from gpq_downloader.dialog import DataSourceDialog
 from gpq_downloader.gui import dialog as dialog_module
 from gpq_downloader.gui import settings_store
@@ -842,6 +843,27 @@ def test_a_field_completion_shows_its_type(dialog):
     assert labels["common"] == "common  MAP(VARCHAR, VARCHAR)"
 
 
+def test_completing_from_inside_a_word_replaces_all_of_it(dialog):
+    """The report: type `classification`, press Left five times, press Tab.
+    current_word() reads only what is in front of the cursor, so the chosen
+    name used to go in ahead of the tail that was still there.
+    """
+    ticked(dialog)
+    dialog.filter_input.setText("classification")
+    dialog.filter_input.setCursorPosition(5)
+    dialog._insert_completion("classification")
+    assert dialog.filter_input.text() == "classification"
+
+
+def test_completing_inside_a_word_keeps_the_rest_of_the_condition(dialog):
+    """Only the word is replaced; what follows it is not a name and stays."""
+    ticked(dialog)
+    dialog.filter_input.setText("classif = 'x' AND height > 1")
+    dialog.filter_input.setCursorPosition(4)
+    dialog._insert_completion("class")
+    assert dialog.filter_input.text() == "class = 'x' AND height > 1"
+
+
 def test_completing_a_field_replaces_only_the_last_part(dialog):
     ticked(dialog)
     dialog.filter_input.setText("names.pri")
@@ -857,6 +879,25 @@ def test_a_field_is_completed_unquoted_even_when_it_is_a_reserved_word(dialog):
     dialog.filter_input.setCursorPosition(6)
     dialog._insert_completion("primary")
     assert dialog.filter_input.text() == "names.primary"
+
+
+@pytest.mark.parametrize("field, expected", [
+    ("a AND 1=1", 'names."a AND 1=1"'),  # would otherwise go in as syntax
+    ('odd"name', 'names."odd""name"'),  # the stray quote is doubled, not loose
+    ("from", 'names."from"'),  # names."from" binds; bare FROM is refused
+])
+def test_a_field_whose_name_is_not_a_plain_word_is_quoted(dialog, field, expected):
+    """A field name is read off a remote file's type string, so it is as
+    untrusted as the rest of it. Typing one in bare would let the data put
+    syntax in the user's filter, or a quote that leaves the box
+    unvalidatable with nothing on screen to say where it came from.
+    """
+    ticked(dialog)
+    dialog.filter_input.setText("names.")
+    dialog.filter_input.setCursorPosition(6)
+    dialog._insert_completion(field)
+    assert dialog.filter_input.text() == expected
+    assert validate_where_fragment(dialog.filter_input.text()) is None
 
 
 def test_the_candidate_list_follows_the_path_as_the_cursor_moves(dialog):

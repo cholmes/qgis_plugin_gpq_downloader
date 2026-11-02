@@ -27,16 +27,29 @@ import difflib
 import re
 from typing import NamedTuple, Optional, Tuple
 
-from .schema import field_names, resolve_path, strip_subscripts
+from .schema import field_names, resolve_path, strip_subscripts, type_label
 
 # Subquery openers and the functions that read files, settings or the network.
 # Matched only outside string literals, so `note = 'select few'` stays legal.
 _SUBQUERY_RE = re.compile(r"\b(select|table)\b", re.IGNORECASE)
+# DuckDB also takes FROM-first queries, with no SELECT in them to match on, so
+# `(FROM read_text('/etc/passwd') LIMIT 1)` opened a subquery the check above
+# never saw. FROM and VALUES are refused only where an expression starts - the
+# fragment's own start, or just after a '(' - because EXTRACT(YEAR FROM t),
+# substring(x FROM 1) and trim(BOTH ' ' FROM x) carry the same word as an
+# argument separator, and the help documents the first of those.
+_SUBQUERY_START_RE = re.compile(r"(?:^|\()\s*(from|values)\b", re.IGNORECASE)
 _FUNCTION_RE = re.compile(
     r"\b(read_\w+|parquet_scan|sniff_csv|glob|duckdb_secrets|current_setting|getenv)"
     r"\s*\(",
     re.IGNORECASE,
 )
+# "read_csv"('...') calls the same function as read_csv('...'), but
+# _split_code_from_strings() blanks a quoted name to a placeholder before
+# _FUNCTION_RE reads the code, so the blocklist above never saw the quoted
+# spelling. A quoted identifier followed by '(' is a function call either way,
+# and a column is never called, so refusing the shape costs nothing.
+_QUOTED_CALL_RE = re.compile(r"\x00\s*\(")
 
 
 def _normalise(fragment):
@@ -146,7 +159,7 @@ def validate_where_fragment(fragment: str) -> "str | None":
     if error:
         return error
 
-    match = _SUBQUERY_RE.search(code)
+    match = _SUBQUERY_RE.search(code) or _SUBQUERY_START_RE.search(code)
     if match:
         return (
             f"The filter cannot contain {match.group(1).upper()}: "
@@ -156,6 +169,11 @@ def validate_where_fragment(fragment: str) -> "str | None":
     if match:
         return (
             f"The filter cannot call {match.group(1)}(): "
+            "it can only read the data's own columns."
+        )
+    if _QUOTED_CALL_RE.search(code):
+        return (
+            "The filter cannot call a quoted name as a function: "
             "it can only read the data's own columns."
         )
     return None
@@ -222,9 +240,11 @@ _NON_COLUMN_WORDS = frozenset(
 )
 
 # Words a column has to be quoted to be named by: the ones a condition reads
-# as syntax, plus the three validate_where_fragment() refuses outright, which
-# a bare completion would walk the user straight into.
-_QUOTE_THESE = _NON_COLUMN_WORDS | {"select", "table", "where"}
+# as syntax, plus the ones validate_where_fragment() refuses outright, which a
+# bare completion would walk the user straight into. VALUES earns its place by
+# being refused at the start of an expression, which is exactly where
+# completing a column named "values" would put it.
+_QUOTE_THESE = _NON_COLUMN_WORDS | {"select", "table", "where", "values"}
 
 # How alike a column name has to be to be offered as "did you mean".
 # difflib's own 0.6 is right for a name long enough to resemble anything
@@ -634,28 +654,6 @@ def _quote_trap_message(fragment, columns):
     return None
 
 
-def _list_message(fragment, columns):
-    """Why a dot will not follow a list, and what to type instead, or None.
-
-    Dot access into a STRUCT(...)[] is a binder error (Cannot extract field
-    ... because it is not a struct), which is a dead end until someone
-    mentions the index.
-    """
-    if not _column_names(columns):
-        return None
-    for ref in identifier_paths_in(fragment):
-        resolved = resolve_path(columns, ref.path)
-        if resolved.outcome != "list" or not resolved.list_path:
-            continue
-        depth = len(resolved.list_path)
-        if len(ref.path) <= depth:
-            continue  # the list itself, with no dot after it: nothing wrong
-        head = ".".join(ref.path[:depth])
-        tail = ".".join(ref.path[depth:])
-        return f'"{head}" is a list - use {head}[1].{tail}, not {head}.{tail}.'
-    return None
-
-
 def _unknown_text(name, suggestion):
     """The line for a name the data has not got at all."""
     kind = "field" if "." in name else "column"
@@ -667,6 +665,20 @@ def _unknown_text(name, suggestion):
     return f'Unknown column "{name}" - the data has no column by that name.'
 
 
+def _column_key(row):
+    """(name, type) from a schema row, folded for matching across schemas.
+
+    Takes both shapes a column list comes in - a (name, type, ...) row and a
+    bare name - because _column_names() and _union_columns() both do, and
+    reading row[0] of a string would otherwise match on its first letter.
+    """
+    if isinstance(row, str):
+        return row.lower(), ""
+    name = str(row[0]).lower()
+    type_text = row[1] if len(row) > 1 else None
+    return name, " ".join(str(type_text or "").split()).upper()
+
+
 def shared_columns(schemas) -> list:
     """The (name, type) rows every schema in `schemas` has.
 
@@ -675,14 +687,22 @@ def shared_columns(schemas) -> list:
     datasets may use: a condition on a column only some of them have is not a
     condition all of them can run. Names are matched the way DuckDB matches
     them, without regard to case.
+
+    The type has to agree as well as the name. A column that is DOUBLE in one
+    dataset and VARCHAR in another cannot carry a single condition across
+    both: `height > 10` would compare numbers in the one and text in the
+    other, where '9' > '10' is true, and the second download would come back
+    with the wrong rows and no error to show for it. A name whose types
+    disagree is therefore not shared, which leaves it to the "not in every
+    selected dataset" message - which is what the disagreement amounts to.
     """
     lists = [list(columns) for columns in schemas or () if columns]
     if not lists:
         return []
     shared = set.intersection(
-        *[{str(row[0]).lower() for row in columns} for columns in lists]
+        *[{_column_key(row) for row in columns} for columns in lists]
     )
-    return [row for row in lists[0] if str(row[0]).lower() in shared]
+    return [row for row in lists[0] if _column_key(row) in shared]
 
 
 def _union_columns(schemas):
@@ -854,6 +874,23 @@ def current_word(text: str, cursor: int) -> Optional[Word]:
     return Word(start, before[start:], _path_before(before, start))
 
 
+def word_end(text, cursor) -> int:
+    """Where the name the cursor sits in finishes, at or after `cursor`.
+
+    current_word() reads only what is in front of the cursor, which is what
+    decides the candidates. Replacing a name needs its far end too: completing
+    from the middle of one would otherwise splice the chosen name in front of
+    the tail that was already there, turning `class|ification` into
+    `classificationification`. Stops at the cursor for anything that is not a
+    name, so a completion still keeps the rest of the condition.
+    """
+    text = str(text)
+    end = cursor
+    while end < len(text) and text[end] in _IDENT_CHARS:
+        end += 1
+    return end
+
+
 def completion_text(name: str) -> str:
     """`name` as it should be typed into a filter: quoted only where it must be.
 
@@ -900,11 +937,16 @@ def completion_candidates(schema) -> list:
     Each row is a (name, type, ...) tuple as DuckDB's DESCRIBE returns it. The
     popup shows the type next to the name - the thing a filter most often
     needs to know - while the name alone is what gets inserted.
+
+    The type goes through type_label() for the same reason field_candidates()
+    does it: a top-level STRUCT's type runs to hundreds of characters (Overture
+    `names` reaches about 300), and an untruncated row makes the popup wider
+    than the dialog.
     """
     candidates = []
     for row in schema:
         name = str(row[0])
         column_type = row[1] if len(row) > 1 else None
-        label = f"{name}  {column_type}" if column_type else name
+        label = f"{name}  {type_label(column_type)}" if column_type else name
         candidates.append((name, label))
     return candidates

@@ -102,6 +102,16 @@ def test_the_filter_text_is_remembered_so_it_can_be_tweaked(qgs_app, mock_iface,
     """The owner asked to get the last filter back rather than retype it
     (#231). The text comes back; the tick that would apply it does not, which
     is what keeps a remembered filter from shrinking a later download."""
+    prefixes = ("plugins/gpq_downloader/", "gpq_downloader/")
+
+    def ours():
+        return sorted(k for k in QgsSettings().allKeys() if k.startswith(prefixes))
+
+    # save_checkbox_states() writes every key it has, not only the filter, so
+    # the whole set goes back afterwards. Restoring the one key this test is
+    # about would leave the rest of this dialog's state on disk for whatever
+    # runs next, which is an order-dependency waiting to happen.
+    saved = {key: QgsSettings().value(key) for key in ours()}
     dialog.filter_input.setText("confidence > 0.9")
     try:
         dialog.save_checkbox_states()  # really written, so a second dialog reads it
@@ -114,10 +124,11 @@ def test_the_filter_text_is_remembered_so_it_can_be_tweaked(qgs_app, mock_iface,
             second.close()
             second.deleteLater()
     finally:
-        QgsSettings().setValue(
-            "gpq_downloader/attribute_filter", "",
-            section=QgsSettings.Section.Plugins,
-        )
+        settings = QgsSettings()
+        for key in ours():
+            settings.remove(key)
+        for key, value in saved.items():
+            settings.setValue(key, value)
 
 
 @pytest.mark.parametrize("text, message", [
