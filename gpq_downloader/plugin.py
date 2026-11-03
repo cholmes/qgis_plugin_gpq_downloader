@@ -423,6 +423,8 @@ class QgisPluginGeoParquet:
             job.url, job.extent, job.output_file, self.iface, job.validation_results, job.layer_name,
             aoi_geometry=job.aoi_geometry, clip_to_area=job.clip_to_area,
             where_fragment=job.where_fragment,
+            compression_codec=job.compression_codec, compression_level=job.compression_level,
+            row_group_size=job.row_group_size, spatial_sort=job.spatial_sort,
         )
         worker.size_warning_accepted = job.size_warning_accepted
         return worker
