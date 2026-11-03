@@ -255,13 +255,24 @@ def test_golden_sql(source, fmt, monkeypatch):
     assert worker.conn is None
 
 
-def test_spatial_sort_off_drops_the_hilbert_order_and_its_cte(monkeypatch):
+@pytest.mark.parametrize("fmt", ["parquet", "gpkg"])
+def test_spatial_sort_off_drops_the_hilbert_order_and_its_cte(monkeypatch, fmt):
     source = SOURCES["custom_https"]
-    output_file = f"{OUT}.parquet"
-    _, conn, _ = run_worker(source, output_file, monkeypatch, spatial_sort=False)
+    output_file = f"{OUT}.{fmt}"
+    _, conn, signals = run_worker(source, output_file, monkeypatch, spatial_sort=False)
     got = statements(conn)
-    assert copy_unsorted(output_file, FORMAT_OPTIONS["parquet"]) in got
+    assert copy_unsorted(output_file, FORMAT_OPTIONS[fmt]) in got
     assert not any("ST_Hilbert" in s for s in got)
+    assert signals[-2:] == [("load_layer", output_file), ("finished",)]
+
+
+def test_row_group_size_reaches_the_copy_options(monkeypatch):
+    output_file = f"{OUT}.parquet"
+    _, conn, signals = run_worker(SOURCES["custom_https"], output_file, monkeypatch, row_group_size=15000)
+    got = statements(conn)
+    options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 15, ROW_GROUP_SIZE 15000);"
+    assert got[-2] == copy("geom", output_file, options)
+    assert signals[-2:] == [("load_layer", output_file), ("finished",)]
 
 
 def test_read_url_is_the_resolved_url(monkeypatch):
@@ -523,7 +534,7 @@ def test_upper_case_gdal_extension_now_matches_case_insensitively(monkeypatch, e
     source = geojson_source(3) if ext.lower() == "geojson" else SOURCES["custom_https"]
     _, conn, signals = run_worker(source, output_file, monkeypatch)
     got = statements(conn)
-    assert any(s.startswith("COPY") for s in got)
+    assert got[-2] == copy("geom", output_file, FORMAT_OPTIONS[ext.lower()])
     assert signals[-2:] == [("load_layer", output_file), ("finished",)]
 
 
