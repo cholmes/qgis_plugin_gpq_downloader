@@ -1,12 +1,38 @@
 import os
 import sys
 import pytest
-from qgis.core import QgsApplication, QgsCoordinateReferenceSystem, QgsRectangle
+from qgis.core import QgsApplication, QgsCoordinateReferenceSystem, QgsRectangle, QgsSettings
 from qgis.PyQt.QtCore import QObject
 from qgis.PyQt.QtWidgets import QMainWindow
 
 # Add the repo root to sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+# Keys this plugin writes, under either of the two prefixes QSettings can
+# render them with (see settings_store.py's module docstring).
+_OUR_PREFIXES = ("plugins/gpq_downloader/", "gpq_downloader/")
+
+
+@pytest.fixture
+def clean_settings(qgs_app):
+    """No gpq_downloader settings during the test; the user's own back after.
+
+    Shared with test_dialog_settings.py's own local fixture of the same
+    name and behaviour; this one lives here so Task 4 and Task 6's tests can
+    use it too.
+    """
+    def ours():
+        return sorted(k for k in QgsSettings().allKeys() if k.startswith(_OUR_PREFIXES))
+
+    settings = QgsSettings()
+    saved = {k: settings.value(k) for k in ours()}
+    for key in saved:
+        settings.remove(key)
+    yield settings
+    for key in ours():
+        settings.remove(key)
+    for key, value in saved.items():
+        settings.setValue(key, value)
 
 # Mock QGIS Application
 @pytest.fixture(scope="session")
