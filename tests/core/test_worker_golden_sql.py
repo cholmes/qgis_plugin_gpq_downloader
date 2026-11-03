@@ -542,6 +542,43 @@ def test_an_unsupported_extension_emits_one_error_and_stops(monkeypatch):
     assert not any(s[0] in ("finished", "load_layer") for s in signals)
 
 
+def test_a_codec_failure_is_turned_into_readable_advice(monkeypatch):
+    """A DuckDB error about the chosen codec is replaced with
+    copy_options.codec_error_advice()'s message instead of DuckDB's raw text,
+    and the worker stops cleanly rather than running anything after it."""
+    source = SOURCES["custom_https"]
+    output_file = f"{OUT}.parquet"
+
+    def respond(sql):
+        if isinstance(sql, str) and squash(sql).startswith("COPY"):
+            raise duckdb.BinderException("Binder Error: Unsupported compression codec BROTLI")
+        return source.respond(sql)
+
+    _, conn, signals = run_worker(
+        source, output_file, monkeypatch, responder=respond, compression_codec="BROTLI",
+    )
+    assert statements(conn)[-1] == CLEANUP
+    assert signals[-1][0] == "error"
+    assert "BROTLI" in signals[-1][1] and "Settings" in signals[-1][1]
+    assert not any(s[0] in ("finished", "load_layer") for s in signals)
+
+
+def test_an_unrelated_copy_failure_is_reported_unchanged(monkeypatch):
+    """An error that codec_error_advice() does not recognize as being about
+    compression is re-raised unchanged, so it reaches run()'s own handler and
+    is shown as DuckDB's own text, as before this change."""
+    source = SOURCES["custom_https"]
+
+    def respond(sql):
+        if isinstance(sql, str) and squash(sql).startswith("COPY"):
+            raise duckdb.IOException("IO Error: disk full")
+        return source.respond(sql)
+
+    _, conn, signals = run_worker(source, f"{OUT}.parquet", monkeypatch, responder=respond)
+    assert statements(conn)[-1] == CLEANUP
+    assert signals[-1] == ("error", "IO Error: disk full")
+
+
 def test_quotes_in_the_url_and_output_path_are_escaped(monkeypatch):
     url = "https://example.com/it's/data.parquet"
     output_file = "/nonexistent/o'neil/out.parquet"
