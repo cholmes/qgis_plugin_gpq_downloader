@@ -73,7 +73,9 @@ def _parquet_options(
     clauses = ["FORMAT 'parquet'", f"COMPRESSION '{codec}'"]
 
     if codec == "ZSTD":
-        level = max(MIN_COMPRESSION_LEVEL, min(MAX_COMPRESSION_LEVEL, compression_level))
+        level = max(
+            MIN_COMPRESSION_LEVEL, min(MAX_COMPRESSION_LEVEL, compression_level)
+        )
         clauses.append(f"COMPRESSION_LEVEL {level}")
 
     if row_group_size is not None and row_group_size > 0:
