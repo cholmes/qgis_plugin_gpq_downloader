@@ -215,7 +215,7 @@ def test_plugin_initialization(qgs_app, mock_iface):
     assert not plugin.downloads.is_busy
     assert isinstance(plugin.download_dir, Path)
 
-def test_plugin_init_gui(qgs_app, mock_iface):
+def test_plugin_init_gui(clean_settings, restore_level, qgs_app, mock_iface):
     """Test initGui method"""
     plugin = QgisPluginGeoParquet(mock_iface)
     plugin.initGui()
@@ -228,7 +228,7 @@ def test_plugin_init_gui(qgs_app, mock_iface):
     assert len(mock_iface.toolbar_icons) == 1
     assert mock_iface.toolbar_icons[0] == plugin.action
 
-def test_plugin_unload(qgs_app, mock_iface):
+def test_plugin_unload(clean_settings, restore_level, qgs_app, mock_iface):
     """Test plugin unload"""
     plugin = QgisPluginGeoParquet(mock_iface)
     plugin.initGui()  # Add the icon first
