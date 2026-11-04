@@ -7,7 +7,10 @@ plugin.py registers with iface.registerOptionsWidgetFactory() so this page
 appears in the Options dialog alongside every other plugin's.
 """
 
+import os
+
 from qgis.gui import QgsCollapsibleGroupBox, QgsFileWidget, QgsOptionsPageWidget, QgsOptionsWidgetFactory
+from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QCheckBox, QComboBox, QFormLayout, QSpinBox, QVBoxLayout
 
 from gpq_downloader import logger
@@ -132,6 +135,15 @@ class SettingsPageFactory(QgsOptionsWidgetFactory):
         super().__init__()
         self.setTitle("GeoParquet Downloader")
         self.setKey(PAGE_OBJECT_NAME)
+        # Without this the row in the Options tree shows a blank space where
+        # every other page has an icon; the plugin's own toolbar icon is the
+        # one users already associate with it.
+        icon = QIcon(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "icons", "parquet-download.svg",
+        ))
+        if not icon.isNull():
+            self.setIcon(icon)
 
     def createWidget(self, parent):
         return SettingsPage(parent)

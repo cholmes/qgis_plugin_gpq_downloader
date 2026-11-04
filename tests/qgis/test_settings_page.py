@@ -164,6 +164,8 @@ def test_the_factory_makes_the_page_it_registers(clean_settings, qgs_app):
     page = factory.createWidget(None)
     assert isinstance(page, SettingsPage)
     assert page.objectName() == PAGE_OBJECT_NAME
+    # The Options tree row carries the plugin's icon, not a blank space
+    assert not factory.icon().isNull()
 
 
 def test_the_gear_opens_the_plugins_own_options_page(clean_settings, qgs_app, mock_iface):
