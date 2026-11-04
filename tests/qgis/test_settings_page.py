@@ -13,6 +13,8 @@ from qgis.core import QgsSettings
 
 from gpq_downloader.core import copy_options, output_formats
 from gpq_downloader.gui import settings_store
+from gpq_downloader.gui.settings_page import PAGE_OBJECT_NAME, SettingsPage, SettingsPageFactory
+from gpq_downloader.plugin import QgisPluginGeoParquet
 
 # The two prefixes QSettings can render our keys with; see conftest.py's
 # clean_settings fixture and settings_store.py's module docstring.
@@ -70,9 +72,6 @@ def test_an_unknown_stored_output_format_reads_as_the_default(clean_settings):
 def test_remember_last_folder_is_on_when_nothing_is_stored(clean_settings):
     assert settings_store.load_flag(settings_store.REMEMBER_LAST_FOLDER, True) is True
 
-
-from gpq_downloader.gui.settings_page import PAGE_OBJECT_NAME, SettingsPage, SettingsPageFactory
-from gpq_downloader.plugin import QgisPluginGeoParquet
 
 
 def test_the_page_offers_every_format_and_codec(clean_settings, qgs_app):
@@ -140,3 +139,11 @@ def test_the_plugin_registers_the_factory_and_takes_it_away_again(qgs_app, mock_
     assert isinstance(mock_iface.options_factories[0], SettingsPageFactory)
     plugin.unload()
     assert mock_iface.options_factories == []
+
+
+def test_the_factory_makes_the_page_it_registers(clean_settings, qgs_app):
+    """createWidget() is what QGIS calls to put the page in the dialog."""
+    factory = SettingsPageFactory()
+    page = factory.createWidget(None)
+    assert isinstance(page, SettingsPage)
+    assert page.objectName() == PAGE_OBJECT_NAME

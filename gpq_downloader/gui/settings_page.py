@@ -76,7 +76,12 @@ class SettingsPage(QgsOptionsPageWidget):
         self._load()
 
     def _update_level_enabled(self, codec):
-        self.level_spin.setEnabled(codec == copy_options.DEFAULT_CODEC)
+        """Grey the level out for a codec DuckDB takes no level with.
+
+        The same constant the COPY builder gates on, so the control cannot
+        offer a level the writer would then drop.
+        """
+        self.level_spin.setEnabled(codec == copy_options.LEVELLED_CODEC)
 
     def _load(self):
         """Fill every widget from settings_store, defaulted the same way."""

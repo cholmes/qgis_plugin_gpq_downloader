@@ -18,6 +18,11 @@ from typing import Optional
 
 CODECS = ("ZSTD", "SNAPPY", "GZIP", "BROTLI", "LZ4", "UNCOMPRESSED")
 DEFAULT_CODEC = "ZSTD"
+# The one codec DuckDB accepts COMPRESSION_LEVEL with: any other gives
+# "Binder Error: Compression level is only supported for the ZSTD compression
+# codec". Named separately from DEFAULT_CODEC, which it happens to equal today,
+# because changing the default must not change which codec takes a level.
+LEVELLED_CODEC = "ZSTD"
 DEFAULT_COMPRESSION_LEVEL = 15
 MIN_COMPRESSION_LEVEL = 1
 MAX_COMPRESSION_LEVEL = 22
@@ -72,7 +77,7 @@ def _parquet_options(
 
     clauses = ["FORMAT 'parquet'", f"COMPRESSION '{codec}'"]
 
-    if codec == "ZSTD":
+    if codec == LEVELLED_CODEC:
         level = max(
             MIN_COMPRESSION_LEVEL, min(MAX_COMPRESSION_LEVEL, compression_level)
         )
