@@ -116,7 +116,9 @@ def test_plugin_queues_buildings_and_building_parts_separately(
     ]
 
 
-def test_plugin_names_the_building_parts_layer_apart_from_buildings(qgs_app, mock_iface):
+def test_plugin_names_the_building_parts_layer_apart_from_buildings(qgs_app, mock_iface, clean_settings):
+    # clean_settings: process_download_queue reads settings_store (the
+    # write-settings snapshot), which is real QgsSettings on this machine.
     plugin = QgisPluginGeoParquet(mock_iface)
     plugin.where_fragment = None
     plugin.clip_to_area = False
