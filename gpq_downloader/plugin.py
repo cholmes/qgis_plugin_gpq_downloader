@@ -234,12 +234,17 @@ class QgisPluginGeoParquet:
         remember = settings_store.load_flag(settings_store.REMEMBER_LAST_FOLDER, True)
         last = settings_store.load_text(settings_store.LAST_OUTPUT_FOLDER) if remember else ""
         configured = settings_store.load_text(settings_store.OUTPUT_FOLDER)
-        candidates = [
-            (label, value) for label, value in (
-                ("the last folder you used", last),
-                ("the configured download folder", configured),
-            ) if value
-        ]
+        # The same folder twice would warn twice about one failure, the first
+        # time promising to try the folder it had just failed on - and the two
+        # keys hold the same path for anyone who has saved into their
+        # configured folder, which is the steady state.
+        candidates = []
+        for label, value in (
+            ("the last folder you used", last),
+            ("the configured download folder", configured),
+        ):
+            if value and not any(Path(value) == Path(seen) for _, seen in candidates):
+                candidates.append((label, value))
         for index, (label, value) in enumerate(candidates):
             folder = Path(value)
             try:

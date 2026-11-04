@@ -88,6 +88,39 @@ def test_a_folder_that_cannot_be_created_falls_back_and_warns(clean_settings, mo
     assert str(bad_folder) in text
 
 
+def test_a_bad_remembered_folder_falls_through_to_the_configured_one(clean_settings, mock_iface, tmp_path, accepted):
+    """The chain's middle rung: skip the remembered folder, use the configured one."""
+    blocker = tmp_path / "a-file"
+    blocker.write_text("")
+    bad_remembered = blocker / "under"
+    configured = tmp_path / "configured"
+    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, str(bad_remembered))
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, str(configured))
+    plugin = QgisPluginGeoParquet(mock_iface)
+    path, _ = accepted(plugin)
+    assert Path(path).parent == configured
+    assert len(mock_iface.messages) == 1
+    _title, text, level, _duration = mock_iface.messages[0]
+    assert level == message_level("Warning")
+    assert str(bad_remembered) in text
+    # It says where it is going next, and that is where it went
+    assert "the configured download folder" in text
+
+
+def test_one_folder_under_both_keys_warns_once(clean_settings, mock_iface, tmp_path, accepted):
+    """The steady state: a user who saved into their configured folder."""
+    blocker = tmp_path / "a-file"
+    blocker.write_text("")
+    bad_folder = blocker / "under"
+    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, str(bad_folder))
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, str(bad_folder))
+    plugin = QgisPluginGeoParquet(mock_iface)
+    path, _ = accepted(plugin)
+    assert Path(path).parent == plugin.download_dir
+    assert len(mock_iface.messages) == 1
+    assert str(plugin.download_dir) in mock_iface.messages[0][1]
+
+
 def test_the_folder_last_saved_to_wins_when_remembering_is_on(clean_settings, mock_iface, tmp_path, accepted):
     settings_store.save_value(settings_store.OUTPUT_FOLDER, str(tmp_path / "configured"))
     settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, str(tmp_path))
