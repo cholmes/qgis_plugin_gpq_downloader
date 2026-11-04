@@ -7,7 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gpq_downloader.core import output_formats
 from gpq_downloader.gui import settings_store
+from gpq_downloader.logger import message_level
 from gpq_downloader.plugin import QgisPluginGeoParquet
 
 
@@ -15,10 +17,13 @@ from gpq_downloader.plugin import QgisPluginGeoParquet
 def accepted(qgs_app):
     """Drive one handle_dialog_accepted() with a mocked save dialog.
 
-    Patches QFileDialog.getSaveFileName to record (directory, initialFilter)
-    and return `chosen` (or the offered default path, unchanged). Returns
-    (output_path, initial_filter_passed). process_download_queue is patched
-    away unless the test asks otherwise by passing patch_queue=False.
+    Patches QFileDialog.getSaveFileName to record (directory, initialFilter,
+    filters) and return `chosen` (or the offered default path, unchanged).
+    Returns (output_path, initial_filter_passed); the filters string passed
+    is also available afterwards as `accepted.last_filters` (the return
+    tuple stays 2-long so existing callers don't all need a third `_`).
+    process_download_queue is patched away unless the test asks otherwise
+    by passing patch_queue=False.
     """
     def run(plugin, chosen=None, patch_queue=True):
         dialog_instance = MagicMock()
@@ -35,6 +40,7 @@ def accepted(qgs_app):
         def fake_save(parent, title, directory, filters, initialFilter=""):
             recorded["directory"] = directory
             recorded["initialFilter"] = initialFilter
+            recorded["filters"] = filters
             return (chosen or directory, initialFilter)
 
         with patch("gpq_downloader.plugin.QFileDialog.getSaveFileName", side_effect=fake_save):
@@ -46,6 +52,7 @@ def accepted(qgs_app):
                 else:
                     plugin.handle_dialog_accepted(dialog_instance)
 
+        run.last_filters = recorded["filters"]
         return recorded["directory"], recorded["initialFilter"]
 
     return run
@@ -70,11 +77,15 @@ def test_a_configured_folder_that_does_not_exist_yet_is_created(clean_settings, 
 def test_a_folder_that_cannot_be_created_falls_back_and_warns(clean_settings, mock_iface, tmp_path, accepted):
     blocker = tmp_path / "a-file"
     blocker.write_text("")
-    settings_store.save_value(settings_store.OUTPUT_FOLDER, str(blocker / "under"))
+    bad_folder = blocker / "under"
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, str(bad_folder))
     plugin = QgisPluginGeoParquet(mock_iface)
     path, _ = accepted(plugin)
     assert Path(path).parent == plugin.download_dir
-    assert mock_iface.messages  # the message bar was told; see MockIface
+    assert len(mock_iface.messages) == 1
+    _title, text, level, _duration = mock_iface.messages[0]
+    assert level == message_level("Warning")
+    assert str(bad_folder) in text
 
 
 def test_the_folder_last_saved_to_wins_when_remembering_is_on(clean_settings, mock_iface, tmp_path, accepted):
@@ -100,13 +111,63 @@ def test_saving_remembers_the_folder_that_was_used(clean_settings, mock_iface, t
     assert settings_store.load_text(settings_store.LAST_OUTPUT_FOLDER) == str(picked_dir)
 
 
+def test_with_nothing_stored_the_dialog_offers_todays_defaults(clean_settings, mock_iface, accepted):
+    """Anti-goal #1: someone who never opens the panel must see exactly what
+    the save dialog offered before it existed - every format in the filter,
+    GeoParquet preselected, and the legacy default folder."""
+    plugin = QgisPluginGeoParquet(mock_iface)
+    path, initial_filter = accepted(plugin)
+    assert Path(path).parent == plugin.download_dir
+    assert Path(path).suffix == ".parquet"
+    assert initial_filter == "GeoParquet (*.parquet)"
+    assert accepted.last_filters == output_formats.dialog_filters()
+
+
 def test_every_job_in_one_batch_carries_the_settings_as_they_were_at_enqueue(clean_settings, mock_iface, tmp_path):
+    """The snapshot is taken once for the whole batch (plugin.py's
+    process_download_queue), not re-read per job. Pinned two ways: every
+    field - including row_group_size, which nothing else asserts - is
+    checked on every job of a multi-URL batch, and load_download_settings
+    is stubbed to return the *changed* settings on any call after the
+    first, so an implementation that reads inside the job comprehension
+    (one read per URL) would hand job 2 the drifted values and fail here,
+    where an implementation that reads once outside the comprehension
+    cannot.
+    """
     settings_store.save_value(settings_store.COMPRESSION_CODEC, "SNAPPY")
     settings_store.save_value(settings_store.COMPRESSION_LEVEL, 9)
+    settings_store.save_value(settings_store.ROW_GROUP_SIZE, 50000)
     settings_store.save_value(settings_store.SPATIAL_SORT, False)
     plugin = QgisPluginGeoParquet(mock_iface)
-    with patch.object(plugin.downloads, "enqueue", return_value=0) as enqueue:
-        plugin.process_download_queue([("https://e.com/a.parquet", str(tmp_path / "a.parquet"))], None)
+
+    real_read = settings_store.load_download_settings
+    drifted = {
+        "compression_codec": "GZIP",
+        "compression_level": 1,
+        "row_group_size": 1,
+        "spatial_sort": True,
+    }
+    calls = []
+
+    def read_once_then_drift():
+        calls.append(True)
+        return real_read() if len(calls) == 1 else dict(drifted)
+
+    download_queue = [
+        ("https://e.com/a.parquet", str(tmp_path / "a.parquet")),
+        ("https://e.com/b.parquet", str(tmp_path / "b.parquet")),
+    ]
+    with patch.object(settings_store, "load_download_settings", side_effect=read_once_then_drift) as read:
+        with patch.object(plugin.downloads, "enqueue", return_value=0) as enqueue:
+            plugin.process_download_queue(download_queue, None)
+
+    read.assert_called_once()
     jobs = enqueue.call_args[0][0]
-    job = jobs[0]
-    assert (job.compression_codec, job.compression_level, job.spatial_sort) == ("SNAPPY", 9, False)
+    assert len(jobs) == 2
+    for job in jobs:
+        assert (
+            job.compression_codec,
+            job.compression_level,
+            job.row_group_size,
+            job.spatial_sort,
+        ) == ("SNAPPY", 9, 50000, False)
