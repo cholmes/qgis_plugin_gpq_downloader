@@ -17,9 +17,9 @@ _OUR_PREFIXES = ("plugins/gpq_downloader/", "gpq_downloader/")
 def clean_settings(qgs_app):
     """No gpq_downloader settings during the test; the user's own back after.
 
-    Shared with test_dialog_settings.py's own local fixture of the same
-    name and behaviour; this one lives here so Task 4 and Task 6's tests can
-    use it too.
+    Lives here because every tests/qgis file that touches stored settings needs
+    it: HOME does not isolate QgsSettings on macOS, so a test that writes keys
+    without this fixture writes into the developer's real QGIS profile.
     """
     def ours():
         return sorted(k for k in QgsSettings().allKeys() if k.startswith(_OUR_PREFIXES))

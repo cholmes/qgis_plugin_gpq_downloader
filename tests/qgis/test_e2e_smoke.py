@@ -30,21 +30,6 @@ TIMEOUT = 120
 
 
 @pytest.fixture
-def clean_settings(qgs_app):
-    """No remembered dialog state (an AOI box left ticked would stop for a prompt)."""
-    settings = QgsSettings()
-    keys = [k for k in settings.allKeys() if k.startswith(("plugins/gpq_downloader/", "gpq_downloader/"))]
-    saved = {k: settings.value(k) for k in keys}
-    for key in keys:
-        settings.remove(key)
-    yield
-    for key in [k for k in settings.allKeys() if k.startswith(("plugins/gpq_downloader/", "gpq_downloader/"))]:
-        settings.remove(key)
-    for key, value in saved.items():
-        settings.setValue(key, value)
-
-
-@pytest.fixture
 def iface():
     iface = MagicMock()
     iface.mainWindow.return_value = None
