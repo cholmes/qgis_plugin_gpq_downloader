@@ -11,6 +11,7 @@ afterwards, via the clean_settings fixture shared with test_dialog_settings.py
 import pytest
 from qgis.core import QgsSettings
 
+from gpq_downloader import logger
 from gpq_downloader.core import copy_options, output_formats
 from gpq_downloader.gui import settings_store
 from gpq_downloader.gui.dialog import DataSourceDialog
@@ -123,6 +124,13 @@ def test_apply_writes_what_the_download_settings_read_back(clean_settings, qgs_a
     }
 
 
+def test_apply_pushes_the_combo_text_into_the_logger(clean_settings, qgs_app, restore_level):
+    page = SettingsPage()
+    page.log_combo.setCurrentText("Debug")
+    page.apply()
+    assert logger.current_level() == "Debug"
+
+
 def test_apply_stores_nothing_under_a_key_the_dialog_also_writes(clean_settings, qgs_app):
     SettingsPage().apply()
     written = sorted(k for k in QgsSettings().allKeys() if k.startswith(PREFIXES))
@@ -131,6 +139,13 @@ def test_apply_stores_nothing_under_a_key_the_dialog_also_writes(clean_settings,
 
 def test_the_page_carries_the_name_the_gear_button_opens(clean_settings, qgs_app):
     assert SettingsPage().objectName() == PAGE_OBJECT_NAME
+
+
+def test_init_gui_applies_the_stored_level(clean_settings, qgs_app, mock_iface, restore_level):
+    settings_store.save_value(settings_store.LOG_LEVEL, "Warning")
+    plugin = QgisPluginGeoParquet(mock_iface)
+    plugin.initGui()
+    assert logger.current_level() == "Warning"
 
 
 def test_the_plugin_registers_the_factory_and_takes_it_away_again(qgs_app, mock_iface):

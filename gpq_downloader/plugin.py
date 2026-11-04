@@ -22,6 +22,7 @@ from .qgis_io import duckdb_setup, layers
 from .gui.dialog import DataSourceDialog, ReleaseLookupError
 from .gui import settings_store
 from .gui.settings_page import SettingsPageFactory
+from . import logger
 from .logger import message_level
 from .qgis_io.manager import DownloadManager
 from .qgis_io.worker import Worker
@@ -69,6 +70,14 @@ class QgisPluginGeoParquet:
 
         self.settings_factory = SettingsPageFactory()
         self.iface.registerOptionsWidgetFactory(self.settings_factory)
+
+        # Apply the stored logging level before anything else logs, so
+        # startup messages obey it too (#93).
+        logger.set_level(
+            settings_store.load_choice(
+                settings_store.LOG_LEVEL, settings_store.LOG_LEVELS, settings_store.DEFAULT_LOG_LEVEL
+            )
+        )
 
         self.check_duckdb(startup=True)
 

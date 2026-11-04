@@ -126,7 +126,7 @@ class Worker(QObject):
             else:
                 logger.log("No AOI geometry provided.")
 
-            #logger.log(f"Full validation_results at start of run: {self.validation_results}")
+            logger.debug(f"Full validation_results at start of run: {self.validation_results}")
 
             conn = None
             copy_started = False  # only an export this run started is removed on cancel

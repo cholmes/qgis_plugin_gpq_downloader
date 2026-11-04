@@ -10,6 +10,7 @@ appears in the Options dialog alongside every other plugin's.
 from qgis.gui import QgsCollapsibleGroupBox, QgsFileWidget, QgsOptionsPageWidget, QgsOptionsWidgetFactory
 from qgis.PyQt.QtWidgets import QCheckBox, QComboBox, QFormLayout, QSpinBox, QVBoxLayout
 
+from gpq_downloader import logger
 from gpq_downloader.core import copy_options, output_formats
 
 from . import settings_store
@@ -120,6 +121,8 @@ class SettingsPage(QgsOptionsPageWidget):
         settings_store.save_value(settings_store.COMPRESSION_LEVEL, self.level_spin.value())
         settings_store.save_value(settings_store.ROW_GROUP_SIZE, self.row_group_spin.value())
         settings_store.save_value(settings_store.SPATIAL_SORT, self.sort_checkbox.isChecked())
+        # Takes effect on the next download without reopening anything (#93).
+        logger.set_level(self.log_combo.currentText())
 
 
 class SettingsPageFactory(QgsOptionsWidgetFactory):

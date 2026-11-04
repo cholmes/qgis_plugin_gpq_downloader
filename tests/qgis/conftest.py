@@ -10,9 +10,35 @@ from qgis.PyQt.QtWidgets import QMainWindow
 # Add the repo root to sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from gpq_downloader import logger  # noqa: E402
+
 # Keys this plugin writes, under either of the two prefixes QSettings can
 # render them with (see settings_store.py's module docstring).
 _OUR_PREFIXES = ("plugins/gpq_downloader/", "gpq_downloader/")
+
+
+@pytest.fixture
+def restore_level():
+    """Put the logging threshold back after a test that calls logger.set_level().
+
+    The threshold is module state (logger.py must not read QgsSettings, so it
+    cannot restore itself); any test that changes it leaks into every test
+    that runs after it unless it is put back here.
+    """
+    before = logger.current_level()
+    yield
+    logger.set_level(before)
+
+
+@pytest.fixture
+def logged(monkeypatch):
+    """Every (message, level) that reaches QgsMessageLog, via logger.py."""
+    seen = []
+    monkeypatch.setattr(
+        logger, "QgsMessageLog",
+        type("Stub", (), {"logMessage": staticmethod(lambda m, t, lvl: seen.append((m, lvl)))}),
+    )
+    return seen
 
 
 @pytest.fixture
