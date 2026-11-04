@@ -21,6 +21,7 @@ from pathlib import Path
 from .qgis_io import duckdb_setup, layers
 from .gui.dialog import DataSourceDialog, ReleaseLookupError
 from .gui import settings_store
+from .gui.settings_page import SettingsPageFactory
 from .logger import message_level
 from .qgis_io.manager import DownloadManager
 from .qgis_io.worker import Worker
@@ -31,6 +32,7 @@ class QgisPluginGeoParquet:
     def __init__(self, iface):
         self.iface = iface
         self.action = None
+        self.settings_factory = None
         self.output_file = None
         self.clip_to_area = False  # from the dialog's "Clip features to the area" box
         self.where_fragment = None  # from the dialog's attribute filter; None is no filter
@@ -63,6 +65,10 @@ class QgisPluginGeoParquet:
 
         # Add the actions to the toolbar
         self.iface.addToolBarIcon(self.action)
+
+        self.settings_factory = SettingsPageFactory()
+        self.iface.registerOptionsWidgetFactory(self.settings_factory)
+
         self.check_duckdb(startup=True)
 
     def check_duckdb(self, startup=False):
@@ -184,6 +190,9 @@ class QgisPluginGeoParquet:
         self._pop_duckdb_message()
         # A pip install still running must not call back into this dead instance
         duckdb_setup.detach()
+        if self.settings_factory is not None:
+            self.iface.unregisterOptionsWidgetFactory(self.settings_factory)
+            self.settings_factory = None
         # Remove all actions from the toolbar
         self.iface.removeToolBarIcon(self.action)
 

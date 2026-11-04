@@ -9,9 +9,14 @@ afterwards, via the clean_settings fixture shared with test_dialog_settings.py
 """
 
 import pytest
+from qgis.core import QgsSettings
 
-from gpq_downloader.core import output_formats
+from gpq_downloader.core import copy_options, output_formats
 from gpq_downloader.gui import settings_store
+
+# The two prefixes QSettings can render our keys with; see conftest.py's
+# clean_settings fixture and settings_store.py's module docstring.
+PREFIXES = ("plugins/gpq_downloader/", "gpq_downloader/")
 
 
 def test_nothing_stored_gives_the_documented_defaults(clean_settings):
@@ -64,3 +69,74 @@ def test_an_unknown_stored_output_format_reads_as_the_default(clean_settings):
 
 def test_remember_last_folder_is_on_when_nothing_is_stored(clean_settings):
     assert settings_store.load_flag(settings_store.REMEMBER_LAST_FOLDER, True) is True
+
+
+from gpq_downloader.gui.settings_page import PAGE_OBJECT_NAME, SettingsPage, SettingsPageFactory
+from gpq_downloader.plugin import QgisPluginGeoParquet
+
+
+def test_the_page_offers_every_format_and_codec(clean_settings, qgs_app):
+    page = SettingsPage()
+    assert [page.format_combo.itemText(i) for i in range(page.format_combo.count())] == \
+        list(output_formats.format_names())
+    assert [page.codec_combo.itemText(i) for i in range(page.codec_combo.count())] == \
+        list(copy_options.CODECS)
+    assert page.level_spin.minimum() == 1 and page.level_spin.maximum() == 22
+
+
+def test_the_page_opens_on_the_stored_values(clean_settings, qgs_app):
+    settings_store.save_value(settings_store.COMPRESSION_CODEC, "GZIP")
+    settings_store.save_value(settings_store.SPATIAL_SORT, False)
+    page = SettingsPage()
+    assert page.codec_combo.currentText() == "GZIP"
+    assert page.sort_checkbox.isChecked() is False
+
+
+def test_the_page_opens_on_the_defaults_when_nothing_is_stored(clean_settings, qgs_app):
+    page = SettingsPage()
+    assert page.codec_combo.currentText() == "ZSTD"
+    assert page.level_spin.value() == 15
+    assert page.sort_checkbox.isChecked() is True
+    assert page.remember_checkbox.isChecked() is True
+    assert page.log_combo.currentText() == "Info"
+
+
+def test_the_level_control_is_only_enabled_for_zstd(clean_settings, qgs_app):
+    page = SettingsPage()
+    assert page.level_spin.isEnabled() is True
+    page.codec_combo.setCurrentText("SNAPPY")
+    assert page.level_spin.isEnabled() is False
+    page.codec_combo.setCurrentText("ZSTD")
+    assert page.level_spin.isEnabled() is True
+
+
+def test_apply_writes_what_the_download_settings_read_back(clean_settings, qgs_app):
+    page = SettingsPage()
+    page.codec_combo.setCurrentText("SNAPPY")
+    page.level_spin.setValue(9)
+    page.row_group_spin.setValue(15000)
+    page.sort_checkbox.setChecked(False)
+    page.apply()
+    assert settings_store.load_download_settings() == {
+        "compression_codec": "SNAPPY", "compression_level": 9,
+        "row_group_size": 15000, "spatial_sort": False,
+    }
+
+
+def test_apply_stores_nothing_under_a_key_the_dialog_also_writes(clean_settings, qgs_app):
+    SettingsPage().apply()
+    written = sorted(k for k in QgsSettings().allKeys() if k.startswith(PREFIXES))
+    assert not any(k.endswith(("clip_to_area", "aoi_enabled", "attribute_filter")) for k in written)
+
+
+def test_the_page_carries_the_name_the_gear_button_opens(clean_settings, qgs_app):
+    assert SettingsPage().objectName() == PAGE_OBJECT_NAME
+
+
+def test_the_plugin_registers_the_factory_and_takes_it_away_again(qgs_app, mock_iface):
+    plugin = QgisPluginGeoParquet(mock_iface)
+    plugin.initGui()
+    assert len(mock_iface.options_factories) == 1
+    assert isinstance(mock_iface.options_factories[0], SettingsPageFactory)
+    plugin.unload()
+    assert mock_iface.options_factories == []

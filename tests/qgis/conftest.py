@@ -50,21 +50,33 @@ class MockIface(QObject):
         self.canvas = MockCanvas()
         self._window = QMainWindow()
         self.toolbar_icons = []  # Add this to track added icons
-    
+        self.options_factories = []
+        self.options_dialog_calls = []
+
     def mapCanvas(self):
         return self.canvas
-    
+
     def mainWindow(self):
         return self._window
-    
+
     def addToolBarIcon(self, action):  # Add this method
         """Mock method for adding toolbar icons"""
         self.toolbar_icons.append(action)
-    
+
     def removeToolBarIcon(self, action):  # Add this method too
         """Mock method for removing toolbar icons"""
         if action in self.toolbar_icons:
             self.toolbar_icons.remove(action)
+
+    def registerOptionsWidgetFactory(self, factory):
+        self.options_factories.append(factory)
+
+    def unregisterOptionsWidgetFactory(self, factory):
+        if factory in self.options_factories:
+            self.options_factories.remove(factory)
+
+    def showOptionsDialog(self, parent=None, currentPage=""):
+        self.options_dialog_calls.append(currentPage)
 
 class MockCanvas:
     def __init__(self):
