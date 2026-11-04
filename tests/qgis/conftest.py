@@ -1,5 +1,7 @@
 import os
 import sys
+from unittest.mock import MagicMock
+
 import pytest
 from qgis.core import QgsApplication, QgsCoordinateReferenceSystem, QgsRectangle, QgsSettings
 from qgis.PyQt.QtCore import QObject
@@ -52,12 +54,25 @@ class MockIface(QObject):
         self.toolbar_icons = []  # Add this to track added icons
         self.options_factories = []
         self.options_dialog_calls = []
+        # Everything about QgisInterface this class does not model its own
+        # way (activeLayer, messageBar, actionPan, ...) - DataSourceDialog's
+        # __init__ touches several of these, so a construction with a real
+        # iface, not a fully-mocked one, needs a harmless stand-in for them.
+        self._stub = MagicMock()
+
+    def __getattr__(self, name):
+        return getattr(self._stub, name)
 
     def mapCanvas(self):
         return self.canvas
 
     def mainWindow(self):
         return self._window
+
+    def layerTreeView(self):
+        # No layer-tree widget to mirror; DataSourceDialog only wires up
+        # layer-order signals when this is truthy, so None skips that.
+        return None
 
     def addToolBarIcon(self, action):  # Add this method
         """Mock method for adding toolbar icons"""

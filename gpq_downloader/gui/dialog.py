@@ -54,6 +54,7 @@ from ..core.presets import load_presets
 from . import settings_store
 from .extent import AoiHighlighter, AreaOfInterestMixin
 from .flow_layout import FlowLayout, FlowWidget
+from .settings_page import PAGE_OBJECT_NAME
 
 # How many OpenStreetMap preset checkboxes go on a row before wrapping.
 OSM_CHECKBOX_COLUMNS = 5
@@ -671,6 +672,14 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         # Buttons
         button_layout = QHBoxLayout()
+        self.settings_button = QToolButton()
+        self.settings_button.setText("⚙")  # gear glyph, no label text
+        self.settings_button.setToolTip(
+            "Settings for downloads: format, folder, compression"
+        )
+        self.settings_button.clicked.connect(self.open_settings)
+        button_layout.addWidget(self.settings_button)
+        button_layout.addStretch()
         self.ok_button = QPushButton("OK")
         self.cancel_button = QPushButton("Cancel")
         button_layout.addWidget(self.ok_button)
@@ -1338,6 +1347,16 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self.filter_status.setStyleSheet(style)
         self.filter_status.setVisible(bool(text))
         self.filter_input.setStyleSheet(_FIELD_ERROR if style == _STATUS_ERROR else "")
+
+    def open_settings(self):
+        """Open QGIS's Options dialog on this plugin's settings page.
+
+        A no-op when there is no iface - several tests construct the dialog
+        with iface=None, and the gear button must not raise for them.
+        """
+        if self.iface is None:
+            return
+        self.iface.showOptionsDialog(self, PAGE_OBJECT_NAME)
 
     def show_filter_help(self):
         """Open the filter help, or raise the window already open.

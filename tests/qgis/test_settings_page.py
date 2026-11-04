@@ -13,6 +13,7 @@ from qgis.core import QgsSettings
 
 from gpq_downloader.core import copy_options, output_formats
 from gpq_downloader.gui import settings_store
+from gpq_downloader.gui.dialog import DataSourceDialog
 from gpq_downloader.gui.settings_page import PAGE_OBJECT_NAME, SettingsPage, SettingsPageFactory
 from gpq_downloader.plugin import QgisPluginGeoParquet
 
@@ -147,3 +148,13 @@ def test_the_factory_makes_the_page_it_registers(clean_settings, qgs_app):
     page = factory.createWidget(None)
     assert isinstance(page, SettingsPage)
     assert page.objectName() == PAGE_OBJECT_NAME
+
+
+def test_the_gear_opens_the_plugins_own_options_page(qgs_app, mock_iface):
+    dialog = DataSourceDialog(mock_iface.mainWindow(), mock_iface)
+    dialog.settings_button.click()
+    assert mock_iface.options_dialog_calls == [PAGE_OBJECT_NAME]
+
+
+def test_the_gear_does_nothing_without_an_iface(qgs_app):
+    DataSourceDialog(None, None).settings_button.click()  # must not raise
