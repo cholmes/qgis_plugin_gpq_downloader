@@ -95,7 +95,8 @@ def codec_error_advice(error_text: str, codec: str) -> Optional[str]:
     Returns None when ``error_text`` is not about compression at all, so the
     caller can fall back to showing DuckDB's own message unchanged.
     """
-    if "compression" not in error_text.lower() and codec not in error_text:
+    lowered = error_text.lower()
+    if "compression" not in lowered and codec.lower() not in lowered:
         return None
 
     return (

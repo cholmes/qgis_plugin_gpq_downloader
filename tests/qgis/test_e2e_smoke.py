@@ -17,7 +17,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-from qgis.core import QgsApplication, QgsCoordinateReferenceSystem, QgsProject, QgsRectangle, QgsSettings, QgsVectorLayer
+from qgis.core import QgsApplication, QgsCoordinateReferenceSystem, QgsProject, QgsRectangle, QgsVectorLayer
 from qgis.PyQt.QtCore import QCoreApplication, QEvent
 
 from gpq_downloader.dialog import DataSourceDialog

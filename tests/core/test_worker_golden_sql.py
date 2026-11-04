@@ -275,6 +275,39 @@ def test_row_group_size_reaches_the_copy_options(monkeypatch):
     assert signals[-2:] == [("load_layer", output_file), ("finished",)]
 
 
+def test_a_non_default_codec_and_level_reach_the_copy(monkeypatch):
+    """The codec and level the job carries, not copy_options' defaults.
+
+    Without this, hardcoding DEFAULT_CODEC/DEFAULT_COMPRESSION_LEVEL inside
+    worker.py broke nothing in the suite: every other COPY assertion here
+    uses the defaults, so the two were indistinguishable.
+    """
+    output_file = f"{OUT}.parquet"
+    _, conn, signals = run_worker(
+        SOURCES["custom_https"], output_file, monkeypatch,
+        compression_codec="ZSTD", compression_level=9,
+    )
+    options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 9);"
+    assert statements(conn)[-2] == copy("geom", output_file, options)
+    assert signals[-2:] == [("load_layer", output_file), ("finished",)]
+
+
+def test_a_non_zstd_codec_reaches_the_copy_without_a_level(monkeypatch):
+    """GZIP is written as asked, and DuckDB is given no COMPRESSION_LEVEL.
+
+    Passing one with any codec but ZSTD is a Binder Error, so this is both
+    halves at once: the codec travels, and the clause stays behind.
+    """
+    output_file = f"{OUT}.parquet"
+    _, conn, signals = run_worker(
+        SOURCES["custom_https"], output_file, monkeypatch,
+        compression_codec="GZIP", compression_level=9,
+    )
+    options = "(FORMAT 'parquet', COMPRESSION 'GZIP');"
+    assert statements(conn)[-2] == copy("geom", output_file, options)
+    assert signals[-2:] == [("load_layer", output_file), ("finished",)]
+
+
 def test_read_url_is_the_resolved_url(monkeypatch):
     expected = {
         "overture": OVERTURE_GLOB,

@@ -55,7 +55,7 @@ class StubWorker(QObject):
                  compression_codec=copy_options.DEFAULT_CODEC,
                  compression_level=copy_options.DEFAULT_COMPRESSION_LEVEL,
                  row_group_size=None, spatial_sort=copy_options.DEFAULT_SPATIAL_SORT,
-                 script="finish", hold=True):
+                 script="finish", hold=True, **_ignored):
         super().__init__()
         self.url = url
         self.output_file = output_file

@@ -16,6 +16,7 @@ from gpq_downloader.core import copy_options, output_formats
 from gpq_downloader.gui import settings_store
 from gpq_downloader.gui.dialog import DataSourceDialog
 from gpq_downloader.gui.settings_page import PAGE_OBJECT_NAME, SettingsPage, SettingsPageFactory
+from gpq_downloader.core.plan import DownloadJob
 from gpq_downloader.plugin import QgisPluginGeoParquet
 
 # The two prefixes QSettings can render our keys with; see conftest.py's
@@ -148,7 +149,7 @@ def test_init_gui_applies_the_stored_level(clean_settings, qgs_app, mock_iface, 
     assert logger.current_level() == "Warning"
 
 
-def test_the_plugin_registers_the_factory_and_takes_it_away_again(qgs_app, mock_iface):
+def test_the_plugin_registers_the_factory_and_takes_it_away_again(clean_settings, restore_level, qgs_app, mock_iface):
     plugin = QgisPluginGeoParquet(mock_iface)
     plugin.initGui()
     assert len(mock_iface.options_factories) == 1
@@ -175,3 +176,73 @@ def test_the_gear_opens_the_plugins_own_options_page(clean_settings, qgs_app, mo
 
 def test_the_gear_does_nothing_without_an_iface(clean_settings, qgs_app):
     DataSourceDialog(None, None).settings_button.click()  # must not raise
+
+
+def test_apply_persists_every_setting_it_shows(clean_settings, qgs_app):
+    """All eight, read back through settings_store after apply().
+
+    Deleting four of apply()'s eight writes broke nothing in the suite: the
+    page's own state was asserted, but not that any of it survived the trip
+    to QgsSettings. A dropped line or a typo'd key constant means the user
+    picks GeoPackage, clicks OK, and still gets .parquet - this session and
+    every later one.
+    """
+    page = SettingsPage()
+    page.format_combo.setCurrentText("GeoPackage")
+    page.folder_widget.setFilePath("/tmp/gpq-test-folder")
+    page.remember_checkbox.setChecked(False)
+    page.log_combo.setCurrentText("Debug")
+    page.codec_combo.setCurrentText("GZIP")
+    page.level_spin.setValue(7)
+    page.row_group_spin.setValue(15000)
+    page.sort_checkbox.setChecked(False)
+
+    page.apply()
+
+    assert settings_store.load_choice(
+        settings_store.OUTPUT_FORMAT, output_formats.format_names(),
+        output_formats.DEFAULT_FORMAT_NAME,
+    ) == "GeoPackage"
+    assert settings_store.load_text(settings_store.OUTPUT_FOLDER) == "/tmp/gpq-test-folder"
+    assert settings_store.load_flag(settings_store.REMEMBER_LAST_FOLDER, True) is False
+    assert settings_store.load_choice(
+        settings_store.LOG_LEVEL, settings_store.LOG_LEVELS, settings_store.DEFAULT_LOG_LEVEL
+    ) == "Debug"
+    assert settings_store.load_download_settings() == {
+        "compression_codec": "GZIP",
+        "compression_level": 7,
+        "row_group_size": 15000,
+        "spatial_sort": False,
+    }
+
+
+def test_the_jobs_write_settings_reach_the_worker(clean_settings, qgs_app, mock_iface, tmp_path):
+    """_make_worker hands the job's four write settings to the Worker.
+
+    This is the seam between "the plugin read the settings" and "the COPY
+    statement used them", and nothing asserted it: deleting all four keyword
+    arguments from _make_worker broke no test in the suite, which would have
+    left the panel showing SNAPPY while every file came out ZSTD 15.
+    """
+    plugin = QgisPluginGeoParquet(mock_iface)
+    job = DownloadJob(
+        url="https://example.com/a.parquet",
+        output_file=str(tmp_path / "a.parquet"),
+        layer_name=None,
+        extent=None,
+        aoi_geometry=None,
+        clip_to_area=False,
+        where_fragment=None,
+        validation_results={},
+        compression_codec="GZIP",
+        compression_level=7,
+        row_group_size=15000,
+        spatial_sort=False,
+    )
+    worker = plugin._make_worker(job)
+    assert (
+        worker.compression_codec,
+        worker.compression_level,
+        worker.row_group_size,
+        worker.spatial_sort,
+    ) == ("GZIP", 7, 15000, False)
