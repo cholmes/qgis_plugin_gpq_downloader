@@ -9,7 +9,7 @@ from gpq_downloader/dialog.py (#195), which re-exports its names until 1.0
 
 import json
 
-from qgis.core import QgsBlockingNetworkRequest
+from qgis.core import QgsApplication, QgsBlockingNetworkRequest
 from qgis.PyQt.QtNetwork import QNetworkRequest
 from qgis.PyQt.QtWidgets import (
     QMessageBox,
@@ -673,10 +673,17 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Buttons
         button_layout = QHBoxLayout()
         self.settings_button = QToolButton()
-        self.settings_button.setText("⚙")  # gear glyph, no label text
         self.settings_button.setToolTip(
             "Settings for downloads: format, folder, compression"
         )
+        # QGIS's own options icon, the same way the extent panel takes its
+        # icons; the gear glyph is the fallback, since U+2699 renders as an
+        # empty box on a font set without Miscellaneous Technical coverage
+        settings_icon = QgsApplication.getThemeIcon("/mActionOptions.svg")
+        if settings_icon.isNull():
+            self.settings_button.setText("⚙")
+        else:
+            self.settings_button.setIcon(settings_icon)
         self.settings_button.clicked.connect(self.open_settings)
         button_layout.addWidget(self.settings_button)
         button_layout.addStretch()

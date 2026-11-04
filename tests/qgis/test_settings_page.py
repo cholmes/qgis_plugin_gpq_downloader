@@ -150,11 +150,13 @@ def test_the_factory_makes_the_page_it_registers(clean_settings, qgs_app):
     assert page.objectName() == PAGE_OBJECT_NAME
 
 
-def test_the_gear_opens_the_plugins_own_options_page(qgs_app, mock_iface):
+def test_the_gear_opens_the_plugins_own_options_page(clean_settings, qgs_app, mock_iface):
     dialog = DataSourceDialog(mock_iface.mainWindow(), mock_iface)
     dialog.settings_button.click()
     assert mock_iface.options_dialog_calls == [PAGE_OBJECT_NAME]
+    # Parented on the dialog, so the Options window it opens is modal to it
+    assert mock_iface.options_dialog_parents == [dialog]
 
 
-def test_the_gear_does_nothing_without_an_iface(qgs_app):
+def test_the_gear_does_nothing_without_an_iface(clean_settings, qgs_app):
     DataSourceDialog(None, None).settings_button.click()  # must not raise
