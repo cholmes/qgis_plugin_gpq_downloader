@@ -15,6 +15,7 @@ import pytest
 from qgis.core import QgsApplication
 from qgis.PyQt.QtCore import QObject, pyqtSignal
 
+from gpq_downloader.core import copy_options
 from gpq_downloader.core.plan import DownloadJob
 from gpq_downloader.plugin import QgisPluginGeoParquet
 from gpq_downloader.qgis_io import manager as manager_module
@@ -50,11 +51,22 @@ class StubWorker(QObject):
     file_size_warning = pyqtSignal(float)
 
     def __init__(self, url, extent, output_file, iface, validation_results, layer_name=None,
-                 aoi_geometry=None, clip_to_area=False, *, where_fragment=None, script="finish",
-                 hold=True):
+                 aoi_geometry=None, clip_to_area=False, *, where_fragment=None,
+                 compression_codec=copy_options.DEFAULT_CODEC,
+                 compression_level=copy_options.DEFAULT_COMPRESSION_LEVEL,
+                 row_group_size=None, spatial_sort=copy_options.DEFAULT_SPATIAL_SORT,
+                 script="finish", hold=True):
         super().__init__()
         self.url = url
         self.output_file = output_file
+        # The write settings the plugin read at enqueue, kept so a test can
+        # assert what reached the Worker. The signature mirrors Worker's: a
+        # stub that does not take one of its keywords makes _make_worker raise,
+        # and the manager turns that into a modal error box that hangs the run.
+        self.compression_codec = compression_codec
+        self.compression_level = compression_level
+        self.row_group_size = row_group_size
+        self.spatial_sort = spatial_sort
         self.killed = False
         self.size_warning_accepted = False
         self.script = script
