@@ -219,34 +219,45 @@ class QgisPluginGeoParquet:
         # Show non-modally
         dialog.show()
 
-    def starting_dir(self):
+    def starting_dir(self) -> Path:
         """The folder the next save dialog opens in.
 
         Read fresh on every call, not cached at plugin load: a stale saved
         path must not be able to break plugin load, only this one dialog.
-        The remembered last-used folder wins when "remember last folder" is
-        on (the default) and one is stored; otherwise the configured folder.
-        Either is created on demand; one that cannot be created falls back
-        to download_dir with a message-bar warning.
+        The remembered last-used folder is tried first when "remember last
+        folder" is on (the default) and one is stored, then the configured
+        folder - each created on demand. A candidate that cannot be created
+        is skipped (with a message-bar warning naming which one failed) in
+        favour of the next; download_dir is the fallback when neither can
+        be used, or neither is set.
         """
         remember = settings_store.load_flag(settings_store.REMEMBER_LAST_FOLDER, True)
         last = settings_store.load_text(settings_store.LAST_OUTPUT_FOLDER) if remember else ""
-        configured = last or settings_store.load_text(settings_store.OUTPUT_FOLDER)
-        if not configured:
-            return self.download_dir
-        folder = Path(configured)
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-            return folder
-        except OSError:
-            self.iface.messageBar().pushMessage(
-                "GeoParquet Downloader",
-                f"Could not create the configured download folder ({folder}); "
-                f"using {self.download_dir} instead.",
-                message_level("Warning"),
-                5,
-            )
-            return self.download_dir
+        configured = settings_store.load_text(settings_store.OUTPUT_FOLDER)
+        candidates = [
+            (label, value) for label, value in (
+                ("the last folder you used", last),
+                ("the configured download folder", configured),
+            ) if value
+        ]
+        for index, (label, value) in enumerate(candidates):
+            folder = Path(value)
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                return folder
+            except OSError:
+                has_next = index + 1 < len(candidates)
+                detail = (
+                    f"trying {candidates[index + 1][0]} instead."
+                    if has_next else f"using {self.download_dir} instead."
+                )
+                self.iface.messageBar().pushMessage(
+                    "GeoParquet Downloader",
+                    f"Could not use {label} ({folder}); {detail}",
+                    message_level("Warning"),
+                    5,
+                )
+        return self.download_dir
 
     def handle_dialog_accepted(self, dialog):
         """Handle the dialog being accepted"""
@@ -281,20 +292,23 @@ class QgisPluginGeoParquet:
                 )
                 aoi_geometry.transform(transform)
         
+        # Read once for the whole batch, same discipline as the write
+        # settings in process_download_queue: a format changed mid-batch
+        # must not make one batch's files disagree with each other.
+        chosen_format = output_formats.format_for(
+            settings_store.load_choice(
+                settings_store.OUTPUT_FORMAT,
+                output_formats.format_names(),
+                output_formats.DEFAULT_FORMAT_NAME,
+            )
+        )
+        extension = chosen_format.extension
+
         # First, collect all file locations from user
         download_queue = []
         for url in urls:
             # Get current date for filename
             current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-
-            chosen_format = output_formats.format_for(
-                settings_store.load_choice(
-                    settings_store.OUTPUT_FORMAT,
-                    output_formats.format_names(),
-                    output_formats.DEFAULT_FORMAT_NAME,
-                )
-            )
-            extension = chosen_format.extension
 
             # Generate filename based on the URL and source type
             if dialog.overture_radio.isChecked():
@@ -322,9 +336,14 @@ class QgisPluginGeoParquet:
             )
 
             if output_file:
-                settings_store.save_value(
-                    settings_store.LAST_OUTPUT_FOLDER, str(Path(output_file).parent)
-                )
+                # A relative output_file (no directory component) gives "."
+                # here, which the next starting_dir() would happily mkdir -
+                # opening the save dialog in QGIS's working directory with no
+                # warning. QFileDialog always returns an absolute path; this
+                # guards the case only a test or a future caller could hit.
+                saved_folder = Path(output_file).parent
+                if saved_folder.is_absolute():
+                    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, str(saved_folder))
                 download_queue.append((url, output_file))
             else:
                 return
