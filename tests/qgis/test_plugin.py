@@ -101,7 +101,7 @@ def test_plugin_queues_buildings_and_building_parts_separately(
     mock_dialog.return_value = dialog_instance
 
     # Accept the default path each time
-    mock_save_dialog.side_effect = lambda parent, title, path, filters: (path, "GeoParquet (*.parquet)")
+    mock_save_dialog.side_effect = lambda *args, **kwargs: (args[2], "GeoParquet (*.parquet)")
 
     with patch('gpq_downloader.plugin.datetime') as mock_datetime:
         mock_datetime.datetime.now.return_value.strftime.return_value = "20230101_120000"

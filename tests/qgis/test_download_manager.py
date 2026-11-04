@@ -124,7 +124,10 @@ def iface():
 
 
 @pytest.fixture
-def plugin(qgs_app, iface):
+def plugin(qgs_app, iface, clean_settings):
+    # clean_settings: handle_dialog_accepted (via accept(), below) now reads
+    # and writes the settings-panel keys through settings_store, which is
+    # real QgsSettings - not isolated by HOME on this machine.
     plugin = QgisPluginGeoParquet(iface)
     yield plugin
     plugin.cleanup_thread()
@@ -147,7 +150,7 @@ def dialog_for(*urls):
 def accept(plugin, *urls):
     """OK in the dialog, saving each URL to a file named after it."""
     with patch("gpq_downloader.plugin.QFileDialog.getSaveFileName",
-               side_effect=lambda parent, title, path, filters: (path, "GeoParquet (*.parquet)")):
+               side_effect=lambda *args, **kwargs: (args[2], "GeoParquet (*.parquet)")):
         plugin.handle_dialog_accepted(dialog_for(*urls))
 
 

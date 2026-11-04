@@ -1,0 +1,112 @@
+"""The plugin honours the settings-panel keys: starting folder, format,
+remembered folder, and the per-batch write-settings snapshot (#1, Task 6).
+"""
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from gpq_downloader.gui import settings_store
+from gpq_downloader.plugin import QgisPluginGeoParquet
+
+
+@pytest.fixture
+def accepted(qgs_app):
+    """Drive one handle_dialog_accepted() with a mocked save dialog.
+
+    Patches QFileDialog.getSaveFileName to record (directory, initialFilter)
+    and return `chosen` (or the offered default path, unchanged). Returns
+    (output_path, initial_filter_passed). process_download_queue is patched
+    away unless the test asks otherwise by passing patch_queue=False.
+    """
+    def run(plugin, chosen=None, patch_queue=True):
+        dialog_instance = MagicMock()
+        dialog_instance.get_urls.return_value = ["https://example.com/test.parquet"]
+        dialog_instance.overture_radio.isChecked.return_value = False
+        dialog_instance.sourcecoop_radio.isChecked.return_value = False
+        dialog_instance.osm_radio.isChecked.return_value = False
+        dialog_instance.get_current_extent.return_value = None
+        dialog_instance.aoi_geometry = None
+        dialog_instance.aoi_geometry_crs = None
+
+        recorded = {}
+
+        def fake_save(parent, title, directory, filters, initialFilter=""):
+            recorded["directory"] = directory
+            recorded["initialFilter"] = initialFilter
+            return (chosen or directory, initialFilter)
+
+        with patch("gpq_downloader.plugin.QFileDialog.getSaveFileName", side_effect=fake_save):
+            with patch("gpq_downloader.plugin.datetime") as mock_datetime:
+                mock_datetime.datetime.now.return_value.strftime.return_value = "20230101_120000"
+                if patch_queue:
+                    with patch.object(plugin, "process_download_queue"):
+                        plugin.handle_dialog_accepted(dialog_instance)
+                else:
+                    plugin.handle_dialog_accepted(dialog_instance)
+
+        return recorded["directory"], recorded["initialFilter"]
+
+    return run
+
+
+def test_the_configured_folder_and_format_set_the_default_save_path(clean_settings, mock_iface, tmp_path, accepted):
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, str(tmp_path))
+    settings_store.save_value(settings_store.OUTPUT_FORMAT, "GeoPackage")
+    path, initial_filter = accepted(QgisPluginGeoParquet(mock_iface))
+    assert Path(path).parent == tmp_path
+    assert Path(path).suffix == ".gpkg"
+    assert initial_filter == "GeoPackage (*.gpkg)"
+
+
+def test_a_configured_folder_that_does_not_exist_yet_is_created(clean_settings, mock_iface, tmp_path, accepted):
+    wanted = tmp_path / "new" / "place"
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, str(wanted))
+    path, _ = accepted(QgisPluginGeoParquet(mock_iface))
+    assert wanted.is_dir() and Path(path).parent == wanted
+
+
+def test_a_folder_that_cannot_be_created_falls_back_and_warns(clean_settings, mock_iface, tmp_path, accepted):
+    blocker = tmp_path / "a-file"
+    blocker.write_text("")
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, str(blocker / "under"))
+    plugin = QgisPluginGeoParquet(mock_iface)
+    path, _ = accepted(plugin)
+    assert Path(path).parent == plugin.download_dir
+    assert mock_iface.messages  # the message bar was told; see MockIface
+
+
+def test_the_folder_last_saved_to_wins_when_remembering_is_on(clean_settings, mock_iface, tmp_path, accepted):
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, str(tmp_path / "configured"))
+    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, str(tmp_path))
+    path, _ = accepted(QgisPluginGeoParquet(mock_iface))
+    assert Path(path).parent == tmp_path
+
+
+def test_the_configured_folder_wins_when_remembering_is_off(clean_settings, mock_iface, tmp_path, accepted):
+    configured = tmp_path / "configured"
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, str(configured))
+    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, str(tmp_path))
+    settings_store.save_value(settings_store.REMEMBER_LAST_FOLDER, False)
+    path, _ = accepted(QgisPluginGeoParquet(mock_iface))
+    assert Path(path).parent == configured
+
+
+def test_saving_remembers_the_folder_that_was_used(clean_settings, mock_iface, tmp_path, accepted):
+    picked_dir = tmp_path / "picked"
+    picked_dir.mkdir()
+    accepted(QgisPluginGeoParquet(mock_iface), chosen=str(picked_dir / "x.parquet"))
+    assert settings_store.load_text(settings_store.LAST_OUTPUT_FOLDER) == str(picked_dir)
+
+
+def test_every_job_in_one_batch_carries_the_settings_as_they_were_at_enqueue(clean_settings, mock_iface, tmp_path):
+    settings_store.save_value(settings_store.COMPRESSION_CODEC, "SNAPPY")
+    settings_store.save_value(settings_store.COMPRESSION_LEVEL, 9)
+    settings_store.save_value(settings_store.SPATIAL_SORT, False)
+    plugin = QgisPluginGeoParquet(mock_iface)
+    with patch.object(plugin.downloads, "enqueue", return_value=0) as enqueue:
+        plugin.process_download_queue([("https://e.com/a.parquet", str(tmp_path / "a.parquet"))], None)
+    jobs = enqueue.call_args[0][0]
+    job = jobs[0]
+    assert (job.compression_codec, job.compression_level, job.spatial_sort) == ("SNAPPY", 9, False)

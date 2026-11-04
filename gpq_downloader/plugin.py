@@ -25,6 +25,7 @@ from .gui.settings_page import SettingsPageFactory
 from .logger import message_level
 from .qgis_io.manager import DownloadManager
 from .qgis_io.worker import Worker
+from .core import output_formats
 from .core.plan import DownloadJob, custom_file_stem, overture_file_stem, overture_layer_name
 
 
@@ -218,6 +219,35 @@ class QgisPluginGeoParquet:
         # Show non-modally
         dialog.show()
 
+    def starting_dir(self):
+        """The folder the next save dialog opens in.
+
+        Read fresh on every call, not cached at plugin load: a stale saved
+        path must not be able to break plugin load, only this one dialog.
+        The remembered last-used folder wins when "remember last folder" is
+        on (the default) and one is stored; otherwise the configured folder.
+        Either is created on demand; one that cannot be created falls back
+        to download_dir with a message-bar warning.
+        """
+        remember = settings_store.load_flag(settings_store.REMEMBER_LAST_FOLDER, True)
+        last = settings_store.load_text(settings_store.LAST_OUTPUT_FOLDER) if remember else ""
+        configured = last or settings_store.load_text(settings_store.OUTPUT_FOLDER)
+        if not configured:
+            return self.download_dir
+        folder = Path(configured)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            return folder
+        except OSError:
+            self.iface.messageBar().pushMessage(
+                "GeoParquet Downloader",
+                f"Could not create the configured download folder ({folder}); "
+                f"using {self.download_dir} instead.",
+                message_level("Warning"),
+                5,
+            )
+            return self.download_dir
+
     def handle_dialog_accepted(self, dialog):
         """Handle the dialog being accepted"""
         # Get the selected URLs from the dialog. The dialog looked the release
@@ -256,32 +286,45 @@ class QgisPluginGeoParquet:
         for url in urls:
             # Get current date for filename
             current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            
+
+            chosen_format = output_formats.format_for(
+                settings_store.load_choice(
+                    settings_store.OUTPUT_FORMAT,
+                    output_formats.format_names(),
+                    output_formats.DEFAULT_FORMAT_NAME,
+                )
+            )
+            extension = chosen_format.extension
+
             # Generate filename based on the URL and source type
             if dialog.overture_radio.isChecked():
-                filename = f"{overture_file_stem(url)}_{current_date}.parquet"
+                filename = f"{overture_file_stem(url)}_{current_date}{extension}"
             elif dialog.sourcecoop_radio.isChecked():
                 dataset_name = dialog.sourcecoop_combo.currentText()
                 clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
-                filename = f"sourcecoop_{clean_name}_{current_date}.parquet"
+                filename = f"sourcecoop_{clean_name}_{current_date}{extension}"
             elif dialog.osm_radio.isChecked():
                 # Extract layer name from URL
                 layer_name = url.split('/')[-1].replace('.parquet', '')
-                filename = f"osm_{layer_name}_{current_date}.parquet"
+                filename = f"osm_{layer_name}_{current_date}{extension}"
             else:
-                filename = f"{custom_file_stem(url)}_{current_date}.parquet"
+                filename = f"{custom_file_stem(url)}_{current_date}{extension}"
 
-            default_save_path = str(self.download_dir / filename)
-            
+            default_save_path = str(self.starting_dir() / filename)
+
             # Show save file dialog
             output_file, selected_filter = QFileDialog.getSaveFileName(
                 self.iface.mainWindow(),
                 f"Save Data for {(overture_layer_name(url) or 'dataset') if dialog.overture_radio.isChecked() else 'dataset'}",
                 default_save_path,
-                "GeoParquet (*.parquet);;DuckDB Database (*.duckdb);;GeoPackage (*.gpkg);;FlatGeobuf (*.fgb);;GeoJSON (*.geojson)"
+                output_formats.dialog_filters(),
+                chosen_format.dialog_filter,
             )
-            
+
             if output_file:
+                settings_store.save_value(
+                    settings_store.LAST_OUTPUT_FOLDER, str(Path(output_file).parent)
+                )
                 download_queue.append((url, output_file))
             else:
                 return
@@ -485,6 +528,10 @@ class QgisPluginGeoParquet:
 
     def process_download_queue(self, download_queue, extent, aoi_geometry=None):
         """Queue the (url, output_file) pairs of one OK as jobs; the first starts if nothing runs."""
+        # Read once for the whole batch: a setting changed while jobs are
+        # queued must apply to the next batch, not write five files three
+        # different ways.
+        write_settings = settings_store.load_download_settings()
         jobs = [
             DownloadJob(
                 url=url,
@@ -498,6 +545,7 @@ class QgisPluginGeoParquet:
                 # No hints: the Worker reads the file's own GeoParquet metadata
                 # and schema to find the geometry and bbox columns
                 validation_results={},
+                **write_settings,
             )
             for url, output_file in download_queue
         ]

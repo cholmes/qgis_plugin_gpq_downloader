@@ -1,5 +1,6 @@
 import os
 import sys
+from unittest.mock import MagicMock
 
 import pytest
 from qgis.core import QgsApplication, QgsCoordinateReferenceSystem, QgsRectangle, QgsSettings
@@ -54,6 +55,8 @@ class MockIface(QObject):
         self.options_factories = []
         self.options_dialog_calls = []
         self.options_dialog_parents = []
+        self.messages = []  # (title, text, level, duration) from pushMessage
+        self._message_bar = MockMessageBar(self.messages)
 
     def mapCanvas(self):
         return self.canvas
@@ -93,6 +96,42 @@ class MockIface(QObject):
     def showOptionsDialog(self, parent=None, currentPage=""):
         self.options_dialog_calls.append(currentPage)
         self.options_dialog_parents.append(parent)
+
+    def messageBar(self):
+        return self._message_bar
+
+
+class MockMessageBar:
+    """Just enough of QgsMessageBar for check_duckdb()/install_duckdb() and
+    plugin.py's folder-fallback warning: pushMessage, plus the
+    createMessage/pushWidget/popWidget trio the DuckDB install flow uses.
+    """
+
+    def __init__(self, messages):
+        self._messages = messages
+
+    def pushMessage(self, *args, **kwargs):
+        self._messages.append(args)
+
+    def createMessage(self, *args, **kwargs):
+        return MockMessageBarItem()
+
+    def pushWidget(self, widget, level=0, duration=0):
+        pass
+
+    def popWidget(self, widget=None):
+        pass
+
+
+class MockMessageBarItem:
+    """What createMessage() returns: just enough to add a button to its layout."""
+
+    def __init__(self):
+        self._layout = MagicMock()
+
+    def layout(self):
+        return self._layout
+
 
 class MockCanvas:
     def __init__(self):
