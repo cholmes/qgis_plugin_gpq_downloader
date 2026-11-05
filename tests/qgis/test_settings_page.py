@@ -13,7 +13,7 @@ from qgis.core import QgsSettings
 
 from gpq_downloader import logger
 from gpq_downloader.core import copy_options, output_formats
-from gpq_downloader.gui import settings_store
+from gpq_downloader.gui import settings_store, user_sources_store
 from gpq_downloader.gui.dialog import DataSourceDialog
 from gpq_downloader.gui.settings_page import PAGE_OBJECT_NAME, SettingsPage, SettingsPageFactory
 from gpq_downloader.core.plan import DownloadJob
@@ -248,3 +248,24 @@ def test_the_jobs_write_settings_reach_the_worker(clean_settings, qgs_app, mock_
         worker.row_group_size,
         worker.spatial_sort,
     ) == ("GZIP", 7, 15000, False)
+
+
+def test_page_has_general_and_data_sources_tabs(clean_settings, qgs_app):
+    page = SettingsPage()
+    titles = [page.tabs.tabText(i) for i in range(page.tabs.count())]
+    assert titles == ["General", "Data Sources"]
+
+
+def test_apply_saves_sources_config(clean_settings, qgs_app):
+    page = SettingsPage()
+    assert page.sources_widget._add_source({"name": "My Source", "info_url": ""})
+    page.apply()
+    saved = user_sources_store.load_user_config()
+    assert [s["name"] for s in saved["custom_sources"]] == ["My Source"]
+
+
+def test_apply_still_saves_general_settings(clean_settings, qgs_app):
+    page = SettingsPage()
+    page.codec_combo.setCurrentText("GZIP")
+    page.apply()
+    assert settings_store.load_download_settings()["compression_codec"] == "GZIP"
