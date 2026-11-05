@@ -52,7 +52,7 @@ from ..core.filters import (
 )
 from ..core.schema import field_candidates
 from ..core.presets import load_presets
-from ..core.user_sources import apply_hidden
+from ..core.user_sources import apply_hidden, slug
 from . import settings_store
 from . import user_sources_store
 from .extent import AoiHighlighter, AreaOfInterestMixin
@@ -365,6 +365,19 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self.user_config = user_sources_store.load_user_config()
         self.PRESET_DATASETS = apply_hidden(load_presets(), self.user_config)
 
+        # A custom source with no datasets gets no radio and no page at all
+        # (Design) - sanitize_config lets one through (a source is valid with
+        # an empty datasets list), so it is filtered out once here and reused
+        # for both the radio row below and the pages built after the OSM page.
+        custom_sources = [
+            source
+            for source in self.user_config.get("custom_sources", [])
+            if source.get("datasets")
+        ]
+        self.custom_sources_by_name = {
+            source["name"]: source for source in custom_sources
+        }
+
         # Create main layout
         layout = QVBoxLayout()
 
@@ -409,6 +422,21 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                 continue
             radio_row.addWidget(radio)
             self.source_radios.append(radio)
+
+        # One radio per custom source with at least one dataset (Task 4),
+        # text = source name, inserted between the built-ins and Custom URL
+        # in config order (Design). Keyed by name rather than kept in a plain
+        # list so get_urls() below can find "the one that's checked" and the
+        # page-building loop after the OSM page can wire each one to its own
+        # stack index without re-deriving the filtered list.
+        self.custom_source_radios = {}
+        for source in custom_sources:
+            radio = QRadioButton(source["name"], self)
+            self.source_button_group.addButton(radio)
+            radio.released.connect(self.save_radio_button_state)
+            radio_row.addWidget(radio)
+            self.source_radios.append(radio)
+            self.custom_source_radios[source["name"]] = radio
 
         # Custom URL can never be hidden (user_sources.HIDEABLE_SOURCES) - it
         # is the escape hatch and the fallback below for a remembered
@@ -615,6 +643,23 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self.stack.addWidget(sourcecoop_page)
         self.stack.addWidget(osm_page)
 
+        # Custom source pages (Task 4), added after the four fixed ones so
+        # custom_radio.toggled's lambda above (index 0) and the others (1-3)
+        # keep the indices they were written against. One page per entry in
+        # custom_sources, same order as the radios built above.
+        self.custom_checkboxes = {}
+        for source in custom_sources:
+            page, checkboxes = self._build_custom_source_page(source)
+            self.custom_checkboxes[source["name"]] = checkboxes
+            self.stack.addWidget(page)
+            stack_index = self.stack.count() - 1
+            radio = self.custom_source_radios[source["name"]]
+            radio.toggled.connect(
+                lambda checked=False, index=stack_index: self.stack.setCurrentIndex(
+                    index
+                )
+            )
+
         layout.addWidget(self.stack)
 
         # Add Area of Interest group
@@ -763,6 +808,9 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             checkbox.toggled.connect(self.save_checkbox_states)
         for checkbox in self.osm_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
+        for checkboxes in self.custom_checkboxes.values():
+            for checkbox in checkboxes.values():
+                checkbox.toggled.connect(self.save_checkbox_states)
 
         # Ensure to call save_checkbox_states when the dialog is accepted
         self.ok_button.clicked.connect(self.save_checkbox_states)
@@ -772,16 +820,17 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self._connect_filter_signals()
 
     def save_radio_button_state(self) -> None:
-        if self.custom_radio.isChecked():
-            button_name = self.custom_radio.text()
-        elif self.overture_radio.isChecked():
-            button_name = self.overture_radio.text()
-        elif self.sourcecoop_radio.isChecked():
-            button_name = self.sourcecoop_radio.text()
-        elif self.osm_radio.isChecked():
-            button_name = self.osm_radio.text()
-        else:
-            button_name = self.custom_radio.text()
+        """Remember the checked radio's text, Custom URL's if none is.
+
+        Walks self.source_radios rather than naming each built-in attribute,
+        so a custom source's radio (Task 4) - whose text is the source's own
+        name - is remembered the same way the four built-ins always were.
+        """
+        button_name = self.custom_radio.text()
+        for radio in self.source_radios:
+            if radio.isChecked():
+                button_name = radio.text()
+                break
 
         settings_store.save_value(settings_store.RADIO_SELECTION, button_name)
 
@@ -850,6 +899,66 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         checkbox.toggled.connect(layer_widget.setVisible)
         return checkbox, layer_checkboxes, layer_widget
+
+    def _build_custom_source_page(self, source):
+        """One checkbox per dataset of a custom source (Task 4).
+
+        Ungrouped datasets come first in a FlowLayout, then each group in
+        the order its first dataset appeared in the config, each under a
+        bold QLabel heading of its own FlowLayout (Design). A dataset's
+        tooltip carries its url, plus its info_url when there is one; the
+        source's own info_url, if any, becomes an open-external-links QLabel
+        like self.osm_link.
+
+        Returns (page, {dataset name: checkbox}).
+        """
+        page = QWidget()
+        page_layout = QVBoxLayout()
+        checkboxes = {}
+
+        def add_flow_of(datasets):
+            flow_widget = FlowWidget()
+            flow = FlowLayout()
+            for dataset in datasets:
+                checkbox = QCheckBox(dataset["name"])
+                tooltip = dataset["url"]
+                if dataset["info_url"]:
+                    tooltip = f"{tooltip}\n{dataset['info_url']}"
+                checkbox.setToolTip(tooltip)
+                checkboxes[dataset["name"]] = checkbox
+                flow.addWidget(checkbox)
+            flow_widget.setLayout(flow)
+            page_layout.addWidget(flow_widget)
+
+        ungrouped = [d for d in source["datasets"] if not d["group"]]
+        if ungrouped:
+            add_flow_of(ungrouped)
+
+        groups = {}
+        group_order = []
+        for dataset in source["datasets"]:
+            group = dataset["group"]
+            if not group:
+                continue
+            if group not in groups:
+                groups[group] = []
+                group_order.append(group)
+            groups[group].append(dataset)
+
+        for group in group_order:
+            page_layout.addWidget(QLabel(f"<b>{group}</b>"))
+            add_flow_of(groups[group])
+
+        if source["info_url"]:
+            link = QLabel()
+            link.setText(f'<a href="{source["info_url"]}">{source["name"]} info</a>')
+            link.setOpenExternalLinks(True)
+            link.setWordWrap(True)
+            page_layout.addWidget(link)
+
+        page_layout.addStretch()
+        page.setLayout(page_layout)
+        return page, checkboxes
 
     def _reserve_room_above_other_presets(self, layout, category_lines):
         """Hold a category's room on the page open while its layers are hidden.
@@ -1736,7 +1845,21 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                 if checkbox.isChecked():
                     dataset = self.PRESET_DATASETS["openstreetmap"][layer]
                     urls.append(dataset["url"])
+        elif (source_name := self._checked_custom_source()) is not None:
+            # A custom dataset's url is already complete (Design): no
+            # release, no template, carried through untouched.
+            for dataset in self.custom_sources_by_name[source_name]["datasets"]:
+                checkbox = self.custom_checkboxes[source_name][dataset["name"]]
+                if checkbox.isChecked():
+                    urls.append(dataset["url"])
         return urls
+
+    def _checked_custom_source(self):
+        """The name of the checked custom-source radio, or None."""
+        for name, radio in self.custom_source_radios.items():
+            if radio.isChecked():
+                return name
+        return None
 
     def update_sourcecoop_link(self, selection):
         """Update the link based on the selected dataset"""
@@ -1834,6 +1957,17 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         for key, checkbox in self.osm_checkboxes.items():
             settings_store.save_value(settings_store.OSM_CHECKBOX.format(key=key), checkbox.isChecked())
 
+        # Save custom-source checkboxes (Task 4). Both fields slugged: a
+        # source or dataset name is free text and QgsSettings keys are not.
+        for source_name, checkboxes in self.custom_checkboxes.items():
+            for key, checkbox in checkboxes.items():
+                settings_store.save_value(
+                    settings_store.CUSTOM_CHECKBOX.format(
+                        source=slug(source_name), key=slug(key)
+                    ),
+                    checkbox.isChecked(),
+                )
+
         # Save AOI checkbox state
         settings_store.save_value(settings_store.AOI_ENABLED, self.extent_group.isChecked())
 
@@ -1874,6 +2008,16 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         for key, checkbox in self.osm_checkboxes.items():
             checked = settings_store.load_flag(settings_store.OSM_CHECKBOX.format(key=key))
             checkbox.setChecked(checked)
+
+        # Load custom-source checkboxes (Task 4), unchecked by default
+        for source_name, checkboxes in self.custom_checkboxes.items():
+            for key, checkbox in checkboxes.items():
+                checked = settings_store.load_flag(
+                    settings_store.CUSTOM_CHECKBOX.format(
+                        source=slug(source_name), key=slug(key)
+                    )
+                )
+                checkbox.setChecked(checked)
 
         # The Buildings modifiers show only while Buildings itself is checked
         for checkbox in self.buildings_modifier_checkboxes.values():

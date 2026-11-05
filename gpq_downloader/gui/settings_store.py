@@ -24,6 +24,10 @@ CHECKBOX = "gpq_downloader/checkbox_{key}"
 BASE_SUBTYPE_CHECKBOX = "gpq_downloader/base_subtype_checkbox_{key}"
 DIVISIONS_SUBTYPE_CHECKBOX = "gpq_downloader/divisions_subtype_checkbox_{key}"
 OSM_CHECKBOX = "gpq_downloader/osm_checkbox_{key}"
+# One key per custom-source dataset checkbox (Task 4); both fields slugged
+# (core.user_sources.slug) since a source or dataset name can contain
+# anything a QgsSettings key cannot.
+CUSTOM_CHECKBOX = "gpq_downloader/custom_checkbox_{source}_{key}"
 
 # The settings panel's keys, added across Tasks 3-6.
 OUTPUT_FORMAT = "gpq_downloader/output_format"

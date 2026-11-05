@@ -12,6 +12,7 @@ dialog with every built-in showing.
 from unittest.mock import MagicMock
 
 import pytest
+from qgis.PyQt.QtWidgets import QLabel
 
 from gpq_downloader.core.user_sources import default_config
 from gpq_downloader.dialog import DataSourceDialog
@@ -135,3 +136,180 @@ def test_default_config_changes_nothing(clean_settings, iface):
     ):
         assert not radio.isHidden()
     assert dialog.sourcecoop_combo.count() == len(load_presets()["source_cooperative"])
+
+
+# --- Task 4: custom source pages ---------------------------------------
+
+
+def _custom_source(**overrides):
+    source = {
+        "name": "My Company Data",
+        "info_url": "",
+        "datasets": [
+            {
+                "name": "Parcels",
+                "url": "https://example.com/parcels.parquet",
+                "info_url": "",
+                "group": "",
+            },
+        ],
+    }
+    source.update(overrides)
+    return source
+
+
+def test_custom_source_gets_radio_and_checkboxes(clean_settings, iface):
+    write_config(custom_sources=[_custom_source()])
+    dialog = DataSourceDialog(None, iface)
+
+    names = [radio.text() for radio in dialog.source_radios]
+    assert "My Company Data" in names
+    # Custom URL stays last, after every custom source (the Design's rule).
+    assert names[-1] == "Custom URL"
+    assert "Parcels" in dialog.custom_checkboxes["My Company Data"]
+    dialog.close()
+
+
+def test_custom_source_get_urls_returns_checked_urls(clean_settings, iface):
+    write_config(
+        custom_sources=[
+            _custom_source(
+                datasets=[
+                    {
+                        "name": "Parcels",
+                        "url": "https://example.com/parcels.parquet",
+                        "info_url": "",
+                        "group": "",
+                    },
+                    {
+                        "name": "Roads",
+                        "url": "https://example.com/roads.parquet",
+                        "info_url": "",
+                        "group": "",
+                    },
+                    {
+                        "name": "Rivers",
+                        "url": "https://example.com/rivers.parquet",
+                        "info_url": "",
+                        "group": "",
+                    },
+                ]
+            )
+        ]
+    )
+    dialog = DataSourceDialog(None, iface)
+    radio = next(r for r in dialog.source_radios if r.text() == "My Company Data")
+    radio.setChecked(True)
+
+    checkboxes = dialog.custom_checkboxes["My Company Data"]
+    checkboxes["Parcels"].setChecked(True)
+    checkboxes["Rivers"].setChecked(True)
+    checkboxes["Roads"].setChecked(False)
+
+    urls = dialog.get_urls()
+    assert set(urls) == {
+        "https://example.com/parcels.parquet",
+        "https://example.com/rivers.parquet",
+    }
+    dialog.close()
+
+
+def test_custom_checkbox_state_remembered(clean_settings, iface):
+    write_config(custom_sources=[_custom_source()])
+
+    first = DataSourceDialog(None, iface)
+    first.custom_checkboxes["My Company Data"]["Parcels"].setChecked(True)
+    first.save_checkbox_states()
+    first.close()
+
+    second = DataSourceDialog(None, iface)
+    assert second.custom_checkboxes["My Company Data"]["Parcels"].isChecked()
+    second.close()
+
+
+def test_group_headers_render_in_group_order(clean_settings, iface):
+    write_config(
+        custom_sources=[
+            _custom_source(
+                datasets=[
+                    {
+                        "name": "Parcels",
+                        "url": "https://example.com/parcels.parquet",
+                        "info_url": "",
+                        "group": "Boundaries",
+                    },
+                    {
+                        "name": "Roads",
+                        "url": "https://example.com/roads.parquet",
+                        "info_url": "",
+                        "group": "Transport",
+                    },
+                    {
+                        "name": "Lakes",
+                        "url": "https://example.com/lakes.parquet",
+                        "info_url": "",
+                        "group": "Boundaries",
+                    },
+                ]
+            )
+        ]
+    )
+    dialog = DataSourceDialog(None, iface)
+    radio = next(r for r in dialog.source_radios if r.text() == "My Company Data")
+    radio.setChecked(True)
+
+    page = dialog.stack.currentWidget()
+    labels = [label.text() for label in page.findChildren(QLabel)]
+    assert "<b>Boundaries</b>" in labels
+    assert "<b>Transport</b>" in labels
+    assert labels.index("<b>Boundaries</b>") < labels.index("<b>Transport</b>")
+    dialog.close()
+
+
+def test_dataset_tooltip_carries_url(clean_settings, iface):
+    write_config(
+        custom_sources=[
+            _custom_source(
+                datasets=[
+                    {
+                        "name": "Parcels",
+                        "url": "https://example.com/parcels.parquet",
+                        "info_url": "https://example.com/parcels",
+                        "group": "",
+                    },
+                ]
+            )
+        ]
+    )
+    dialog = DataSourceDialog(None, iface)
+    checkbox = dialog.custom_checkboxes["My Company Data"]["Parcels"]
+    assert "https://example.com/parcels.parquet" in checkbox.toolTip()
+    assert "https://example.com/parcels" in checkbox.toolTip()
+    dialog.close()
+
+
+def test_empty_custom_source_gets_no_radio(clean_settings, iface):
+    write_config(
+        custom_sources=[{"name": "Empty Source", "info_url": "", "datasets": []}]
+    )
+    dialog = DataSourceDialog(None, iface)
+
+    names = [radio.text() for radio in dialog.source_radios]
+    assert "Empty Source" not in names
+    assert "Empty Source" not in dialog.custom_checkboxes
+    dialog.close()
+
+
+def test_custom_radio_selection_remembered(clean_settings, iface):
+    write_config(custom_sources=[_custom_source()])
+
+    first = DataSourceDialog(None, iface)
+    radio = next(r for r in first.source_radios if r.text() == "My Company Data")
+    radio.setChecked(True)
+    first.save_radio_button_state()
+    first.close()
+
+    second = DataSourceDialog(None, iface)
+    radio2 = next(r for r in second.source_radios if r.text() == "My Company Data")
+    assert radio2.isChecked()
+    second.close()
