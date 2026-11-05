@@ -37,24 +37,20 @@ def load_user_config():
     """The user's sanitized config, or default_config() if there is none.
 
     A missing file is the ordinary case for a user who has never customized
-    anything, so that is silent. A file that exists but cannot be read or
-    decoded as a valid config is not silently discarded without a trace: it
-    is logged once, then treated the same as a missing file, so the dialog
-    can still open.
+    anything, so that is silent. A file that exists but cannot be read,
+    decoded (invalid UTF-8 raises UnicodeDecodeError, a ValueError subclass),
+    or parsed as a valid config is not silently discarded without a trace:
+    it is logged once, then treated the same as a missing file, so the
+    dialog can still open.
     """
     path = user_config_path()
     try:
         with open(path, "r", encoding="utf-8") as f:
             text = f.read()
+        return parse_config(text)
     except FileNotFoundError:
         return default_config()
-    except OSError as exc:
-        logger.log(f"Could not read user sources config at {path}: {exc}")
-        return default_config()
-
-    try:
-        return parse_config(text)
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         logger.log(f"Could not read user sources config at {path}: {exc}")
         return default_config()
 

@@ -27,6 +27,16 @@ def test_unreadable_file_returns_defaults(logged):
     assert len(logged) == 1
 
 
+def test_invalid_utf8_returns_defaults(logged):
+    path = user_sources_store.user_config_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"\xff\xfe\x00junk")
+
+    assert user_sources_store.load_user_config() == default_config()
+    assert len(logged) == 1
+
+
 def test_save_then_load_roundtrips():
     config = default_config()
     config["hidden_sources"] = ["overture"]
