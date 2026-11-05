@@ -247,3 +247,60 @@ def test_config_returns_deep_copy_of_initial_when_untouched(qgs_app):
     # Mutating the dict handed to __init__ afterwards must not reach in either.
     initial["custom_sources"][0]["name"] = "Also Tampered"
     assert widget.config()["custom_sources"][0]["name"] == "My Company"
+
+
+# -- import / export ---------------------------------------------------------
+
+
+def test_export_then_import_roundtrips(qgs_app, monkeypatch, tmp_path):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    path = str(tmp_path / "sources.json")
+    widget._export_to(path)
+
+    other = SourcesManagerWidget(_config(), PRESETS)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    assert other._import_from(path) is True
+    assert other.config() == widget.config()
+
+
+def test_import_invalid_file_warns_and_keeps_state(qgs_app, monkeypatch, tmp_path):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    before = widget.config()
+    path = str(tmp_path / "bad.json")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("not valid json {")
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a))
+    assert widget._import_from(path) is False
+    assert widget.config() == before
+    assert len(warnings) == 1
+
+
+def test_import_replaces_after_confirm(qgs_app, monkeypatch, tmp_path):
+    widget = SourcesManagerWidget(_config(), PRESETS)
+    path = str(tmp_path / "sources.json")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(user_sources.serialize_config(_custom_config()))
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+    assert widget._import_from(path) is True
+    assert widget.config()["custom_sources"][0]["name"] == "My Company"
+
+
+def test_import_cancelled_keeps_state(qgs_app, monkeypatch, tmp_path):
+    widget = SourcesManagerWidget(_config(), PRESETS)
+    before = widget.config()
+    path = str(tmp_path / "sources.json")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(user_sources.serialize_config(_custom_config()))
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No
+    )
+    assert widget._import_from(path) is False
+    assert widget.config() == before

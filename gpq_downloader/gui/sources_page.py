@@ -3,10 +3,11 @@
 SourcesManagerWidget edits an in-memory, deep-copied user_sources.json config
 (core/user_sources.py's shape) against a two-column QTreeWidget listing every
 source - the three built-ins read from core/presets.py plus whatever custom
-sources the config already carries. Nothing here touches disk: Task 6's
-SettingsPage.apply() is what persists config() through
-user_sources_store.save_user_config(). Import/Export (Task 7) extend this
-same widget later.
+sources the config already carries. Nothing here touches disk: SettingsPage's
+apply() is what persists config() through user_sources_store.save_user_config().
+_export_to()/_import_from() read and write a file the user picks directly,
+but the same disk-persistence boundary applies to them: import only replaces
+the in-memory config, it does not save it.
 
 Mutation is split from the modal prompts that drive it (_add_source,
 _add_dataset, _apply_edit, _remove_selected) precisely so tests can call
@@ -21,6 +22,7 @@ from qgis.PyQt.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -54,6 +56,9 @@ _IS_CUSTOM_ROLE = Qt.ItemDataRole.UserRole + 2
 # The tree's two columns.
 _NAME_COLUMN = 0
 _VISIBLE_COLUMN = 1
+
+# The file filter shared by the Import/Export file dialogs.
+_JSON_FILE_FILTER = "JSON files (*.json)"
 
 
 class _EditDialog(QDialog):
@@ -196,11 +201,15 @@ class SourcesManagerWidget(QWidget):
         self.add_dataset_button = QPushButton("Add Dataset…", self)
         self.edit_button = QPushButton("Edit…", self)
         self.remove_button = QPushButton("Remove", self)
+        self.import_button = QPushButton("Import…", self)
+        self.export_button = QPushButton("Export…", self)
 
         self.new_source_button.clicked.connect(self._on_new_source)
         self.add_dataset_button.clicked.connect(self._on_add_dataset)
         self.edit_button.clicked.connect(self._on_edit)
         self.remove_button.clicked.connect(self._on_remove)
+        self.import_button.clicked.connect(self._on_import)
+        self.export_button.clicked.connect(self._on_export)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.new_source_button)
@@ -208,6 +217,8 @@ class SourcesManagerWidget(QWidget):
         button_row.addWidget(self.edit_button)
         button_row.addWidget(self.remove_button)
         button_row.addStretch()
+        button_row.addWidget(self.import_button)
+        button_row.addWidget(self.export_button)
 
         layout = QVBoxLayout()
         layout.addWidget(self.tree)
@@ -215,7 +226,6 @@ class SourcesManagerWidget(QWidget):
         self.setLayout(layout)
 
         self._rebuild_tree()
-        self._update_button_state()
 
     def config(self):
         """The current in-memory config, sanitized, as a fresh deep copy."""
@@ -243,6 +253,10 @@ class SourcesManagerWidget(QWidget):
             self.tree.addTopLevelItem(self._custom_source_item(source))
         self.tree.expandAll()
         self.tree.blockSignals(False)
+        # clear()/addTopLevelItem() above drop any prior selection, so the
+        # Edit/Remove/Add Dataset buttons must be re-evaluated here too -
+        # otherwise they stay enabled with nothing selected (#deferred-review).
+        self._update_button_state()
 
     @staticmethod
     def _set_checkable(item, checkable):
@@ -367,6 +381,13 @@ class SourcesManagerWidget(QWidget):
             if source["name"].lower() == str(name).lower():
                 return source
         return None
+
+    @staticmethod
+    def _existing_groups(source):
+        """The set of non-empty group names already used within `source`,
+        for pre-populating a dataset dialog's group combo. "" with no
+        source at all."""
+        return {d.get("group", "") for d in source["datasets"]} if source else set()
 
     # -- mutation methods (no dialogs, no QMessageBox) ----------------------
 
@@ -499,10 +520,9 @@ class SourcesManagerWidget(QWidget):
         if source_name is None:
             return
         source = self._find_custom_source(source_name)
-        existing_groups = (
-            {d.get("group", "") for d in source["datasets"]} if source else set()
+        dialog = DatasetEditDialog(
+            existing_groups=self._existing_groups(source), parent=self
         )
-        dialog = DatasetEditDialog(existing_groups=existing_groups, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         if not self._add_dataset(source_name, dialog.values()):
@@ -529,11 +549,10 @@ class SourcesManagerWidget(QWidget):
                 if source
                 else None
             )
-            existing_groups = (
-                {d.get("group", "") for d in source["datasets"]} if source else set()
-            )
             dialog = DatasetEditDialog(
-                existing_groups=existing_groups, initial=dataset, parent=self
+                existing_groups=self._existing_groups(source),
+                initial=dataset,
+                parent=self,
             )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -553,3 +572,58 @@ class SourcesManagerWidget(QWidget):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._remove_selected()
+
+    # -- import / export -----------------------------------------------------
+
+    def _export_to(self, path):
+        """Writes the current config to `path` as JSON."""
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(user_sources.serialize_config(self.config()))
+
+    def _import_from(self, path):
+        """Reads `path` and, after confirmation, replaces the in-memory
+        config with it. Returns whether the replace happened: False, state
+        unchanged, if `path` can't be read/decoded as a sources config (a
+        warning is shown) or if the confirmation is declined."""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+            config = user_sources.parse_config(text)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self, "Import failed", f"Could not import {path}:\n{exc}"
+            )
+            return False
+
+        custom_count = len(config["custom_sources"])
+        hidden_count = len(config["hidden_sources"]) + sum(
+            len(keys) for keys in config["hidden_datasets"].values()
+        )
+        reply = QMessageBox.question(
+            self,
+            "Replace configuration",
+            f"{custom_count} custom sources, {hidden_count} hidden items — "
+            "replace current configuration?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return False
+
+        self._config = config
+        self._rebuild_tree()
+        return True
+
+    def _on_export(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Data Sources", "user_sources.json", _JSON_FILE_FILTER
+        )
+        if path:
+            self._export_to(path)
+
+    def _on_import(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Data Sources", "", _JSON_FILE_FILTER
+        )
+        if path:
+            self._import_from(path)

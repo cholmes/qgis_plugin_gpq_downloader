@@ -46,6 +46,12 @@ To download only some of the features in the area, type a condition on the data'
 
 If your QGIS doesn't have GeoParquet support you'll get a warning dialog after the data downloads completes. The GeoParquet will be there, but it won't automatically open on the map. We definitely recommend getting your QGIS working with GeoParquet, as the format is faster and handles nested attributes better. See [Installing GeoParquet Support in QGIS](https://github.com/cholmes/qgis_plugin_gpq_downloader/wiki/Installing-GeoParquet-Support-in-QGIS) for more details.
 
+### Custom data sources
+
+If you regularly download from your own GeoParquet source, you don't have to retype the URL every time. Go to `Settings > Options`, find the "GeoParquet Downloader" page, and open its "Data Sources" tab. From there you can add your own source (with its own tab in the main dialog) and give it preset datasets, each with a name and URL, so they show up alongside Overture, Source Cooperative and OpenStreetMap. The same tab also lets you hide any of the built-in sources, or individual datasets within them, if you don't use them and would rather not see them in the dialog.
+
+This configuration lives in `user_sources.json`, inside this QGIS profile's `gpq_downloader` folder. It's plain JSON, so you can hand-edit it directly if you prefer, or use the Import/Export buttons on the Data Sources tab to back it up or share your custom sources with someone else running the plugin.
+
 
 ## Contributing
 
