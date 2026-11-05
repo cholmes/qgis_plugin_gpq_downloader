@@ -280,14 +280,16 @@ def test_plugin_run_restores_the_radio_selection(clean_settings, iface, saved, r
         dialog.close()
 
 
-def test_plugin_run_with_an_unknown_saved_name_checks_nothing(clean_settings, iface):
-    """Oddity: a saved name that matches no button (a renamed one, say) leaves
-    every radio button unchecked, rather than falling back to Overture."""
+def test_plugin_run_with_an_unknown_saved_name_falls_back_to_custom_url(clean_settings, iface):
+    """A saved name that matches no visible radio (a renamed or hidden
+    source, say) falls back to Custom URL, per the dialog's fallback rule:
+    after restore, if no visible radio ended up checked, Custom URL is."""
     clean_settings.setValue("gpq_downloader/radio_selection", "Overture", section=QgsSettings.Plugins)
     dialog = run_plugin(iface)
     try:
-        assert not any(r.isChecked() for r in (
-            dialog.overture_radio, dialog.sourcecoop_radio, dialog.osm_radio, dialog.custom_radio))
+        checked = [r for r in ("overture_radio", "sourcecoop_radio", "osm_radio", "custom_radio")
+                   if getattr(dialog, r).isChecked()]
+        assert checked == ["custom_radio"]
     finally:
         dialog.close()
 
