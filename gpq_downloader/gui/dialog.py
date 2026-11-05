@@ -26,6 +26,7 @@ from qgis.PyQt.QtWidgets import (
     QComboBox,
     QProgressDialog,
     QRadioButton,
+    QButtonGroup,
     QStackedWidget,
     QWidget,
     QCheckBox,
@@ -51,7 +52,9 @@ from ..core.filters import (
 )
 from ..core.schema import field_candidates
 from ..core.presets import load_presets
+from ..core.user_sources import apply_hidden
 from . import settings_store
+from . import user_sources_store
 from .extent import AoiHighlighter, AreaOfInterestMixin
 from .flow_layout import FlowLayout, FlowWidget
 from .settings_page import PAGE_OBJECT_NAME
@@ -354,34 +357,69 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self.setMinimumWidth(500)
 
 
-        self.PRESET_DATASETS = load_presets()
+        # The user's own hiding/custom-source choices (#84), read once here so
+        # every page below is built from the already-filtered set rather than
+        # filtering itself. Corrupt or missing user_sources.json reads as
+        # default_config() (user_sources_store.load_user_config() never
+        # raises), so a bad file still leaves every built-in source showing.
+        self.user_config = user_sources_store.load_user_config()
+        self.PRESET_DATASETS = apply_hidden(load_presets(), self.user_config)
 
         # Create main layout
         layout = QVBoxLayout()
 
-        # Create horizontal layout for radio buttons
-        radio_layout = QHBoxLayout()
+        # The source radio row is a FlowLayout (#84) so hiding some built-ins
+        # and adding custom sources (Task 4) does not widen the dialog - any
+        # number of radios wraps onto a second line instead, the same way
+        # _add_overture_category wraps a preset's layers.
+        radio_container = FlowWidget()
+        radio_row = FlowLayout()
+        radio_container.setLayout(radio_row)
 
-        # Create radio buttons
-        self.overture_radio = QRadioButton("Overture Maps")
-        self.sourcecoop_radio = QRadioButton("Source Cooperative")
-        self.osm_radio = QRadioButton("OpenStreetMap")
-        self.custom_radio = QRadioButton("Custom URL")
+        # Create radio buttons. A hidden one is still constructed, with the
+        # dialog as its Qt parent, so every existing attribute and signal
+        # keeps working even though its radio shows nowhere (#84). FlowLayout
+        # reparents the widgets it lays out to radio_container rather than to
+        # self, though, so a hidden radio (parented to self) and a visible
+        # one (parented to radio_container) no longer share a parent - and
+        # QRadioButton's automatic exclusivity only spans buttons that do.
+        # An explicit QButtonGroup is what keeps every source radio mutually
+        # exclusive regardless of which of those two parents it ends up with.
+        self.source_button_group = QButtonGroup(self)
+        self.overture_radio = QRadioButton("Overture Maps", self)
+        self.sourcecoop_radio = QRadioButton("Source Cooperative", self)
+        self.osm_radio = QRadioButton("OpenStreetMap", self)
+        self.custom_radio = QRadioButton("Custom URL", self)
 
-        # Add radio buttons to horizontal layout
-        radio_layout.addWidget(self.overture_radio)
-        radio_layout.addWidget(self.sourcecoop_radio)
-        radio_layout.addWidget(self.osm_radio)
-        radio_layout.addWidget(self.custom_radio)
+        # Every *visible* radio, in display order, Custom URL last. Task 4
+        # inserts a radio per custom source between the built-ins and Custom
+        # URL here; _connect_filter_signals and the restore/fallback logic
+        # below both walk this list instead of the four attributes by name.
+        self.source_radios = []
+        hidden_sources = self.user_config.get("hidden_sources", [])
+        for source_key, radio in (
+            ("overture", self.overture_radio),
+            ("source_cooperative", self.sourcecoop_radio),
+            ("openstreetmap", self.osm_radio),
+        ):
+            self.source_button_group.addButton(radio)
+            radio.released.connect(self.save_radio_button_state)
+            if source_key in hidden_sources:
+                radio.setVisible(False)
+                continue
+            radio_row.addWidget(radio)
+            self.source_radios.append(radio)
 
-        # Connect to save state
-        self.overture_radio.released.connect(self.save_radio_button_state)
-        self.sourcecoop_radio.released.connect(self.save_radio_button_state)
-        self.osm_radio.released.connect(self.save_radio_button_state)
+        # Custom URL can never be hidden (user_sources.HIDEABLE_SOURCES) - it
+        # is the escape hatch and the fallback below for a remembered
+        # selection that no longer exists - so it is always built last.
+        self.source_button_group.addButton(self.custom_radio)
         self.custom_radio.released.connect(self.save_radio_button_state)
+        radio_row.addWidget(self.custom_radio)
+        self.source_radios.append(self.custom_radio)
 
-        # Add radio button layout to main layout
-        layout.addLayout(radio_layout)
+        # Add radio button row to main layout
+        layout.addWidget(radio_container)
 
         # Add some spacing between radio buttons and content
         layout.addSpacing(10)
@@ -709,6 +747,11 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Load checkbox states during initialization
         self.load_checkbox_states()
 
+        # Restore the remembered radio, falling back to Custom URL (#84):
+        # the name saved last time may belong to a source hidden or removed
+        # since then, and self.source_radios no longer has it either way.
+        self.load_radio_button_state()
+
         # Connect each checkbox to save its state when toggled
         for checkbox in self.overture_checkboxes.values():
             checkbox.toggled.connect(self.save_checkbox_states)
@@ -741,6 +784,23 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             button_name = self.custom_radio.text()
 
         settings_store.save_value(settings_store.RADIO_SELECTION, button_name)
+
+    def load_radio_button_state(self) -> None:
+        """Check the remembered radio, or Custom URL if nothing matches.
+
+        self.source_radios holds only the visible ones, so a name that was
+        saved before its source was hidden (or that never names a button at
+        all) matches nothing here - and the dialog must still open with some
+        radio checked, so Custom URL, the one radio that can never be hidden,
+        is the fallback (#84).
+        """
+        selected_name = settings_store.load_radio_selection()
+        for radio in self.source_radios:
+            if radio.text() == selected_name:
+                radio.setChecked(True)
+                break
+        if not any(radio.isChecked() for radio in self.source_radios):
+            self.custom_radio.setChecked(True)
 
     def _add_overture_category(self, layout, key, label, layer_labels, column_width):
         """Add an Overture category: a choice of layers, on the category's line.
@@ -864,12 +924,9 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         """
         for checkbox in self.stack.findChildren(QCheckBox):
             checkbox.toggled.connect(self._selection_changed)
-        for radio in (
-            self.custom_radio,
-            self.overture_radio,
-            self.sourcecoop_radio,
-            self.osm_radio,
-        ):
+        # Visible radios only (#84): a hidden one cannot be clicked, and
+        # Task 4's custom-source radios are already in this list too.
+        for radio in self.source_radios:
             radio.toggled.connect(self._selection_changed)
         self.sourcecoop_combo.currentTextChanged.connect(self._selection_changed)
         self.url_input.textChanged.connect(self._selection_changed)

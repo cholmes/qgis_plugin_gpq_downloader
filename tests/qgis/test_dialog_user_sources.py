@@ -1,0 +1,137 @@
+"""The dialog honors hidden built-in sources and datasets (#84).
+
+Hiding a source or a dataset is the user's own config
+(user_sources_store.load_user_config()/core.user_sources.apply_hidden()),
+read once at dialog construction. These tests pin what the dialog does with
+that config: a hidden source's radio disappears rather than its attribute,
+a hidden dataset disappears from its page, a remembered selection that no
+longer exists falls back to Custom URL, and a corrupt config still opens a
+dialog with every built-in showing.
+"""
+
+from unittest.mock import MagicMock
+
+import pytest
+
+from gpq_downloader.core.user_sources import default_config
+from gpq_downloader.dialog import DataSourceDialog
+from gpq_downloader.gui import user_sources_store
+
+
+@pytest.fixture
+def iface():
+    """A bare MagicMock is enough: DataSourceDialog only calls methods on it,
+    and every call on a MagicMock answers with another MagicMock (see
+    test_dialog_settings.py's identical fixture)."""
+    iface = MagicMock()
+    iface.mainWindow.return_value = None
+    return iface
+
+
+def write_config(**overrides):
+    """Save a config built from default_config() with `overrides` applied,
+    through user_sources_store.save_user_config() so it is written exactly
+    as the real config store would write it (isolated_user_sources in
+    conftest.py points this at tmp_path for every test here)."""
+    config = default_config()
+    config.update(overrides)
+    user_sources_store.save_user_config(config)
+    return config
+
+
+def test_hidden_source_radio_is_not_visible(clean_settings, iface):
+    write_config(hidden_sources=["openstreetmap"])
+    dialog = DataSourceDialog(None, iface)
+
+    assert dialog.osm_radio.isHidden()
+    assert dialog.osm_radio not in dialog.source_radios
+    # A hidden radio keeps its attribute and its page, so nothing else that
+    # already reaches for self.osm_radio breaks (the design's ruling).
+    assert not dialog.overture_radio.isHidden()
+    assert dialog.overture_radio in dialog.source_radios
+
+
+def test_hidden_sourcecoop_dataset_missing_from_combo(clean_settings, iface):
+    write_config(hidden_datasets={"source_cooperative": ["vida_buildings"]})
+    dialog = DataSourceDialog(None, iface)
+
+    combo = dialog.sourcecoop_combo
+    names = [combo.itemText(i) for i in range(combo.count())]
+    assert "VIDA Google/Microsoft/OSM Buildings" not in names
+    assert "vida_buildings" not in dialog.PRESET_DATASETS["source_cooperative"]
+    # Hiding a dataset never hides the whole source (apply_hidden's rule):
+    # other Source Cooperative datasets are still offered.
+    assert dialog.sourcecoop_combo.count() > 0
+
+
+def test_hidden_osm_dataset_has_no_checkbox(clean_settings, iface):
+    write_config(hidden_datasets={"openstreetmap": ["addresses"]})
+    dialog = DataSourceDialog(None, iface)
+
+    assert "addresses" not in dialog.osm_checkboxes
+    assert "addresses" not in dialog.PRESET_DATASETS["openstreetmap"]
+    assert "buildings" in dialog.osm_checkboxes
+
+
+def test_saved_radio_for_hidden_source_falls_back(clean_settings, iface):
+    # Session 1: OpenStreetMap was the remembered selection.
+    first = DataSourceDialog(None, iface)
+    first.osm_radio.setChecked(True)
+    first.save_radio_button_state()
+    first.close()
+
+    # Between sessions, OpenStreetMap gets hidden.
+    write_config(hidden_sources=["openstreetmap"])
+
+    # Session 2 ("reopen"): the saved name ("OpenStreetMap") matches nothing
+    # in source_radios any more, so Custom URL is checked instead of nothing.
+    second = DataSourceDialog(None, iface)
+    assert second.custom_radio.isChecked()
+    second.close()
+
+
+def test_all_builtins_hidden_leaves_custom_url(clean_settings, iface):
+    write_config(hidden_sources=["overture", "source_cooperative", "openstreetmap"])
+    dialog = DataSourceDialog(None, iface)
+
+    assert dialog.source_radios == [dialog.custom_radio]
+    assert dialog.custom_radio.isChecked()
+    for radio in (dialog.overture_radio, dialog.sourcecoop_radio, dialog.osm_radio):
+        assert radio.isHidden()
+
+
+def test_dialog_opens_with_garbage_config(clean_settings, iface):
+    path = user_sources_store.user_config_path()
+    with open(path, "wb") as f:
+        f.write(b"\xff\xfe not even close to JSON")
+
+    dialog = DataSourceDialog(None, iface)
+
+    for radio in (
+        dialog.overture_radio,
+        dialog.sourcecoop_radio,
+        dialog.osm_radio,
+        dialog.custom_radio,
+    ):
+        assert not radio.isHidden()
+    assert dialog.source_radios == [
+        dialog.overture_radio,
+        dialog.sourcecoop_radio,
+        dialog.osm_radio,
+        dialog.custom_radio,
+    ]
+
+
+def test_default_config_changes_nothing(clean_settings, iface):
+    from gpq_downloader.core.presets import load_presets
+
+    dialog = DataSourceDialog(None, iface)
+
+    for radio in (
+        dialog.overture_radio,
+        dialog.sourcecoop_radio,
+        dialog.osm_radio,
+        dialog.custom_radio,
+    ):
+        assert not radio.isHidden()
+    assert dialog.sourcecoop_combo.count() == len(load_presets()["source_cooperative"])
