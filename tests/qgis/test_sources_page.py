@@ -92,10 +92,26 @@ def test_tree_lists_builtins_and_customs(qgs_app):
         sourcecoop.child(i).text(0) for i in range(sourcecoop.childCount())
     ]
     assert "VIDA Buildings" in dataset_texts  # display_name, not the raw key
-    assert "other_dataset" in dataset_texts  # no display_name -> falls back to the key
+    # No display_name -> falls back to key.title(), the same rule the
+    # dialog itself uses (dialog.py's OSM checkboxes), not the raw key.
+    assert "Other_Dataset" in dataset_texts
 
     custom = _top_item(widget, "My Company")
     assert custom.child(0).text(0) == "Parcels"
+
+
+def test_builtin_dataset_row_shows_the_dialogs_label_not_the_raw_key(qgs_app):
+    """An OSM row with no display_name still reads as a label, matching
+    what the dialog itself shows for the same preset (dialog.py:620),
+    while unchecking it writes the raw preset key - not the label - into
+    hidden_datasets (finding IMPORTANT 3)."""
+    widget = SourcesManagerWidget(_config(), PRESETS)
+    osm = _top_item(widget, "OpenStreetMap")
+    addresses = _child_item(osm, "Addresses")
+    assert addresses.text(0) != "addresses"
+
+    addresses.setCheckState(1, Qt.CheckState.Unchecked)
+    assert widget.config()["hidden_datasets"]["openstreetmap"] == ["addresses"]
 
 
 def test_unchecking_builtin_source_adds_to_hidden_sources(qgs_app):
@@ -124,7 +140,7 @@ def test_unchecking_sourcecoop_child_hides_that_dataset(qgs_app):
 def test_overture_children_are_not_checkable(qgs_app):
     widget = SourcesManagerWidget(_config(), PRESETS)
     overture = _top_item(widget, "Overture Maps")
-    child = _child_item(overture, "buildings")
+    child = _child_item(overture, "Buildings")  # key.title(), not the raw key
     assert not (child.flags() & Qt.ItemFlag.ItemIsUserCheckable)
 
 
@@ -182,6 +198,24 @@ def test_duplicate_source_name_rejected(qgs_app):
     assert widget.config() == before
 
 
+def test_a_custom_source_cannot_steal_a_builtin_or_custom_url_name(qgs_app):
+    """A custom source named "Overture Maps" (say) would match the saved
+    radio text the dialog restores against (dialog.py's
+    load_radio_button_state(), which matches by text alone), stealing the
+    real built-in's restore. Checked case-insensitively, and for both add
+    and rename (finding Minor Sweep a)."""
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    before = widget.config()
+
+    for reserved in ("Overture Maps", "source cooperative", "OPENSTREETMAP", "custom url"):
+        assert widget._add_source({"name": reserved, "info_url": ""}) is False
+    assert widget.config() == before
+
+    item = _top_item(widget, "My Company")
+    assert widget._apply_source_edit(item, {"name": "Overture Maps", "info_url": ""}) is False
+    assert widget.config() == before
+
+
 def test_edit_dataset_updates_config(qgs_app):
     widget = SourcesManagerWidget(_custom_config(), PRESETS)
     custom = _top_item(widget, "My Company")
@@ -219,6 +253,60 @@ def test_remove_source_removes_datasets(qgs_app, monkeypatch):
     widget.remove_button.click()
 
     assert widget.config()["custom_sources"] == []
+
+
+def test_remove_selected_on_a_dataset_keeps_its_sibling(qgs_app):
+    config = _custom_config()
+    config["custom_sources"][0]["datasets"].append(
+        {
+            "name": "Roads",
+            "url": "https://example.com/roads.parquet",
+            "info_url": "",
+            "group": "",
+        }
+    )
+    widget = SourcesManagerWidget(config, PRESETS)
+    custom = _top_item(widget, "My Company")
+    widget.tree.setCurrentItem(_child_item(custom, "Parcels"))
+
+    widget._remove_selected()
+
+    datasets = widget.config()["custom_sources"][0]["datasets"]
+    assert [d["name"] for d in datasets] == ["Roads"]
+
+
+def test_apply_source_edit_renames_keeps_datasets_and_rejects_existing_name(qgs_app):
+    config = _custom_config()
+    config["custom_sources"].append(
+        {"name": "Other Co", "info_url": "", "datasets": []}
+    )
+    widget = SourcesManagerWidget(config, PRESETS)
+    item = _top_item(widget, "My Company")
+
+    # Renaming to a name already used by another custom source is rejected.
+    assert widget._apply_source_edit(
+        item, {"name": "Other Co", "info_url": "https://x"}
+    ) is False
+    assert [s["name"] for s in widget.config()["custom_sources"]] == [
+        "My Company", "Other Co",
+    ]
+
+    # A real rename keeps the datasets and applies the new info_url.
+    assert widget._apply_source_edit(
+        item, {"name": "My Renamed Co", "info_url": "https://new.example.com"}
+    ) is True
+    renamed = next(
+        s for s in widget.config()["custom_sources"] if s["name"] == "My Renamed Co"
+    )
+    assert renamed["info_url"] == "https://new.example.com"
+    assert renamed["datasets"] == [
+        {
+            "name": "Parcels",
+            "url": "https://example.com/parcels.parquet",
+            "info_url": "",
+            "group": "",
+        }
+    ]
 
 
 def test_edit_remove_disabled_for_builtin_selection(qgs_app):

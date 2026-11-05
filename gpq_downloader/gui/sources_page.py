@@ -45,8 +45,21 @@ BUILTIN_SOURCE_LABELS = {
     "openstreetmap": "OpenStreetMap",
 }
 
-# Fixed display order for the built-in rows, matching the dialog's radio row.
-_BUILTIN_ORDER = ("overture", "source_cooperative", "openstreetmap")
+# Fixed display order for the built-in rows, matching the dialog's radio
+# row - the same three sources that can be hidden at all (core/user_sources.py).
+_BUILTIN_ORDER = user_sources.HIDEABLE_SOURCES
+
+# A custom source named one of these (case-insensitive) would steal the
+# saved-radio restore from the real one the name refers to - the dialog
+# matches a saved selection by text alone (dialog.py's
+# load_radio_button_state()), so "Overture Maps" (say) must stay unique to
+# the built-in radio that always carries that text. "Custom URL" is
+# included too: it is the one radio that is never hidden/removed and the
+# dialog's own fallback, so a custom source stealing its name would be
+# just as confusing even though it is not itself a HIDEABLE_SOURCES entry.
+_RESERVED_SOURCE_NAMES = {"custom url"} | {
+    label.lower() for label in BUILTIN_SOURCE_LABELS.values()
+}
 
 # Item-data roles for what a row refers to, independent of its label text.
 _SOURCE_KEY_ROLE = Qt.ItemDataRole.UserRole
@@ -285,10 +298,13 @@ class SourcesManagerWidget(QWidget):
         dataset_checkable = source_key in user_sources.DATASET_HIDEABLE_SOURCES
         hidden_datasets = self._config["hidden_datasets"].get(source_key, [])
         for dataset_key, info in datasets.items():
+            # Same rule the dialog itself uses for its checkboxes
+            # (dialog.py's OSM page): an acronym preset names itself rather
+            # than reading wrong through key.title().
             label = (
-                info.get("display_name", dataset_key)
+                (info.get("display_name") or dataset_key.title())
                 if isinstance(info, dict)
-                else dataset_key
+                else dataset_key.title()
             )
             child = QTreeWidgetItem([label])
             child.setData(_NAME_COLUMN, _SOURCE_KEY_ROLE, source_key)
@@ -393,9 +409,12 @@ class SourcesManagerWidget(QWidget):
 
     def _add_source(self, values):
         """Appends a new custom source; False, state unchanged, on a
-        case-insensitive name clash with an existing custom source."""
+        case-insensitive name clash with an existing custom source or with
+        a reserved built-in/Custom URL name."""
         name = values.get("name", "").strip()
         if not name:
+            return False
+        if name.lower() in _RESERVED_SOURCE_NAMES:
             return False
         if self._find_custom_source(name) is not None:
             return False
@@ -446,6 +465,8 @@ class SourcesManagerWidget(QWidget):
             return False
         name = values.get("name", "").strip()
         if not name:
+            return False
+        if name.lower() != old_name.lower() and name.lower() in _RESERVED_SOURCE_NAMES:
             return False
         if (
             name.lower() != old_name.lower()
