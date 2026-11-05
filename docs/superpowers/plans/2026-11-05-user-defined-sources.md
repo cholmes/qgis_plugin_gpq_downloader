@@ -62,7 +62,7 @@ Rules (enforced by sanitization, never by crashing):
 - Lint: `ruff check --select F,E9,E722 gpq_downloader/ scripts/ tests/` must stay clean.
 - black line length 88.
 - Local test run (QGIS-bundled Python; see `~/.claude/.../memory/local-test-environment.md`):
-  `HOME=$(mktemp -d) PYTHONPATH=/Users/cholmes/.local/lib/python3.12/site-packages QT_QPA_PLATFORM=offscreen /Applications/QGIS-final-4_2_3.app/Contents/MacOS/python -m pytest tests/ -q`
+  `PYTHONPATH=/Users/cholmes/.local/lib/python3.12/site-packages QT_QPA_PLATFORM=offscreen /Applications/QGIS-final-4_2_3.app/Contents/MacOS/python -m pytest tests/ -q`
   Compare the **failure set** against a baseline run from the branch point, never the raw count: ~21 DuckDB-extension tests and 2 settings-pollution tests fail locally by environment. CI is authoritative.
 - Every QgsSettings-touching test uses the `clean_settings` fixture (tests/qgis/conftest.py); macOS does not isolate QgsSettings via HOME.
 - Tests patch Qt static methods (QMessageBox/QFileDialog) rather than running modal exec loops — the existing dialog tests show the pattern.
