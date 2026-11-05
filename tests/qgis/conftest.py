@@ -11,10 +11,27 @@ from qgis.PyQt.QtWidgets import QMainWindow
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from gpq_downloader import logger  # noqa: E402
+from gpq_downloader.gui import user_sources_store  # noqa: E402
 
 # Keys this plugin writes, under either of the two prefixes QSettings can
 # render them with (see settings_store.py's module docstring).
 _OUR_PREFIXES = ("plugins/gpq_downloader/", "gpq_downloader/")
+
+
+@pytest.fixture(autouse=True)
+def isolated_user_sources(tmp_path, monkeypatch):
+    """Every qgis test reads/writes its own user_sources.json, not the
+    developer's real one.
+
+    user_sources_store.user_config_path() otherwise points inside this QGIS
+    profile (QgsApplication.qgisSettingsDirPath()); autouse so old and new
+    tests alike never touch that file, with no per-test fixture to remember.
+    """
+    monkeypatch.setattr(
+        user_sources_store,
+        "user_config_path",
+        lambda: str(tmp_path / "user_sources.json"),
+    )
 
 
 @pytest.fixture
