@@ -161,9 +161,17 @@ def test_sanitize_strips_whitespace_and_coerces_missing_optional_fields():
 
 @pytest.mark.parametrize(
     "garbage",
-    [None, 42, "a string", ["a", "list"], object(), {"hidden_sources": "nope"},
-     {"hidden_datasets": "nope"}, {"custom_sources": "nope"},
-     {"custom_sources": [None, 1, "x", {"name": 1, "datasets": "nope"}]}],
+    [
+        None,
+        42,
+        "a string",
+        ["a", "list"],
+        object(),
+        {"hidden_sources": "nope"},
+        {"hidden_datasets": "nope"},
+        {"custom_sources": "nope"},
+        {"custom_sources": [None, 1, "x", {"name": 1, "datasets": "nope"}]},
+    ],
 )
 def test_sanitize_never_raises_on_any_input_shape(garbage):
     result = sanitize_config(garbage)
