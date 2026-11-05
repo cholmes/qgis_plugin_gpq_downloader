@@ -576,9 +576,19 @@ class SourcesManagerWidget(QWidget):
     # -- import / export -----------------------------------------------------
 
     def _export_to(self, path):
-        """Writes the current config to `path` as JSON."""
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(user_sources.serialize_config(self.config()))
+        """Writes the current config to `path` as JSON. Returns whether the
+        write succeeded; an unwritable `path` (read-only destination, full
+        disk, a directory, ...) shows a warning instead of raising out of
+        a Qt slot."""
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(user_sources.serialize_config(self.config()))
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Export failed", f"Could not export to {path}:\n{exc}"
+            )
+            return False
+        return True
 
     def _import_from(self, path):
         """Reads `path` and, after confirmation, replaces the in-memory

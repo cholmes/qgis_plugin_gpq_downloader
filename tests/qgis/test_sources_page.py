@@ -265,6 +265,20 @@ def test_export_then_import_roundtrips(qgs_app, monkeypatch, tmp_path):
     assert other.config() == widget.config()
 
 
+def test_export_to_unwritable_path_warns_and_does_not_crash(
+    qgs_app, monkeypatch, tmp_path
+):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    # A directory is never a writable file target - open(path, "w") raises
+    # IsADirectoryError (an OSError) rather than ever writing anything.
+    unwritable = str(tmp_path)
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a))
+    assert widget._export_to(unwritable) is False
+    assert len(warnings) == 1
+
+
 def test_import_invalid_file_warns_and_keeps_state(qgs_app, monkeypatch, tmp_path):
     widget = SourcesManagerWidget(_custom_config(), PRESETS)
     before = widget.config()
