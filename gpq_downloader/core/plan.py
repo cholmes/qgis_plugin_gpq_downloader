@@ -12,6 +12,8 @@ import re
 from collections import deque
 from typing import Any, Optional
 
+from . import copy_options
+
 
 def custom_file_stem(url):
     """A file name stem for a custom URL: the file's name, or the folder a glob reads.
@@ -106,6 +108,10 @@ class DownloadJob:
     where_fragment: Optional[str] = None
     validation_results: dict = dataclasses.field(default_factory=dict)
     size_warning_accepted: bool = False
+    compression_codec: str = copy_options.DEFAULT_CODEC
+    compression_level: int = copy_options.DEFAULT_COMPRESSION_LEVEL
+    row_group_size: Optional[int] = None
+    spatial_sort: bool = copy_options.DEFAULT_SPATIAL_SORT
 
 
 class DownloadQueue:

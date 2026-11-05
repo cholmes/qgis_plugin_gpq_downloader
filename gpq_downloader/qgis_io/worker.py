@@ -19,6 +19,7 @@ except ImportError:
     duckdb = None
 
 from .. import logger
+from ..core import copy_options
 from ..core.filters import apply_where_fragment, validate_where_fragment
 from ..core.overture import parquet_source_for_bbox
 from ..core.presets import load_presets
@@ -74,7 +75,10 @@ class Worker(QObject):
     progress = pyqtSignal(str)
     file_size_warning = pyqtSignal(float)  # Signal for file size warnings (in MB)
 
-    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None, clip_to_area=False, connection_factory=None, *, where_fragment=None):
+    def __init__(self, dataset_url, extent, output_file, iface, validation_results, layer_name=None, aoi_geometry=None, clip_to_area=False, connection_factory=None, *, where_fragment=None,
+                 compression_codec=copy_options.DEFAULT_CODEC,
+                 compression_level=copy_options.DEFAULT_COMPRESSION_LEVEL,
+                 row_group_size=None, spatial_sort=copy_options.DEFAULT_SPATIAL_SORT):
         super().__init__()
         # Opens the DuckDB connection run() uses: duckdb.connect unless a test
         # passes a stand-in that records the SQL
@@ -94,6 +98,12 @@ class Worker(QObject):
         # The user's attribute filter (core/filters.py), ANDed onto the spatial
         # filter of the download; None downloads everything in the area
         self.where_fragment = where_fragment
+        # The write settings this job carries (core/copy_options.py builds the
+        # COPY clause from them); set at enqueue time from QgsSettings
+        self.compression_codec = compression_codec
+        self.compression_level = compression_level
+        self.row_group_size = row_group_size
+        self.spatial_sort = spatial_sort
         self.conn = None  # kept so kill() can interrupt a running query
 
     def run(self):
@@ -116,7 +126,7 @@ class Worker(QObject):
             else:
                 logger.log("No AOI geometry provided.")
 
-            #logger.log(f"Full validation_results at start of run: {self.validation_results}")
+            logger.debug(f"Full validation_results at start of run: {self.validation_results}")
 
             conn = None
             copy_started = False  # only an export this run started is removed on cancel
@@ -377,40 +387,51 @@ class Worker(QObject):
                             self.file_size_warning.emit(estimated_size)
                             return
 
-                    # Use the geometry column from validation results for the Hilbert sorting
-                    # At this point, if we converted BLOB to geometry, it's already a GEOMETRY type
-                    # So we don't need ST_GeomFromWKB anymore
-                    geometry_expr = sql_ident(geometry_column)
-                    extent_expr = sql_ident(geometry_column)
-                    
-                    copy_query = f"""
-                    COPY (
-                        WITH bbox AS (
-                            SELECT ST_Extent(ST_Extent_Agg({extent_expr}))::BOX_2D AS b
-                            FROM   {table_name}
-                        )
-                        SELECT   t.*
-                        FROM     {table_name} AS t
-                                CROSS JOIN bbox
-                        ORDER BY ST_Hilbert(t.{geometry_expr}, bbox.b)
-                    ) TO {sql_str(self.output_file)}
-                    """  # nosec B608
+                    if self.spatial_sort:
+                        # Use the geometry column from validation results for the Hilbert sorting
+                        # At this point, if we converted BLOB to geometry, it's already a GEOMETRY type
+                        # So we don't need ST_GeomFromWKB anymore
+                        geometry_expr = sql_ident(geometry_column)
+                        extent_expr = sql_ident(geometry_column)
 
-                    if file_extension == "parquet":
-                        format_options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 22);"
-                    elif self.output_file.endswith(".gpkg"):
-                        format_options = "(FORMAT GDAL, DRIVER 'GPKG', SRS 'EPSG:4326');"
-                    elif self.output_file.endswith(".fgb"):
-                        format_options = "(FORMAT GDAL, DRIVER 'FlatGeobuf', SRS 'EPSG:4326');"
-                    elif self.output_file.endswith(".geojson"):
-                        format_options = "(FORMAT GDAL, DRIVER 'GeoJSON', SRS 'EPSG:4326');"
+                        copy_query = f"""
+                        COPY (
+                            WITH bbox AS (
+                                SELECT ST_Extent(ST_Extent_Agg({extent_expr}))::BOX_2D AS b
+                                FROM   {table_name}
+                            )
+                            SELECT   t.*
+                            FROM     {table_name} AS t
+                                    CROSS JOIN bbox
+                            ORDER BY ST_Hilbert(t.{geometry_expr}, bbox.b)
+                        ) TO {sql_str(self.output_file)}
+                        """  # nosec B608
                     else:
+                        copy_query = f"""
+                        COPY ( SELECT * FROM {table_name} ) TO {sql_str(self.output_file)}
+                        """  # nosec B608
+
+                    format_options = copy_options.format_options(
+                        self.output_file,
+                        codec=self.compression_codec,
+                        compression_level=self.compression_level,
+                        row_group_size=self.row_group_size,
+                    )
+                    if format_options is None:
                         self.error.emit("Unsupported file format.")
-                    
+                        return
+
                     logger.log("Executing SQL query:")
                     logger.log(copy_query + format_options)
                     copy_started = True
-                    conn.execute(copy_query + format_options)
+                    try:
+                        conn.execute(copy_query + format_options)
+                    except Exception as e:
+                        advice = copy_options.codec_error_advice(str(e), self.compression_codec)
+                        if advice is None:
+                            raise
+                        self.error.emit(advice)
+                        return
 
                 
                 if self.killed:

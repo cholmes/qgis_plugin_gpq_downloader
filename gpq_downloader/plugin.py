@@ -21,9 +21,11 @@ from pathlib import Path
 from .qgis_io import duckdb_setup, layers
 from .gui.dialog import DataSourceDialog, ReleaseLookupError
 from .gui import settings_store
-from .logger import message_level
+from .gui.settings_page import SettingsPageFactory
+from .logger import message_level, set_level
 from .qgis_io.manager import DownloadManager
 from .qgis_io.worker import Worker
+from .core import output_formats
 from .core.plan import DownloadJob, custom_file_stem, overture_file_stem, overture_layer_name
 
 
@@ -31,6 +33,7 @@ class QgisPluginGeoParquet:
     def __init__(self, iface):
         self.iface = iface
         self.action = None
+        self.settings_factory = None
         self.output_file = None
         self.clip_to_area = False  # from the dialog's "Clip features to the area" box
         self.where_fragment = None  # from the dialog's attribute filter; None is no filter
@@ -63,6 +66,18 @@ class QgisPluginGeoParquet:
 
         # Add the actions to the toolbar
         self.iface.addToolBarIcon(self.action)
+
+        self.settings_factory = SettingsPageFactory()
+        self.iface.registerOptionsWidgetFactory(self.settings_factory)
+
+        # Apply the stored logging level before anything else logs, so
+        # startup messages obey it too (#93).
+        set_level(
+            settings_store.load_choice(
+                settings_store.LOG_LEVEL, settings_store.LOG_LEVELS, settings_store.DEFAULT_LOG_LEVEL
+            )
+        )
+
         self.check_duckdb(startup=True)
 
     def check_duckdb(self, startup=False):
@@ -184,6 +199,9 @@ class QgisPluginGeoParquet:
         self._pop_duckdb_message()
         # A pip install still running must not call back into this dead instance
         duckdb_setup.detach()
+        if self.settings_factory is not None:
+            self.iface.unregisterOptionsWidgetFactory(self.settings_factory)
+            self.settings_factory = None
         # Remove all actions from the toolbar
         self.iface.removeToolBarIcon(self.action)
 
@@ -208,6 +226,51 @@ class QgisPluginGeoParquet:
 
         # Show non-modally
         dialog.show()
+
+    def starting_dir(self) -> Path:
+        """The folder the next save dialog opens in.
+
+        Read fresh on every call, not cached at plugin load: a stale saved
+        path must not be able to break plugin load, only this one dialog.
+        The remembered last-used folder is tried first when "remember last
+        folder" is on (the default) and one is stored, then the configured
+        folder - each created on demand. A candidate that cannot be created
+        is skipped (with a message-bar warning naming which one failed) in
+        favour of the next; download_dir is the fallback when neither can
+        be used, or neither is set.
+        """
+        remember = settings_store.load_flag(settings_store.REMEMBER_LAST_FOLDER, True)
+        last = settings_store.load_text(settings_store.LAST_OUTPUT_FOLDER) if remember else ""
+        configured = settings_store.load_text(settings_store.OUTPUT_FOLDER)
+        # The same folder twice would warn twice about one failure, the first
+        # time promising to try the folder it had just failed on - and the two
+        # keys hold the same path for anyone who has saved into their
+        # configured folder, which is the steady state.
+        candidates = []
+        for label, value in (
+            ("the last folder you used", last),
+            ("the configured download folder", configured),
+        ):
+            if value and not any(Path(value) == Path(seen) for _, seen in candidates):
+                candidates.append((label, value))
+        for index, (label, value) in enumerate(candidates):
+            folder = Path(value)
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                return folder
+            except OSError:
+                has_next = index + 1 < len(candidates)
+                detail = (
+                    f"trying {candidates[index + 1][0]} instead."
+                    if has_next else f"using {self.download_dir} instead."
+                )
+                self.iface.messageBar().pushMessage(
+                    "GeoParquet Downloader",
+                    f"Could not use {label} ({folder}); {detail}",
+                    message_level("Warning"),
+                    5,
+                )
+        return self.download_dir
 
     def handle_dialog_accepted(self, dialog):
         """Handle the dialog being accepted"""
@@ -242,37 +305,58 @@ class QgisPluginGeoParquet:
                 )
                 aoi_geometry.transform(transform)
         
+        # Read once for the whole batch, same discipline as the write
+        # settings in process_download_queue: a format changed mid-batch
+        # must not make one batch's files disagree with each other.
+        chosen_format = output_formats.format_for(
+            settings_store.load_choice(
+                settings_store.OUTPUT_FORMAT,
+                output_formats.format_names(),
+                output_formats.DEFAULT_FORMAT_NAME,
+            )
+        )
+        extension = chosen_format.extension
+
         # First, collect all file locations from user
         download_queue = []
         for url in urls:
             # Get current date for filename
             current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            
+
             # Generate filename based on the URL and source type
             if dialog.overture_radio.isChecked():
-                filename = f"{overture_file_stem(url)}_{current_date}.parquet"
+                filename = f"{overture_file_stem(url)}_{current_date}{extension}"
             elif dialog.sourcecoop_radio.isChecked():
                 dataset_name = dialog.sourcecoop_combo.currentText()
                 clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
-                filename = f"sourcecoop_{clean_name}_{current_date}.parquet"
+                filename = f"sourcecoop_{clean_name}_{current_date}{extension}"
             elif dialog.osm_radio.isChecked():
                 # Extract layer name from URL
                 layer_name = url.split('/')[-1].replace('.parquet', '')
-                filename = f"osm_{layer_name}_{current_date}.parquet"
+                filename = f"osm_{layer_name}_{current_date}{extension}"
             else:
-                filename = f"{custom_file_stem(url)}_{current_date}.parquet"
+                filename = f"{custom_file_stem(url)}_{current_date}{extension}"
 
-            default_save_path = str(self.download_dir / filename)
-            
+            default_save_path = str(self.starting_dir() / filename)
+
             # Show save file dialog
             output_file, selected_filter = QFileDialog.getSaveFileName(
                 self.iface.mainWindow(),
                 f"Save Data for {(overture_layer_name(url) or 'dataset') if dialog.overture_radio.isChecked() else 'dataset'}",
                 default_save_path,
-                "GeoParquet (*.parquet);;DuckDB Database (*.duckdb);;GeoPackage (*.gpkg);;FlatGeobuf (*.fgb);;GeoJSON (*.geojson)"
+                output_formats.dialog_filters(),
+                chosen_format.dialog_filter,
             )
-            
+
             if output_file:
+                # A relative output_file (no directory component) gives "."
+                # here, which the next starting_dir() would happily mkdir -
+                # opening the save dialog in QGIS's working directory with no
+                # warning. QFileDialog always returns an absolute path; this
+                # guards the case only a test or a future caller could hit.
+                saved_folder = Path(output_file).parent
+                if saved_folder.is_absolute():
+                    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, str(saved_folder))
                 download_queue.append((url, output_file))
             else:
                 return
@@ -423,6 +507,8 @@ class QgisPluginGeoParquet:
             job.url, job.extent, job.output_file, self.iface, job.validation_results, job.layer_name,
             aoi_geometry=job.aoi_geometry, clip_to_area=job.clip_to_area,
             where_fragment=job.where_fragment,
+            compression_codec=job.compression_codec, compression_level=job.compression_level,
+            row_group_size=job.row_group_size, spatial_sort=job.spatial_sort,
         )
         worker.size_warning_accepted = job.size_warning_accepted
         return worker
@@ -474,6 +560,10 @@ class QgisPluginGeoParquet:
 
     def process_download_queue(self, download_queue, extent, aoi_geometry=None):
         """Queue the (url, output_file) pairs of one OK as jobs; the first starts if nothing runs."""
+        # Read once for the whole batch: a setting changed while jobs are
+        # queued must apply to the next batch, not write five files three
+        # different ways.
+        write_settings = settings_store.load_download_settings()
         jobs = [
             DownloadJob(
                 url=url,
@@ -487,6 +577,7 @@ class QgisPluginGeoParquet:
                 # No hints: the Worker reads the file's own GeoParquet metadata
                 # and schema to find the geometry and bbox columns
                 validation_results={},
+                **write_settings,
             )
             for url, output_file in download_queue
         ]

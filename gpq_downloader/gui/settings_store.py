@@ -8,6 +8,8 @@ for each read or write, the same defaults and the same types.
 
 from qgis.core import QgsSettings
 
+from gpq_downloader.core import copy_options
+
 RADIO_SELECTION = "gpq_downloader/radio_selection"
 CLIP_TO_AREA = "gpq_downloader/clip_to_area"
 AOI_ENABLED = "gpq_downloader/aoi_enabled"
@@ -22,6 +24,23 @@ CHECKBOX = "gpq_downloader/checkbox_{key}"
 BASE_SUBTYPE_CHECKBOX = "gpq_downloader/base_subtype_checkbox_{key}"
 DIVISIONS_SUBTYPE_CHECKBOX = "gpq_downloader/divisions_subtype_checkbox_{key}"
 OSM_CHECKBOX = "gpq_downloader/osm_checkbox_{key}"
+
+# The settings panel's keys, added across Tasks 3-6.
+OUTPUT_FORMAT = "gpq_downloader/output_format"
+OUTPUT_FOLDER = "gpq_downloader/output_folder"
+REMEMBER_LAST_FOLDER = "gpq_downloader/remember_last_folder"
+# The folder itself, last saved to. This is storage the plugin consults, not
+# a setting the panel shows; REMEMBER_LAST_FOLDER only decides whether it is
+# read. Written by plugin.py, not by the options page.
+LAST_OUTPUT_FOLDER = "gpq_downloader/last_output_folder"
+COMPRESSION_CODEC = "gpq_downloader/compression_codec"
+COMPRESSION_LEVEL = "gpq_downloader/compression_level"
+ROW_GROUP_SIZE = "gpq_downloader/row_group_size"
+SPATIAL_SORT = "gpq_downloader/spatial_sort"
+LOG_LEVEL = "gpq_downloader/log_level"
+
+LOG_LEVELS = ("Debug", "Info", "Warning", "Critical")
+DEFAULT_LOG_LEVEL = "Info"
 
 
 def save_value(key, value):
@@ -65,6 +84,70 @@ def load_text(key):
         section=QgsSettings.Section.Plugins,
     )
     return value if isinstance(value, str) else ""
+
+
+def load_int(key, default):
+    """The int stored under key, or default when absent or not convertible.
+
+    This reads the raw value and converts by hand rather than passing
+    type=int: QgsSettings.value(key, default, type=int) turns a non-numeric
+    stored value into 0, which would be indistinguishable from the user
+    having genuinely chosen 0. Converting by hand also guards the way
+    load_text guards a non-str: a test that stands a MagicMock in for
+    QgsSettings must get default back, not a Mock a QSpinBox cannot take.
+    """
+    value = QgsSettings().value(key, default, section=QgsSettings.Section.Plugins)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def load_choice(key, allowed, default):
+    """The str stored under key if it is one of allowed, else default.
+
+    A stored choice can go stale the same way a stored format name can
+    (see output_formats.format_for): a value written by an older version,
+    or by a test standing a mock in for QgsSettings, that no longer matches
+    anything this version offers. Falling back to default keeps that
+    recoverable instead of handing an unrecognised value to a combo box.
+    """
+    value = QgsSettings().value(
+        key,
+        default,
+        type=str,
+        section=QgsSettings.Section.Plugins,
+    )
+    if not isinstance(value, str) or value not in allowed:
+        return default
+    return value
+
+
+def load_download_settings():
+    """The DownloadJob/Worker write-settings, defaulted and clamped.
+
+    Exactly the four keyword arguments those two take, so plugin.py can
+    spread this dict at the one call site rather than each caller repeating
+    the clamp and the fallbacks.
+    """
+    level = load_int(COMPRESSION_LEVEL, copy_options.DEFAULT_COMPRESSION_LEVEL)
+    level = max(
+        copy_options.MIN_COMPRESSION_LEVEL,
+        min(copy_options.MAX_COMPRESSION_LEVEL, level),
+    )
+
+    row_group_size = load_int(ROW_GROUP_SIZE, None)
+    if row_group_size is not None and row_group_size <= 0:
+        row_group_size = None
+
+    return {
+        "compression_codec": load_choice(
+            COMPRESSION_CODEC, copy_options.CODECS, copy_options.DEFAULT_CODEC
+        ),
+        "compression_level": level,
+        "row_group_size": row_group_size,
+        "spatial_sort": load_flag(SPATIAL_SORT, copy_options.DEFAULT_SPATIAL_SORT),
+    }
 
 
 def load_radio_selection():

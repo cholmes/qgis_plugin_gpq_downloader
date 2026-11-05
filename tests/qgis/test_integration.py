@@ -1,7 +1,7 @@
 from gpq_downloader.plugin import QgisPluginGeoParquet
 
 
-def test_plugin_load(qgs_app, mock_iface):
+def test_plugin_load(clean_settings, restore_level, qgs_app, mock_iface):
     """Test that plugin loads properly"""
     plugin = QgisPluginGeoParquet(mock_iface)
     assert plugin is not None
@@ -13,7 +13,7 @@ def test_plugin_load(qgs_app, mock_iface):
     assert plugin.action is not None
 
 
-def test_plugin_unload(qgs_app, mock_iface):
+def test_plugin_unload(clean_settings, restore_level, qgs_app, mock_iface):
     """Test that plugin unloads properly"""
     plugin = QgisPluginGeoParquet(mock_iface)
     plugin.initGui()

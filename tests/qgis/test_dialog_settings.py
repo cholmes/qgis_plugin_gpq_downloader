@@ -56,20 +56,6 @@ def our_keys():
 
 
 @pytest.fixture
-def clean_settings(qgs_app):
-    """No gpq_downloader settings during the test; the previous ones after it."""
-    settings = QgsSettings()
-    saved = {k: settings.value(k) for k in our_keys()}
-    for key in saved:
-        settings.remove(key)
-    yield settings
-    for key in our_keys():
-        settings.remove(key)
-    for key, value in saved.items():
-        settings.setValue(key, value)
-
-
-@pytest.fixture
 def iface():
     iface = MagicMock()
     iface.mainWindow.return_value = None
