@@ -7,6 +7,8 @@ own tmp_path rather than the developer's real QGIS profile.
 
 import os
 
+import pytest
+
 from gpq_downloader.core.user_sources import default_config
 from gpq_downloader.gui import user_sources_store
 
@@ -63,3 +65,19 @@ def test_save_creates_parent_directory(tmp_path, monkeypatch):
 
 def test_autouse_fixture_points_path_into_tmp(tmp_path):
     assert user_sources_store.user_config_path().startswith(str(tmp_path))
+
+
+def test_write_failure_is_not_masked_by_a_missing_temp_file(monkeypatch):
+    """If the temp file is already gone by the time the except block tries
+    to clean it up (os.replace() failing part-way, say), the cleanup must
+    not raise its own FileNotFoundError in place of the original error -
+    that would tell the caller the wrong thing happened."""
+
+    def flaky_replace(src, dst):
+        os.remove(src)  # gone before the except block's os.remove() runs
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+
+    with pytest.raises(OSError, match="disk went away"):
+        user_sources_store.save_user_config(default_config())

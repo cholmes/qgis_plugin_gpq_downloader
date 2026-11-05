@@ -13,6 +13,7 @@ user_config_path() for every qgis test, so none of them ever reads or writes
 the developer's real profile.
 """
 
+import contextlib
 import os
 import tempfile
 
@@ -72,5 +73,9 @@ def save_user_config(config):
             f.write(serialize_config(config))
         os.replace(temp_path, path)
     except Exception:
-        os.remove(temp_path)
+        # The temp file may already be gone (e.g. os.fdopen() itself failed
+        # to write it) - suppress that so the original exception propagates
+        # rather than being masked by a FileNotFoundError from the cleanup.
+        with contextlib.suppress(OSError):
+            os.remove(temp_path)
         raise

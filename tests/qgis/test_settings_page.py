@@ -10,6 +10,7 @@ afterwards, via the clean_settings fixture shared with test_dialog_settings.py
 
 import pytest
 from qgis.core import QgsSettings
+from qgis.PyQt.QtWidgets import QMessageBox
 
 from gpq_downloader import logger
 from gpq_downloader.core import copy_options, output_formats
@@ -268,4 +269,31 @@ def test_apply_still_saves_general_settings(clean_settings, qgs_app):
     page = SettingsPage()
     page.codec_combo.setCurrentText("GZIP")
     page.apply()
+    assert settings_store.load_download_settings()["compression_codec"] == "GZIP"
+
+
+def test_apply_warns_instead_of_crashing_when_sources_cant_be_saved(
+    clean_settings, qgs_app, monkeypatch, tmp_path
+):
+    """Mirrors the warn-don't-crash pattern sources_page._export_to already
+    follows (#a5b357c): a write failure must not raise out of apply(), which
+    QGIS's Options OK handler calls directly, and the rest of apply() (the
+    General tab's settings) must still happen."""
+    # A path whose directory can never be created: "blocker" already exists
+    # as a plain file, so os.makedirs() on it raises FileExistsError - an
+    # OSError - rather than ever writing anything.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    unwritable = str(blocker / "user_sources.json")
+    monkeypatch.setattr(user_sources_store, "user_config_path", lambda: unwritable)
+
+    page = SettingsPage()
+    page.codec_combo.setCurrentText("GZIP")
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a))
+
+    page.apply()  # must not raise
+
+    assert len(warnings) == 1
     assert settings_store.load_download_settings()["compression_codec"] == "GZIP"

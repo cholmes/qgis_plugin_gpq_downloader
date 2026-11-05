@@ -15,6 +15,7 @@ from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QMessageBox,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -149,7 +150,14 @@ class SettingsPage(QgsOptionsPageWidget):
         settings_store.save_value(settings_store.SPATIAL_SORT, self.sort_checkbox.isChecked())
         # Takes effect on the next download without reopening anything (#93).
         logger.set_level(self.log_combo.currentText())
-        user_sources_store.save_user_config(self.sources_widget.config())
+        try:
+            user_sources_store.save_user_config(self.sources_widget.config())
+        except OSError as exc:
+            path = user_sources_store.user_config_path()
+            QMessageBox.warning(
+                self, "Could not save data sources",
+                f"Could not write {path}:\n{exc}",
+            )
 
 
 class SettingsPageFactory(QgsOptionsWidgetFactory):
