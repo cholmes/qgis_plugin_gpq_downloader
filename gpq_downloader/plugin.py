@@ -213,14 +213,6 @@ class QgisPluginGeoParquet:
         # asks for is queued behind it
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
 
-        # Restore last radio selection
-        selected_name = settings_store.load_radio_selection()
-        for button in [dialog.overture_radio, dialog.sourcecoop_radio, dialog.osm_radio, dialog.custom_radio]:
-            if button.text() == selected_name:
-                button.setChecked(True)
-        if not selected_name:
-            dialog.overture_radio.setChecked(True)
-
         # Handle OK
         dialog.accepted.connect(lambda: self.handle_dialog_accepted(dialog))
 

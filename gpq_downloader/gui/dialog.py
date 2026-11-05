@@ -835,19 +835,23 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         settings_store.save_value(settings_store.RADIO_SELECTION, button_name)
 
     def load_radio_button_state(self) -> None:
-        """Check the remembered radio, or Custom URL if nothing matches.
+        """Check the remembered radio, or a default if nothing matches.
 
         self.source_radios holds only the visible ones, so a name that was
         saved before its source was hidden (or that never names a button at
-        all) matches nothing here - and the dialog must still open with some
-        radio checked, so Custom URL, the one radio that can never be hidden,
-        is the fallback (#84).
+        all) matches nothing here. When nothing was saved at all, the first
+        visible radio (Overture whenever it is visible) is the default. The
+        dialog must still open with some radio checked, so Custom URL, the
+        one radio that can never be hidden, is the final fallback (#84).
         """
         selected_name = settings_store.load_radio_selection()
-        for radio in self.source_radios:
-            if radio.text() == selected_name:
-                radio.setChecked(True)
-                break
+        if not selected_name and self.source_radios:
+            self.source_radios[0].setChecked(True)
+        else:
+            for radio in self.source_radios:
+                if radio.text() == selected_name:
+                    radio.setChecked(True)
+                    break
         if not any(radio.isChecked() for radio in self.source_radios):
             self.custom_radio.setChecked(True)
 

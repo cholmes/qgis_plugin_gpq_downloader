@@ -241,6 +241,12 @@ def test_the_radio_selection_is_saved_by_name(clean_settings, dialogs, radio, na
 
 def test_no_radio_checked_saves_custom_url(clean_settings, dialogs):
     dialog = dialogs()
+    # The four radios live in an exclusive QButtonGroup, which refuses to
+    # leave zero buttons checked - setAutoExclusive(False) is a per-button
+    # flag and does not override that, so the group itself must be made
+    # non-exclusive before setChecked(False) can actually clear the one
+    # the dialog defaulted to.
+    dialog.source_button_group.setExclusive(False)
     for radio in (dialog.overture_radio, dialog.sourcecoop_radio, dialog.osm_radio, dialog.custom_radio):
         radio.setAutoExclusive(False)
         radio.setChecked(False)
@@ -290,6 +296,29 @@ def test_plugin_run_with_an_unknown_saved_name_falls_back_to_custom_url(clean_se
         checked = [r for r in ("overture_radio", "sourcecoop_radio", "osm_radio", "custom_radio")
                    if getattr(dialog, r).isChecked()]
         assert checked == ["custom_radio"]
+    finally:
+        dialog.close()
+
+
+def test_plugin_run_does_not_resurrect_a_hidden_radio_via_the_saved_name(clean_settings, iface):
+    """run() must not re-check a radio by name after the dialog's own
+    restore: a hidden radio is still built and still in the button group,
+    so matching the saved name against the four built-in attributes (rather
+    than against dialog.source_radios, which omits hidden ones) would check
+    it anyway, landing the stack on the hidden source's page and letting
+    get_urls() return its URL even though it is invisible (CRITICAL 1)."""
+    import gpq_downloader.gui.user_sources_store as user_sources_store
+
+    config = user_sources_store.load_user_config()
+    config["hidden_sources"] = ["openstreetmap"]
+    user_sources_store.save_user_config(config)
+    clean_settings.setValue("gpq_downloader/radio_selection", "OpenStreetMap", section=QgsSettings.Plugins)
+
+    dialog = run_plugin(iface)
+    try:
+        assert dialog.custom_radio.isChecked()
+        assert not dialog.osm_radio.isChecked()
+        assert dialog.stack.currentIndex() == 0
     finally:
         dialog.close()
 
