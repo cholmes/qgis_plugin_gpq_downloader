@@ -13,8 +13,8 @@ from qgis.gui import QgsCollapsibleGroupBox, QgsFileWidget, QgsOptionsPageWidget
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QCheckBox, QComboBox, QFormLayout, QSpinBox, QVBoxLayout
 
-from gpq_downloader import logger
-from gpq_downloader.core import copy_options, output_formats
+from .. import logger
+from ..core import copy_options, output_formats
 
 from . import settings_store
 
