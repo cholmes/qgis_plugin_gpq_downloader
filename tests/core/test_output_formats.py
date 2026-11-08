@@ -35,3 +35,30 @@ def test_every_offered_format_can_actually_be_written(fmt):
         assert options is None
     else:
         assert options is not None and options.endswith(");")
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("/tmp/a.parquet", "GeoParquet"),
+    ("/tmp/a.duckdb", "DuckDB Database"),
+    ("/tmp/a.gpkg", "GeoPackage"),
+    ("/tmp/a.fgb", "FlatGeobuf"),
+    ("/tmp/a.geojson", "GeoJSON"),
+    # Typed by hand in the save dialog, and written: the plugin takes
+    # uppercase extensions, so remembering them has to as well.
+    ("/tmp/A.GPKG", "GeoPackage"),
+    ("/tmp/My Data.GeoJSON", "GeoJSON"),
+])
+def test_a_written_file_is_matched_to_the_format_it_is(path, expected):
+    assert of.format_for_path(path).name == expected
+
+
+@pytest.mark.parametrize("path", ["/tmp/a.shp", "/tmp/a", "/tmp/parquet", ""])
+def test_an_extension_we_do_not_write_is_not_a_format(path):
+    """None, not a GeoParquet guess.
+
+    format_for() falls back to GeoParquet because a stale *setting* should
+    stay recoverable. This answers a different question - "what did we just
+    write?" - where guessing would mean remembering a format that was never
+    used, and preselecting it on the next download.
+    """
+    assert of.format_for_path(path) is None

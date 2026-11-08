@@ -33,6 +33,8 @@ class SettingsPage(QgsOptionsPageWidget):
         self.format_combo = QComboBox(self)
         self.format_combo.addItems(output_formats.format_names())
 
+        self.remember_format_checkbox = QCheckBox(self)
+
         self.folder_widget = QgsFileWidget(self)
         self.folder_widget.setStorageMode(QgsFileWidget.StorageMode.GetDirectory)
 
@@ -41,9 +43,14 @@ class SettingsPage(QgsOptionsPageWidget):
         self.log_combo = QComboBox(self)
         self.log_combo.addItems(settings_store.LOG_LEVELS)
 
+        # Each default sits above the tick that can override it, so the pair
+        # reads as one decision. "Default" rather than plain "Output format"
+        # because a tick below it makes the row a starting point rather than
+        # what every download uses.
         top_layout = QFormLayout()
-        top_layout.addRow("Output format", self.format_combo)
-        top_layout.addRow("Output folder", self.folder_widget)
+        top_layout.addRow("Default output format", self.format_combo)
+        top_layout.addRow("Remember last format used", self.remember_format_checkbox)
+        top_layout.addRow("Default output folder", self.folder_widget)
         top_layout.addRow("Remember last folder used", self.remember_checkbox)
         top_layout.addRow("Logging level", self.log_combo)
 
@@ -76,6 +83,14 @@ class SettingsPage(QgsOptionsPageWidget):
         self.setLayout(page_layout)
 
         self.codec_combo.currentTextChanged.connect(self._update_level_enabled)
+        self.remember_format_checkbox.toggled.connect(self._update_format_row)
+        self.remember_checkbox.toggled.connect(self._update_folder_row)
+
+        # The configured defaults, held apart from the widgets because a
+        # greyed-out widget shows the last value used instead. _load() fills
+        # them before anything can read them.
+        self._configured_format = output_formats.DEFAULT_FORMAT_NAME
+        self._configured_folder = ""
 
         self._load()
 
@@ -87,18 +102,76 @@ class SettingsPage(QgsOptionsPageWidget):
         """
         self.level_spin.setEnabled(codec == copy_options.LEVELLED_CODEC)
 
+    def _configured_format_now(self):
+        """The configured default format, wherever it currently lives.
+
+        While the combo is live it is the combo, so an edit the user has just
+        made counts. Once "remember last format used" greys it out the combo
+        shows something else, and the configured default is the value saved
+        off at the moment it was greyed.
+        """
+        if self.format_combo.isEnabled():
+            self._configured_format = self.format_combo.currentText()
+        return self._configured_format
+
+    def _configured_folder_now(self):
+        """The configured default folder. See _configured_format_now()."""
+        if self.folder_widget.isEnabled():
+            self._configured_folder = self.folder_widget.filePath()
+        return self._configured_folder
+
+    def _update_format_row(self, remembering):
+        """Grey the format out when the last format used overrides it.
+
+        The greyed combo shows what the next download will really use - the
+        format last written, or the configured default until something has
+        been - so the page never displays a default that is not in effect.
+        That displayed value is not written back on OK: the configured
+        default survives in _configured_format, which is what apply() stores
+        and what unticking brings back.
+        """
+        shown = self._configured_format_now()
+        self.format_combo.setEnabled(not remembering)
+        if remembering:
+            last = settings_store.load_text(settings_store.LAST_OUTPUT_FORMAT)
+            if last in output_formats.format_names():
+                shown = last
+        self.format_combo.setCurrentText(shown)
+
+    def _update_folder_row(self, remembering):
+        """Grey the folder out when the last folder used overrides it.
+
+        The folder's counterpart to _update_format_row(), and the reason the
+        page can say "Default output folder" honestly: ticking the box makes
+        the row report ~/dude once that is where a download went, rather
+        than going quietly inert while still showing the configured path.
+        """
+        shown = self._configured_folder_now()
+        self.folder_widget.setEnabled(not remembering)
+        if remembering:
+            shown = settings_store.load_text(settings_store.LAST_OUTPUT_FOLDER) or shown
+        self.folder_widget.setFilePath(shown)
+
     def _load(self):
         """Fill every widget from settings_store, defaulted the same way."""
-        format_name = settings_store.load_choice(
+        self._configured_format = settings_store.load_choice(
             settings_store.OUTPUT_FORMAT, output_formats.format_names(),
             output_formats.DEFAULT_FORMAT_NAME,
         )
-        self.format_combo.setCurrentText(format_name)
+        self.format_combo.setCurrentText(self._configured_format)
+        self.remember_format_checkbox.setChecked(
+            settings_store.load_flag(settings_store.REMEMBER_LAST_FORMAT, False)
+        )
+        # setChecked only emits toggled() when it changes something, so the
+        # row is settled explicitly. Both handlers are idempotent.
+        self._update_format_row(self.remember_format_checkbox.isChecked())
 
-        self.folder_widget.setFilePath(settings_store.load_text(settings_store.OUTPUT_FOLDER))
+        self._configured_folder = settings_store.load_text(settings_store.OUTPUT_FOLDER)
+        self.folder_widget.setFilePath(self._configured_folder)
         self.remember_checkbox.setChecked(
             settings_store.load_flag(settings_store.REMEMBER_LAST_FOLDER, True)
         )
+        self._update_folder_row(self.remember_checkbox.isChecked())
         self.log_combo.setCurrentText(
             settings_store.load_choice(
                 settings_store.LOG_LEVEL, settings_store.LOG_LEVELS, settings_store.DEFAULT_LOG_LEVEL
@@ -114,8 +187,14 @@ class SettingsPage(QgsOptionsPageWidget):
 
     def apply(self):
         """Write every widget's value back through settings_store."""
-        settings_store.save_value(settings_store.OUTPUT_FORMAT, self.format_combo.currentText())
-        settings_store.save_value(settings_store.OUTPUT_FOLDER, self.folder_widget.filePath())
+        # The configured defaults, not the widgets: a greyed-out row shows
+        # the last value used, and writing that back would erase the default
+        # it stands in for the first time anyone ticked the box.
+        settings_store.save_value(settings_store.OUTPUT_FORMAT, self._configured_format_now())
+        settings_store.save_value(settings_store.OUTPUT_FOLDER, self._configured_folder_now())
+        settings_store.save_value(
+            settings_store.REMEMBER_LAST_FORMAT, self.remember_format_checkbox.isChecked()
+        )
         settings_store.save_value(
             settings_store.REMEMBER_LAST_FOLDER, self.remember_checkbox.isChecked()
         )

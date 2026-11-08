@@ -204,3 +204,71 @@ def test_every_job_in_one_batch_carries_the_settings_as_they_were_at_enqueue(cle
             job.row_group_size,
             job.spatial_sort,
         ) == ("SNAPPY", 9, 50000, False)
+
+
+def test_the_configured_format_wins_when_remembering_is_off(clean_settings, mock_iface, accepted):
+    """Off by default, so a GeoPackage written once changes nothing."""
+    settings_store.save_value(settings_store.OUTPUT_FORMAT, "FlatGeobuf")
+    settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, "GeoPackage")
+    plugin = QgisPluginGeoParquet(mock_iface)
+
+    path, initial_filter = accepted(plugin)
+
+    assert path.endswith(".fgb")
+    assert initial_filter == "FlatGeobuf (*.fgb)"
+
+
+def test_the_format_last_used_wins_when_remembering_is_on(clean_settings, mock_iface, accepted):
+    settings_store.save_value(settings_store.OUTPUT_FORMAT, "FlatGeobuf")
+    settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, "GeoPackage")
+    settings_store.save_value(settings_store.REMEMBER_LAST_FORMAT, True)
+    plugin = QgisPluginGeoParquet(mock_iface)
+
+    path, initial_filter = accepted(plugin)
+
+    assert path.endswith(".gpkg")
+    assert initial_filter == "GeoPackage (*.gpkg)"
+
+
+def test_a_stale_remembered_format_falls_through_to_the_configured_one(
+    clean_settings, mock_iface, accepted
+):
+    """A format name this version no longer offers is not a crash.
+
+    A settings file written by a later version, or one that dropped a
+    format, leaves a name that matches nothing in the table.
+    """
+    settings_store.save_value(settings_store.OUTPUT_FORMAT, "FlatGeobuf")
+    settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, "Shapefile")
+    settings_store.save_value(settings_store.REMEMBER_LAST_FORMAT, True)
+    plugin = QgisPluginGeoParquet(mock_iface)
+
+    path, initial_filter = accepted(plugin)
+
+    assert path.endswith(".fgb")
+    assert initial_filter == "FlatGeobuf (*.fgb)"
+
+
+def test_saving_remembers_the_format_that_was_written(clean_settings, mock_iface, tmp_path, accepted):
+    """By the extension on disk, not the filter that was selected.
+
+    A name typed as "x.gpkg" while the GeoParquet filter is showing is a
+    GeoPackage - that is what copy_options dispatches on - so that is what
+    gets remembered.
+    """
+    plugin = QgisPluginGeoParquet(mock_iface)
+
+    accepted(plugin, chosen=str(tmp_path / "typed_by_hand.gpkg"))
+
+    assert settings_store.load_text(settings_store.LAST_OUTPUT_FORMAT) == "GeoPackage"
+
+
+def test_saving_under_an_unknown_extension_remembers_no_format(
+    clean_settings, mock_iface, tmp_path, accepted
+):
+    """Nothing to preselect next time, so nothing is stored."""
+    plugin = QgisPluginGeoParquet(mock_iface)
+
+    accepted(plugin, chosen=str(tmp_path / "mystery.shp"))
+
+    assert settings_store.load_text(settings_store.LAST_OUTPUT_FORMAT) == ""

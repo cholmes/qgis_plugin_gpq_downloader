@@ -29,10 +29,17 @@ OSM_CHECKBOX = "gpq_downloader/osm_checkbox_{key}"
 OUTPUT_FORMAT = "gpq_downloader/output_format"
 OUTPUT_FOLDER = "gpq_downloader/output_folder"
 REMEMBER_LAST_FOLDER = "gpq_downloader/remember_last_folder"
-# The folder itself, last saved to. This is storage the plugin consults, not
-# a setting the panel shows; REMEMBER_LAST_FOLDER only decides whether it is
-# read. Written by plugin.py, not by the options page.
+# Off by default, where REMEMBER_LAST_FOLDER is on: a remembered folder only
+# changes where a download lands, but a remembered format changes what the
+# file is. One GeoJSON export should not quietly make every later download a
+# GeoJSON, so this one is opt-in.
+REMEMBER_LAST_FORMAT = "gpq_downloader/remember_last_format"
+# The folder and format last written. These are storage the plugin consults,
+# not settings the panel edits; the REMEMBER_* flags decide whether they are
+# read, and the page shows them greyed out when they are. Written by
+# plugin.py after a save, not by the options page.
 LAST_OUTPUT_FOLDER = "gpq_downloader/last_output_folder"
+LAST_OUTPUT_FORMAT = "gpq_downloader/last_output_format"
 COMPRESSION_CODEC = "gpq_downloader/compression_codec"
 COMPRESSION_LEVEL = "gpq_downloader/compression_level"
 ROW_GROUP_SIZE = "gpq_downloader/row_group_size"
