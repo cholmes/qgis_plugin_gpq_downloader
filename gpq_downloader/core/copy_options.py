@@ -14,6 +14,7 @@ bought 0.04 MB at a cost of 1.6 extra seconds, which is not a trade worth
 making the default.
 """
 
+import os.path
 from typing import Optional
 
 CODECS = ("ZSTD", "SNAPPY", "GZIP", "BROTLI", "LZ4", "UNCOMPRESSED")
@@ -63,10 +64,15 @@ def format_options(
 
 
 def _extension(output_file: str) -> str:
-    dot = output_file.rfind(".")
-    if dot == -1:
-        return ""
-    return output_file[dot:].lower()
+    """The lowercased extension of output_file's own name, "" if it has none.
+
+    Split off the basename, not the whole path: rfind(".") over the path
+    reads "/my.data/output" as an extension of ".data/output". Nothing
+    downstream is fooled by that today - an unrecognised extension and an
+    empty one both fall through to the same None below - so this is a trap
+    removed rather than a bug fixed.
+    """
+    return os.path.splitext(output_file)[1].lower()
 
 
 def _parquet_options(

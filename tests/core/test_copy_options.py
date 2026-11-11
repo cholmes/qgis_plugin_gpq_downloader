@@ -54,3 +54,17 @@ def test_a_compression_error_is_reported_with_the_codec_and_where_to_change_it()
 
 def test_an_unrelated_error_is_left_alone():
     assert co.codec_error_advice("IO Error: no such file", "ZSTD") is None
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("/tmp/out.parquet", ".parquet"),
+    ("/tmp/OUT.GeoJSON", ".geojson"),
+    # The point of splitting the basename off first: rfind(".") over the
+    # whole path reads these as extensions of ".data/output" and ".5/out".
+    ("/my.data/output", ""),
+    ("/projects/v2.5/out", ""),
+    ("/my.data/out.gpkg", ".gpkg"),
+    ("/tmp/plain", ""),
+])
+def test_the_extension_comes_from_the_file_name_not_the_path(path, expected):
+    assert co._extension(path) == expected

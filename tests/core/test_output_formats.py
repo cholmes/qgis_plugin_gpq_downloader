@@ -1,3 +1,5 @@
+from unittest import mock
+
 import pytest
 from gpq_downloader.core import copy_options, output_formats as of
 
@@ -62,3 +64,28 @@ def test_an_extension_we_do_not_write_is_not_a_format(path):
     used, and preselecting it on the next download.
     """
     assert of.format_for_path(path) is None
+
+
+def test_the_size_warnings_alternatives_are_the_binary_formats():
+    """FlatGeobuf, GeoPackage, GeoParquet, in the order the dialog shows them.
+
+    Not GeoJSON, which is what triggered the warning, and not a DuckDB
+    database, which is not an interchange file.
+    """
+    assert [f.name for f in of.large_dataset_alternatives()] == [
+        "FlatGeobuf", "GeoPackage", "GeoParquet",
+    ]
+    assert [f.dialog_filter for f in of.large_dataset_alternatives()] == [
+        "FlatGeobuf (*.fgb)", "GeoPackage (*.gpkg)", "GeoParquet (*.parquet)",
+    ]
+
+
+def test_an_alternative_that_left_the_table_is_loud_about_it():
+    """KeyError, not format_for()'s GeoParquet fallback.
+
+    Falling back here would offer the user three entries of which two are
+    GeoParquet, one of them labelled as something else entirely.
+    """
+    with mock.patch.object(of, "LARGE_DATASET_ALTERNATIVES", ("Shapefile",)):
+        with pytest.raises(KeyError):
+            of.large_dataset_alternatives()
