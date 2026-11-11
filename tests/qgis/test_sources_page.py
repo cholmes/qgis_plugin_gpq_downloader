@@ -80,21 +80,14 @@ def test_tree_lists_builtins_and_customs(qgs_app):
         widget.tree.topLevelItem(i).text(0)
         for i in range(widget.tree.topLevelItemCount())
     ]
+    # Source Cooperative is no longer a built-in (it is seeded into
+    # custom_sources instead, #84 follow-up) - PRESETS keeps a
+    # source_cooperative section anyway, to pin that the manager ignores it.
     assert top_texts == [
         "Overture Maps",
-        "Source Cooperative",
         "OpenStreetMap",
         "My Company",
     ]
-
-    sourcecoop = _top_item(widget, "Source Cooperative")
-    dataset_texts = [
-        sourcecoop.child(i).text(0) for i in range(sourcecoop.childCount())
-    ]
-    assert "VIDA Buildings" in dataset_texts  # display_name, not the raw key
-    # No display_name -> falls back to key.title(), the same rule the
-    # dialog itself uses (dialog.py's OSM checkboxes), not the raw key.
-    assert "Other_Dataset" in dataset_texts
 
     custom = _top_item(widget, "My Company")
     assert custom.child(0).text(0) == "Parcels"
@@ -124,14 +117,12 @@ def test_unchecking_builtin_source_adds_to_hidden_sources(qgs_app):
     assert widget.config()["hidden_sources"] == []
 
 
-def test_unchecking_sourcecoop_child_hides_that_dataset(qgs_app):
+def test_unchecking_osm_child_hides_that_dataset_and_rechecking_restores_it(qgs_app):
     widget = SourcesManagerWidget(_config(), PRESETS)
-    sourcecoop = _top_item(widget, "Source Cooperative")
-    child = _child_item(sourcecoop, "VIDA Buildings")
+    osm = _top_item(widget, "OpenStreetMap")
+    child = _child_item(osm, "Buildings")
     child.setCheckState(1, Qt.CheckState.Unchecked)
-    assert widget.config()["hidden_datasets"] == {
-        "source_cooperative": ["vida_buildings"]
-    }
+    assert widget.config()["hidden_datasets"] == {"openstreetmap": ["buildings"]}
 
     child.setCheckState(1, Qt.CheckState.Checked)
     assert widget.config()["hidden_datasets"] == {}
@@ -209,17 +200,28 @@ def test_a_custom_source_cannot_steal_a_builtin_or_custom_url_name(qgs_app):
     radio text the dialog restores against (dialog.py's
     load_radio_button_state(), which matches by text alone), stealing the
     real built-in's restore. Checked case-insensitively, and for both add
-    and rename (finding Minor Sweep a)."""
+    and rename (finding Minor Sweep a).
+
+    "Source Cooperative" is deliberately absent from this list: it is no
+    longer a built-in, just the name the seeded custom group happens to
+    carry, so it must stay exactly as renameable as any other custom
+    source's name (#84 follow-up)."""
     widget = SourcesManagerWidget(_custom_config(), PRESETS)
     before = widget.config()
 
-    for reserved in ("Overture Maps", "source cooperative", "OPENSTREETMAP", "custom url"):
+    for reserved in ("Overture Maps", "OPENSTREETMAP", "custom url"):
         assert widget._add_source({"name": reserved, "info_url": ""}) is False
     assert widget.config() == before
 
     item = _top_item(widget, "My Company")
     assert widget._apply_source_edit(item, {"name": "Overture Maps", "info_url": ""}) is False
     assert widget.config() == before
+
+
+def test_source_cooperative_is_no_longer_a_reserved_name(qgs_app):
+    widget = SourcesManagerWidget(_config(), PRESETS)
+    assert widget._add_source({"name": "Source Cooperative", "info_url": ""}) is True
+    assert _top_item(widget, "Source Cooperative") is not None
 
 
 def test_edit_dataset_updates_config(qgs_app):

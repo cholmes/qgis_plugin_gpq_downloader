@@ -2,7 +2,7 @@
 
 SourcesManagerWidget edits an in-memory, deep-copied user_sources.json config
 (core/user_sources.py's shape) against a two-column QTreeWidget listing every
-source - the three built-ins read from core/presets.py plus whatever custom
+source - the two built-ins read from core/presets.py plus whatever custom
 sources the config already carries. Nothing here touches disk: SettingsPage's
 apply() is what persists config() through user_sources_store.save_user_config().
 _export_to()/_import_from() read and write a file the user picks directly,
@@ -42,7 +42,6 @@ from gpq_downloader.core import user_sources
 # keyed by the config/presets source key.
 BUILTIN_SOURCE_LABELS = {
     "overture": "Overture Maps",
-    "source_cooperative": "Source Cooperative",
     "openstreetmap": "OpenStreetMap",
 }
 
@@ -197,13 +196,14 @@ class SourcesManagerWidget(QWidget):
     """One QTreeWidget of every source - built-in and custom - plus buttons
     to add/edit/remove custom content and to tick built-in visibility.
 
-    Built-in rows carry a visibility checkbox: at the source level for all
-    three built-ins, and at the dataset level only for the two sources in
-    `core.user_sources.DATASET_HIDEABLE_SOURCES` (source_cooperative,
+    Built-in rows carry a visibility checkbox: at the source level for both
+    built-ins, and at the dataset level only for the sources in
+    `core.user_sources.DATASET_HIDEABLE_SOURCES` (currently just
     openstreetmap) - Overture's children render with no checkbox at all,
     information only, since its page is a curated layout where per-dataset
     hiding would be inconsistent. Custom rows never carry a checkbox: custom
-    content is edited or removed, not hidden.
+    content is edited or removed, not hidden - which is also how the seeded
+    "Source Cooperative" group (no longer a built-in) is hidden or pruned.
     """
 
     def __init__(self, config, presets, parent=None):
