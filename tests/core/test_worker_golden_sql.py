@@ -47,7 +47,7 @@ COUNT = "SELECT COUNT(*) FROM download_data"
 CLEANUP = "DROP TABLE IF EXISTS download_data"
 
 FORMAT_OPTIONS = {
-    "parquet": "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 22);",
+    "parquet": "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 15);",
     "gpkg": "(FORMAT GDAL, DRIVER 'GPKG', SRS 'EPSG:4326');",
     "fgb": "(FORMAT GDAL, DRIVER 'FlatGeobuf', SRS 'EPSG:4326');",
     "geojson": "(FORMAT GDAL, DRIVER 'GeoJSON', SRS 'EPSG:4326');",
@@ -60,6 +60,10 @@ def copy(geometry, output_file, options):
         f"FROM download_data ) SELECT t.* FROM download_data AS t CROSS JOIN bbox "
         f'ORDER BY ST_Hilbert(t."{geometry}", bbox.b) ) TO \'{output_file}\' {options}'
     )
+
+
+def copy_unsorted(output_file, options):
+    return f"COPY ( SELECT * FROM download_data ) TO '{output_file}' {options}"
 
 
 OVERTURE_GLOB = "s3://overturemaps-us-west-2/release/2026-09-23.1/theme=buildings/type=building/*"
@@ -249,6 +253,59 @@ def test_golden_sql(source, fmt, monkeypatch):
     assert worker.validation_results == golden["results"]
     assert conn.closed and conn.connect_args == () and conn.commits == 0
     assert worker.conn is None
+
+
+@pytest.mark.parametrize("fmt", ["parquet", "gpkg"])
+def test_spatial_sort_off_drops_the_hilbert_order_and_its_cte(monkeypatch, fmt):
+    source = SOURCES["custom_https"]
+    output_file = f"{OUT}.{fmt}"
+    _, conn, signals = run_worker(source, output_file, monkeypatch, spatial_sort=False)
+    got = statements(conn)
+    assert copy_unsorted(output_file, FORMAT_OPTIONS[fmt]) in got
+    assert not any("ST_Hilbert" in s for s in got)
+    assert signals[-2:] == [("load_layer", output_file), ("finished",)]
+
+
+def test_row_group_size_reaches_the_copy_options(monkeypatch):
+    output_file = f"{OUT}.parquet"
+    _, conn, signals = run_worker(SOURCES["custom_https"], output_file, monkeypatch, row_group_size=15000)
+    got = statements(conn)
+    options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 15, ROW_GROUP_SIZE 15000);"
+    assert got[-2] == copy("geom", output_file, options)
+    assert signals[-2:] == [("load_layer", output_file), ("finished",)]
+
+
+def test_a_non_default_codec_and_level_reach_the_copy(monkeypatch):
+    """The codec and level the job carries, not copy_options' defaults.
+
+    Without this, hardcoding DEFAULT_CODEC/DEFAULT_COMPRESSION_LEVEL inside
+    worker.py broke nothing in the suite: every other COPY assertion here
+    uses the defaults, so the two were indistinguishable.
+    """
+    output_file = f"{OUT}.parquet"
+    _, conn, signals = run_worker(
+        SOURCES["custom_https"], output_file, monkeypatch,
+        compression_codec="ZSTD", compression_level=9,
+    )
+    options = "(FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 9);"
+    assert statements(conn)[-2] == copy("geom", output_file, options)
+    assert signals[-2:] == [("load_layer", output_file), ("finished",)]
+
+
+def test_a_non_zstd_codec_reaches_the_copy_without_a_level(monkeypatch):
+    """GZIP is written as asked, and DuckDB is given no COMPRESSION_LEVEL.
+
+    Passing one with any codec but ZSTD is a Binder Error, so this is both
+    halves at once: the codec travels, and the clause stays behind.
+    """
+    output_file = f"{OUT}.parquet"
+    _, conn, signals = run_worker(
+        SOURCES["custom_https"], output_file, monkeypatch,
+        compression_codec="GZIP", compression_level=9,
+    )
+    options = "(FORMAT 'parquet', COMPRESSION 'GZIP');"
+    assert statements(conn)[-2] == copy("geom", output_file, options)
+    assert signals[-2:] == [("load_layer", output_file), ("finished",)]
 
 
 def test_read_url_is_the_resolved_url(monkeypatch):
@@ -501,21 +558,69 @@ def test_upper_case_parquet_extension_converts_columns(monkeypatch):
     assert signals[-2:] == [("load_layer", output_file), ("finished",)]
 
 
-@pytest.mark.parametrize("ext", ["GPKG", "FGB", "GeoJSON", "shp"])
-def test_unsupported_or_upper_case_extension(monkeypatch, ext):
-    """Oddity: the GDAL formats are matched case-sensitively, so OUT.GPKG is
-    "Unsupported file format." -- and then a second error, because the COPY
-    is still built from the format options that were never set."""
+@pytest.mark.parametrize("ext", ["GPKG", "FGB", "GeoJSON"])
+def test_upper_case_gdal_extension_now_matches_case_insensitively(monkeypatch, ext):
+    """copy_options.format_options() lowers the extension before matching it,
+    so unlike the old four-branch check OUT.GPKG now gets written as a
+    GeoPackage rather than falling into "Unsupported file format."."""
     output_file = f"{OUT}.{ext}"
     source = geojson_source(3) if ext.lower() == "geojson" else SOURCES["custom_https"]
     _, conn, signals = run_worker(source, output_file, monkeypatch)
     got = statements(conn)
+    assert got[-2] == copy("geom", output_file, FORMAT_OPTIONS[ext.lower()])
+    assert signals[-2:] == [("load_layer", output_file), ("finished",)]
+
+
+def test_an_unsupported_extension_emits_one_error_and_stops(monkeypatch):
+    """The latent bug this fixes: "Unsupported file format." used to fall
+    through to a COPY built from an unbound format_options, raising a
+    NameError that was reported as a second, unreadable error. Now it
+    returns, so only the one readable error is emitted and nothing runs
+    after it."""
+    output_file = f"{OUT}.shp"
+    _, conn, signals = run_worker(SOURCES["custom_https"], output_file, monkeypatch)
+    got = statements(conn)
     assert got[-1] == CLEANUP
     assert not any(s.startswith("COPY") for s in got)
-    errors = [s for s in signals if s[0] == "error"]
-    assert errors[0] == ("error", "Unsupported file format.")
-    assert len(errors) == 2 and "format_options" in errors[1][1]
-    assert ("finished",) not in signals and not any(s[0] == "load_layer" for s in signals)
+    assert signals[-1] == ("error", "Unsupported file format.")
+    assert not any(s[0] in ("finished", "load_layer") for s in signals)
+
+
+def test_a_codec_failure_is_turned_into_readable_advice(monkeypatch):
+    """A DuckDB error about the chosen codec is replaced with
+    copy_options.codec_error_advice()'s message instead of DuckDB's raw text,
+    and the worker stops cleanly rather than running anything after it."""
+    source = SOURCES["custom_https"]
+    output_file = f"{OUT}.parquet"
+
+    def respond(sql):
+        if isinstance(sql, str) and squash(sql).startswith("COPY"):
+            raise duckdb.BinderException("Binder Error: Unsupported compression codec BROTLI")
+        return source.respond(sql)
+
+    _, conn, signals = run_worker(
+        source, output_file, monkeypatch, responder=respond, compression_codec="BROTLI",
+    )
+    assert statements(conn)[-1] == CLEANUP
+    assert signals[-1][0] == "error"
+    assert "BROTLI" in signals[-1][1] and "Settings" in signals[-1][1]
+    assert not any(s[0] in ("finished", "load_layer") for s in signals)
+
+
+def test_an_unrelated_copy_failure_is_reported_unchanged(monkeypatch):
+    """An error that codec_error_advice() does not recognize as being about
+    compression is re-raised unchanged, so it reaches run()'s own handler and
+    is shown as DuckDB's own text, as before this change."""
+    source = SOURCES["custom_https"]
+
+    def respond(sql):
+        if isinstance(sql, str) and squash(sql).startswith("COPY"):
+            raise duckdb.IOException("IO Error: disk full")
+        return source.respond(sql)
+
+    _, conn, signals = run_worker(source, f"{OUT}.parquet", monkeypatch, responder=respond)
+    assert statements(conn)[-1] == CLEANUP
+    assert signals[-1] == ("error", "IO Error: disk full")
 
 
 def test_quotes_in_the_url_and_output_path_are_escaped(monkeypatch):
@@ -526,7 +631,7 @@ def test_quotes_in_the_url_and_output_path_are_escaped(monkeypatch):
     got = statements(conn)
     assert got[len(PREAMBLE) + 1] == "DESCRIBE SELECT * FROM read_parquet('https://example.com/it''s/data.parquet')"
     assert got[-2].endswith(
-        "TO '/nonexistent/o''neil/out.parquet' (FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 22);"
+        "TO '/nonexistent/o''neil/out.parquet' (FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 15);"
     )
 
 

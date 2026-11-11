@@ -36,7 +36,7 @@ PREAMBLE = [
 COPY_PARQUET = (
     'COPY ( WITH bbox AS ( SELECT ST_Extent(ST_Extent_Agg("geom"))::BOX_2D AS b FROM download_data ) '
     'SELECT t.* FROM download_data AS t CROSS JOIN bbox ORDER BY ST_Hilbert(t."geom", bbox.b) ) '
-    f"TO '{OUT}' (FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 22);"
+    f"TO '{OUT}' (FORMAT 'parquet', COMPRESSION 'ZSTD', COMPRESSION_LEVEL 15);"
 )
 BBOX = "STRUCT(xmin DOUBLE, ymin DOUBLE, xmax DOUBLE, ymax DOUBLE)"
 

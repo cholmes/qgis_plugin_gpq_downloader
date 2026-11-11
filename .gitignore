@@ -248,3 +248,6 @@ fabric.properties
 # Claude Code: local settings stay out; shared skills are tracked
 .claude/*
 !.claude/skills/
+
+# Subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/

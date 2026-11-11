@@ -17,7 +17,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-from qgis.core import QgsApplication, QgsCoordinateReferenceSystem, QgsProject, QgsRectangle, QgsSettings, QgsVectorLayer
+from qgis.core import QgsApplication, QgsCoordinateReferenceSystem, QgsProject, QgsRectangle, QgsVectorLayer
 from qgis.PyQt.QtCore import QCoreApplication, QEvent
 
 from gpq_downloader.dialog import DataSourceDialog
@@ -27,21 +27,6 @@ from gpq_downloader.plugin import QgisPluginGeoParquet
 DATA = os.path.join(os.path.dirname(__file__), "data", "geom_bbox_named.parquet")
 CANVAS_EXTENT = QgsRectangle(10, 10, 11, 11)
 TIMEOUT = 120
-
-
-@pytest.fixture
-def clean_settings(qgs_app):
-    """No remembered dialog state (an AOI box left ticked would stop for a prompt)."""
-    settings = QgsSettings()
-    keys = [k for k in settings.allKeys() if k.startswith(("plugins/gpq_downloader/", "gpq_downloader/"))]
-    saved = {k: settings.value(k) for k in keys}
-    for key in keys:
-        settings.remove(key)
-    yield
-    for key in [k for k in settings.allKeys() if k.startswith(("plugins/gpq_downloader/", "gpq_downloader/"))]:
-        settings.remove(key)
-    for key, value in saved.items():
-        settings.setValue(key, value)
 
 
 @pytest.fixture

@@ -214,8 +214,13 @@ def test_a_filter_duckdb_accepts_closes_the_dialog(dialog):
     assert probes == [f"SELECT 1 FROM read_parquet('{URL}') WHERE (confidence > 0.9) LIMIT 0"]
 
 
-def accept_into_plugin(mock_iface, dialog, tmp_path):
-    """Run the plugin's accept handler on `dialog`; returns the Worker class mock."""
+def accept_into_plugin(mock_iface, dialog, tmp_path, clean_settings):
+    """Run the plugin's accept handler on `dialog`; returns the Worker class mock.
+
+    clean_settings: handle_dialog_accepted now writes LAST_OUTPUT_FOLDER
+    through settings_store, which is real QgsSettings - not isolated by
+    HOME on this machine. Every caller must pass it.
+    """
     plugin = QgisPluginGeoParquet(mock_iface)
     output = str(tmp_path / "out.parquet")
     with patch("gpq_downloader.plugin.QFileDialog.getSaveFileName", return_value=(output, "GeoParquet (*.parquet)")), \
@@ -232,17 +237,17 @@ def accept_into_plugin(mock_iface, dialog, tmp_path):
     ("   ", None),
     ("  confidence > 0.9 AND class = 'school' ", "confidence > 0.9 AND class = 'school'"),
 ])
-def test_the_filter_reaches_the_worker(mock_iface, dialog, tmp_path, text, expected):
+def test_the_filter_reaches_the_worker(mock_iface, dialog, tmp_path, clean_settings, text, expected):
     dialog.custom_radio.setChecked(True)
     dialog.url_input.setText(URL)
     dialog.filter_input.setText(text)
-    plugin, worker = accept_into_plugin(mock_iface, dialog, tmp_path)
+    plugin, worker = accept_into_plugin(mock_iface, dialog, tmp_path, clean_settings)
     assert worker.call_args.args[0] == URL
     assert worker.call_args.kwargs["where_fragment"] == expected
     assert plugin.where_fragment == expected
 
 
-def test_a_mocked_dialog_gives_the_worker_no_filter(mock_iface, tmp_path):
+def test_a_mocked_dialog_gives_the_worker_no_filter(mock_iface, tmp_path, clean_settings):
     """A MagicMock dialog answers get_where_fragment() with a MagicMock, which
     must not reach the SQL."""
     dialog = MagicMock()
@@ -251,7 +256,7 @@ def test_a_mocked_dialog_gives_the_worker_no_filter(mock_iface, tmp_path):
     dialog.aoi_geometry = None
     for radio in ("overture_radio", "sourcecoop_radio", "osm_radio"):
         getattr(dialog, radio).isChecked.return_value = False
-    _, worker = accept_into_plugin(mock_iface, dialog, tmp_path)
+    _, worker = accept_into_plugin(mock_iface, dialog, tmp_path, clean_settings)
     assert worker.call_args.kwargs["where_fragment"] is None
 
 

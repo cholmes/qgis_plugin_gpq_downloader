@@ -9,7 +9,7 @@ from gpq_downloader/dialog.py (#195), which re-exports its names until 1.0
 
 import json
 
-from qgis.core import QgsBlockingNetworkRequest
+from qgis.core import QgsApplication, QgsBlockingNetworkRequest
 from qgis.PyQt.QtNetwork import QNetworkRequest
 from qgis.PyQt.QtWidgets import (
     QMessageBox,
@@ -54,6 +54,7 @@ from ..core.presets import load_presets
 from . import settings_store
 from .extent import AoiHighlighter, AreaOfInterestMixin
 from .flow_layout import FlowLayout, FlowWidget
+from .settings_page import PAGE_OBJECT_NAME
 
 # How many OpenStreetMap preset checkboxes go on a row before wrapping.
 OSM_CHECKBOX_COLUMNS = 5
@@ -671,6 +672,21 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         # Buttons
         button_layout = QHBoxLayout()
+        self.settings_button = QToolButton()
+        self.settings_button.setToolTip(
+            "Settings for downloads: format, folder, compression"
+        )
+        # QGIS's own options icon, the same way the extent panel takes its
+        # icons; the gear glyph is the fallback, since U+2699 renders as an
+        # empty box on a font set without Miscellaneous Technical coverage
+        settings_icon = QgsApplication.getThemeIcon("/mActionOptions.svg")
+        if settings_icon.isNull():
+            self.settings_button.setText("⚙")
+        else:
+            self.settings_button.setIcon(settings_icon)
+        self.settings_button.clicked.connect(self.open_settings)
+        button_layout.addWidget(self.settings_button)
+        button_layout.addStretch()
         self.ok_button = QPushButton("OK")
         self.cancel_button = QPushButton("Cancel")
         button_layout.addWidget(self.ok_button)
@@ -1338,6 +1354,16 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self.filter_status.setStyleSheet(style)
         self.filter_status.setVisible(bool(text))
         self.filter_input.setStyleSheet(_FIELD_ERROR if style == _STATUS_ERROR else "")
+
+    def open_settings(self):
+        """Open QGIS's Options dialog on this plugin's settings page.
+
+        A no-op when there is no iface - several tests construct the dialog
+        with iface=None, and the gear button must not raise for them.
+        """
+        if self.iface is None:
+            return
+        self.iface.showOptionsDialog(self, PAGE_OBJECT_NAME)
 
     def show_filter_help(self):
         """Open the filter help, or raise the window already open.

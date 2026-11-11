@@ -101,7 +101,7 @@ def test_plugin_queues_buildings_and_building_parts_separately(
     mock_dialog.return_value = dialog_instance
 
     # Accept the default path each time
-    mock_save_dialog.side_effect = lambda parent, title, path, filters: (path, "GeoParquet (*.parquet)")
+    mock_save_dialog.side_effect = lambda *args, **kwargs: (args[2], "GeoParquet (*.parquet)")
 
     with patch('gpq_downloader.plugin.datetime') as mock_datetime:
         mock_datetime.datetime.now.return_value.strftime.return_value = "20230101_120000"
@@ -116,7 +116,9 @@ def test_plugin_queues_buildings_and_building_parts_separately(
     ]
 
 
-def test_plugin_names_the_building_parts_layer_apart_from_buildings(qgs_app, mock_iface):
+def test_plugin_names_the_building_parts_layer_apart_from_buildings(qgs_app, mock_iface, clean_settings):
+    # clean_settings: process_download_queue reads settings_store (the
+    # write-settings snapshot), which is real QgsSettings on this machine.
     plugin = QgisPluginGeoParquet(mock_iface)
     plugin.where_fragment = None
     plugin.clip_to_area = False
@@ -213,7 +215,7 @@ def test_plugin_initialization(qgs_app, mock_iface):
     assert not plugin.downloads.is_busy
     assert isinstance(plugin.download_dir, Path)
 
-def test_plugin_init_gui(qgs_app, mock_iface):
+def test_plugin_init_gui(clean_settings, restore_level, qgs_app, mock_iface):
     """Test initGui method"""
     plugin = QgisPluginGeoParquet(mock_iface)
     plugin.initGui()
@@ -226,7 +228,7 @@ def test_plugin_init_gui(qgs_app, mock_iface):
     assert len(mock_iface.toolbar_icons) == 1
     assert mock_iface.toolbar_icons[0] == plugin.action
 
-def test_plugin_unload(qgs_app, mock_iface):
+def test_plugin_unload(clean_settings, restore_level, qgs_app, mock_iface):
     """Test plugin unload"""
     plugin = QgisPluginGeoParquet(mock_iface)
     plugin.initGui()  # Add the icon first

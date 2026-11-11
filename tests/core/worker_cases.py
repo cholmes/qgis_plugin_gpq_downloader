@@ -164,7 +164,8 @@ SIGNALS = ("progress", "info", "error", "load_layer", "finished", "file_size_war
 
 
 def run_worker(source, output_file, monkeypatch, *, responder=None, clip=False, validation_results=None,
-               layer_name=None, before_run=None, where_fragment=None):
+               layer_name=None, before_run=None, where_fragment=None, spatial_sort=True,
+               compression_codec=None, compression_level=None, row_group_size=None):
     """Run a Worker on `source` against a recording connection.
 
     Returns (worker, connection, signals): signals is every emission in order,
@@ -180,10 +181,18 @@ def run_worker(source, output_file, monkeypatch, *, responder=None, clip=False, 
         connections.append(conn)
         return conn
 
+    kwargs = {"spatial_sort": spatial_sort}
+    if compression_codec is not None:
+        kwargs["compression_codec"] = compression_codec
+    if compression_level is not None:
+        kwargs["compression_level"] = compression_level
+    if row_group_size is not None:
+        kwargs["row_group_size"] = row_group_size
+
     worker = Worker(
         source.url, WINDOW, output_file, FakeIface(),
         dict(validation_results or {}), layer_name, clip_to_area=clip,
-        connection_factory=connect, where_fragment=where_fragment,
+        connection_factory=connect, where_fragment=where_fragment, **kwargs,
     )
     signals = []
     for name in SIGNALS:
