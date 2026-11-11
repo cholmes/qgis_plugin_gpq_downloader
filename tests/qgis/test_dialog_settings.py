@@ -416,3 +416,58 @@ def test_accept_saves_the_extent_load_last_extent_cannot_restore(clean_settings,
 def test_accept_without_an_extent_saves_nothing(clean_settings, dialogs):
     dialogs().accept()
     assert our_keys() == []
+
+
+def test_a_checked_custom_source_dataset_carries_its_stored_validation(
+    clean_settings, iface, tmp_path
+):
+    """A download of a dataset the Data Sources manager already probed
+    (Task B / #84 follow-up) carries that stored result into its
+    DownloadJob as a hint instead of the {} every job got before; the
+    Worker still re-checks it per download, this just lets it skip
+    rediscovering what is already known."""
+    config = user_sources_store.load_user_config()
+    config["custom_sources"] = [
+        {
+            "name": "My Co",
+            "info_url": "",
+            "datasets": [
+                {
+                    "name": "Parcels",
+                    "url": "https://example.com/parcels.parquet",
+                    "info_url": "",
+                    "group": "",
+                    "validation": {
+                        "has_bbox": True,
+                        "bbox_column": "bbox",
+                        "geometry_column": "geometry",
+                    },
+                }
+            ],
+        }
+    ]
+    user_sources_store.save_user_config(config)
+
+    plugin = QgisPluginGeoParquet(iface)
+    dialog = DataSourceDialog(None, iface)
+    dialog.custom_source_radios["My Co"].setChecked(True)
+    dialog.custom_checkboxes["My Co"]["Parcels"].setChecked(True)
+
+    try:
+        with patch(
+            "gpq_downloader.plugin.QFileDialog.getSaveFileName",
+            side_effect=lambda *a, **k: (
+                str(tmp_path / "out.parquet"), "GeoParquet (*.parquet)",
+            ),
+        ):
+            with patch.object(plugin.downloads, "enqueue", return_value=0) as enqueue:
+                plugin.handle_dialog_accepted(dialog)
+
+        [job] = enqueue.call_args[0][0]
+        assert job.validation_results == {
+            "has_bbox": True,
+            "bbox_column": "bbox",
+            "geometry_column": "geometry",
+        }
+    finally:
+        dialog.close()

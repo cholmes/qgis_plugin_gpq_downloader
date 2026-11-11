@@ -50,6 +50,8 @@ If your QGIS doesn't have GeoParquet support you'll get a warning dialog after t
 
 If you regularly download from your own GeoParquet source, you don't have to retype the URL every time. Go to `Settings > Options`, find the "GeoParquet Downloader" page, and open its "Data Sources" tab. From there you can add your own source (it appears as its own option, with its own page, in the main dialog) and give it preset datasets, each with a name and URL, so they show up alongside Overture and OpenStreetMap. The same tab also lets you hide any of the built-in sources, or individual datasets within them, if you don't use them and would rather not see them in the dialog.
 
+When you add a dataset (or change its URL), the plugin checks it right there - a quick, cancelable probe that reads the URL and remembers what it found. That way a bad URL turns up immediately instead of only when you try to download, and downloads of an already-checked dataset skip re-discovering its columns.
+
 Source Cooperative itself is just such a group: it's seeded in on first run as a worked example, pointing at a handful of datasets published there. Since it's an ordinary editable group like any you'd create yourself, you can rename it, add or remove its datasets, or delete it entirely.
 
 This configuration lives in `user_sources.json`, inside this QGIS profile's `gpq_downloader` folder. It's plain JSON, so you can hand-edit it directly if you prefer, or use the Import/Export buttons on the Data Sources tab to back it up or share your custom sources with someone else running the plugin. If you do hand-edit it, note that `hidden_datasets` is keyed by each source's internal preset key, not the label shown in the dialog - use Export to see the real keys before editing them.
