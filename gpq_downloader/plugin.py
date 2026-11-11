@@ -26,7 +26,7 @@ from .logger import message_level, set_level
 from .qgis_io.manager import DownloadManager
 from .qgis_io.worker import Worker
 from .core import output_formats
-from .core.plan import DownloadJob, custom_file_stem, overture_file_stem, overture_layer_name
+from .core.plan import DownloadJob, custom_file_stem, dataset_file_stem, overture_file_stem, overture_layer_name
 
 
 class QgisPluginGeoParquet:
@@ -344,7 +344,16 @@ class QgisPluginGeoParquet:
                 layer_name = url.split('/')[-1].replace('.parquet', '')
                 filename = f"osm_{layer_name}_{current_date}{extension}"
             else:
-                filename = f"{custom_file_stem(url)}_{current_date}{extension}"
+                # A custom-source dataset the user added/edited in the Data
+                # Sources manager is named after itself rather than its URL
+                # (#84 follow-up); a typed-in Custom URL (or a mocked dialog
+                # in a test, whose attribute is a MagicMock rather than a
+                # real tuple or None) keeps the URL-derived name.
+                label = dialog.custom_dataset_label_for(url)
+                if isinstance(label, tuple) and len(label) == 2:
+                    filename = f"{dataset_file_stem(*label)}_{current_date}{extension}"
+                else:
+                    filename = f"{custom_file_stem(url)}_{current_date}{extension}"
 
             default_save_path = str(self.starting_dir() / filename)
 

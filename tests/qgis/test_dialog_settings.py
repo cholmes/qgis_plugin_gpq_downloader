@@ -471,3 +471,45 @@ def test_a_checked_custom_source_dataset_carries_its_stored_validation(
         }
     finally:
         dialog.close()
+
+
+def test_a_checked_custom_source_datasets_filename_is_named_after_it(
+    clean_settings, iface, tmp_path
+):
+    """A download of a custom-source dataset suggests a file name built from
+    its group and dataset name (core.plan.dataset_file_stem(), Task C / #84
+    follow-up) instead of one derived from its URL."""
+    config = user_sources_store.load_user_config()
+    config["custom_sources"] = [
+        {
+            "name": "My Co",
+            "info_url": "",
+            "datasets": [
+                {
+                    "name": "Parcels",
+                    "url": "https://example.com/parcels.parquet",
+                    "info_url": "",
+                    "group": "",
+                }
+            ],
+        }
+    ]
+    user_sources_store.save_user_config(config)
+
+    plugin = QgisPluginGeoParquet(iface)
+    dialog = DataSourceDialog(None, iface)
+    dialog.custom_source_radios["My Co"].setChecked(True)
+    dialog.custom_checkboxes["My Co"]["Parcels"].setChecked(True)
+
+    try:
+        with patch(
+            "gpq_downloader.plugin.QFileDialog.getSaveFileName",
+            return_value=(str(tmp_path / "out.parquet"), "GeoParquet (*.parquet)"),
+        ) as save_dialog:
+            with patch.object(plugin.downloads, "enqueue", return_value=0):
+                plugin.handle_dialog_accepted(dialog)
+
+        default_save_path = save_dialog.call_args[0][2]
+        assert os.path.basename(default_save_path).startswith("My_Co_Parcels_")
+    finally:
+        dialog.close()

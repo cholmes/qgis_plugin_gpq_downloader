@@ -35,6 +35,25 @@ def custom_file_stem(url):
     return "custom_download"
 
 
+def dataset_file_stem(group_name, dataset_name):
+    """A file name stem for a custom-source dataset (#84 follow-up): its
+    group and dataset name, each slugged the same way custom_file_stem slugs
+    a URL's path segment, then joined with "_".
+
+    ("Source Cooperative", "VIDA Buildings") -> "Source_Cooperative_VIDA_Buildings"
+
+    Either part can slug away to nothing (blank, or only punctuation); the
+    other still names the file. Both empty -> "custom_download", the same
+    fallback custom_file_stem uses.
+    """
+    parts = []
+    for part in (group_name, dataset_name):
+        slugged = re.sub(r"[^A-Za-z0-9_-]+", "_", str(part)).strip("_")
+        if slugged:
+            parts.append(slugged)
+    return "_".join(parts) if parts else "custom_download"
+
+
 # Presets whose type is told apart from the rest of their theme by name:
 # building_part shares theme=buildings with building, and the three divisions
 # subtypes share theme=divisions, so naming by theme alone would give those

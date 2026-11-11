@@ -409,6 +409,33 @@ def test_validation_hints_for_a_validated_dataset(clean_settings, iface):
     dialog.close()
 
 
+def test_custom_dataset_label_for_a_known_url_and_none_for_an_unknown_one(
+    clean_settings, iface
+):
+    write_config(
+        custom_sources=[
+            _custom_source(
+                datasets=[
+                    {
+                        "name": "Parcels",
+                        "url": "https://example.com/parcels.parquet",
+                        "info_url": "",
+                        "group": "",
+                    },
+                ]
+            )
+        ]
+    )
+    dialog = DataSourceDialog(None, iface)
+
+    assert dialog.custom_dataset_label_for("https://example.com/parcels.parquet") == (
+        "My Company Data",
+        "Parcels",
+    )
+    assert dialog.custom_dataset_label_for("https://example.com/unknown.parquet") is None
+    dialog.close()
+
+
 def test_custom_radio_selection_remembered(clean_settings, iface):
     write_config(custom_sources=[_custom_source()])
 

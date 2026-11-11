@@ -379,6 +379,19 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             if isinstance(dataset, dict) and "validation" in dataset
         }
 
+        # Every custom-source dataset's own (group, name), keyed by its URL
+        # (Task C / #84 follow-up) - unlike custom_dataset_validation above,
+        # this covers every one of them, validated or not, so a download of
+        # any of them can be named after the dataset instead of its URL
+        # (custom_dataset_label_for(), below). A typed-in Custom URL matches
+        # no key here, so that path keeps its URL-derived name.
+        self.custom_dataset_names = {
+            dataset["url"]: (source["name"], dataset["name"])
+            for source in self.user_config.get("custom_sources", [])
+            for dataset in source.get("datasets", [])
+            if isinstance(dataset, dict)
+        }
+
         # A custom source with no datasets gets no radio and no page at all
         # (Design) - sanitize_config lets one through (a source is valid with
         # an empty datasets list), so it is filtered out once here and reused
@@ -1781,6 +1794,14 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         when none are stored. plugin.py passes this to the Worker as hints,
         which it still re-checks per download (Task B / #84 follow-up)."""
         return self.custom_dataset_validation.get(url, {})
+
+    def custom_dataset_label_for(self, url):
+        """The (group name, dataset name) tuple for a custom-source
+        dataset's own URL, or None when `url` is not any custom-source
+        dataset's URL (a typed-in Custom URL, say). plugin.py uses this to
+        name a download's file after the dataset instead of its URL
+        (core.plan.dataset_file_stem(), Task C / #84 follow-up)."""
+        return self.custom_dataset_names.get(url)
 
     def get_urls(self, release=None):
         """Returns a list of URLs for selected datasets

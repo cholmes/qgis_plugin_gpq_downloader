@@ -6,6 +6,7 @@ import sys
 import textwrap
 from unittest.mock import MagicMock
 
+from gpq_downloader.core.plan import dataset_file_stem
 from gpq_downloader.qgis_io import duckdb_setup
 from gpq_downloader.plugin import QgisPluginGeoParquet, custom_file_stem
 
@@ -125,3 +126,14 @@ def test_custom_file_stem():
     assert custom_file_stem("s3://bucket/data/a=b.parquet") == "a_b"
     assert custom_file_stem("s3://bucket/*.parquet") == "custom_download"
     assert custom_file_stem("https://host/my file (1).parquet") == "my_file_1"
+
+
+def test_dataset_file_stem():
+    assert (
+        dataset_file_stem("Source Cooperative", "VIDA Buildings")
+        == "Source_Cooperative_VIDA_Buildings"
+    )
+    assert dataset_file_stem("My Co!", "") == "My_Co"
+    assert dataset_file_stem("", "Parcels 2025") == "Parcels_2025"
+    assert dataset_file_stem("", "") == "custom_download"
+    assert dataset_file_stem("***", "###") == "custom_download"
