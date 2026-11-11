@@ -231,6 +231,7 @@ class SourcesManagerWidget(QWidget):
         self.remove_button = QPushButton("Remove", self)
         self.import_button = QPushButton("Import…", self)
         self.export_button = QPushButton("Export…", self)
+        self.restore_defaults_button = QPushButton("Restore Defaults", self)
 
         self.new_source_button.clicked.connect(self._on_new_source)
         self.add_dataset_button.clicked.connect(self._on_add_dataset)
@@ -238,6 +239,7 @@ class SourcesManagerWidget(QWidget):
         self.remove_button.clicked.connect(self._on_remove)
         self.import_button.clicked.connect(self._on_import)
         self.export_button.clicked.connect(self._on_export)
+        self.restore_defaults_button.clicked.connect(self._on_restore_defaults)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.new_source_button)
@@ -247,6 +249,7 @@ class SourcesManagerWidget(QWidget):
         button_row.addStretch()
         button_row.addWidget(self.import_button)
         button_row.addWidget(self.export_button)
+        button_row.addWidget(self.restore_defaults_button)
 
         layout = QVBoxLayout()
         layout.addWidget(self.tree)
@@ -881,3 +884,30 @@ class SourcesManagerWidget(QWidget):
         )
         if path:
             self._import_from(path)
+
+    def _on_restore_defaults(self):
+        """Replaces the in-memory config with a fresh default_config(), plus
+        the seeded Source Cooperative group when the bundled presets still
+        have one - the same state a brand-new profile starts with (Task C /
+        #84 follow-up). Like Import, this only replaces the staged config;
+        it is not written to disk until the user hits Apply/OK."""
+        reply = QMessageBox.question(
+            self,
+            "Restore Defaults",
+            "Replace all data-source customizations with the defaults? This "
+            "removes your custom groups and visibility choices and restores "
+            "the Source Cooperative example group.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        config = user_sources.default_config()
+        if "source_cooperative" in self._presets:
+            config["custom_sources"] = [
+                user_sources.source_cooperative_group(self._presets)
+            ]
+
+        self._config = user_sources.sanitize_config(config)
+        self._rebuild_tree()

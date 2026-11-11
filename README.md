@@ -48,13 +48,15 @@ If your QGIS doesn't have GeoParquet support you'll get a warning dialog after t
 
 ### Custom data sources
 
-If you regularly download from your own GeoParquet source, you don't have to retype the URL every time. Go to `Settings > Options`, find the "GeoParquet Downloader" page, and open its "Data Sources" tab. From there you can add your own source (it appears as its own option, with its own page, in the main dialog) and give it preset datasets, each with a name and URL, so they show up alongside Overture and OpenStreetMap. The same tab also lets you hide any of the built-in sources, or individual datasets within them, if you don't use them and would rather not see them in the dialog.
+If you regularly download from your own GeoParquet source, you don't have to retype the URL every time. Go to `Settings > Options`, find the "GeoParquet Downloader" page, and open its "Data Sources" tab:
 
-When you add a dataset (or change its URL), the plugin checks it right there - a quick, cancelable probe that reads the URL and remembers what it found. That way a bad URL turns up immediately instead of only when you try to download, and downloads of an already-checked dataset skip re-discovering its columns.
+- **Add a group / add a dataset.** Click "Add Dataset…" and fill in a name, URL and (optional) info URL; its "Group" field lets you pick an existing custom group or type a new one on the spot, so you rarely need "New Group…" first. The URL gets checked right there - a quick, cancelable probe - and the result is remembered, so a bad URL turns up immediately instead of only when you try to download, and later downloads of an already-checked dataset skip re-discovering its columns.
+- **Hide what you don't use.** The same tab lets you hide any built-in source (Overture, OpenStreetMap), or individual datasets within them, so they stop showing up in the main dialog.
+- **Source Cooperative** is itself just an ordinary custom group, seeded in on first run as a worked example pointing at a handful of datasets published there. Rename it, edit its datasets, or delete it entirely - it's yours to change.
+- **Import/Export** buttons on the same tab back up your configuration or share it with someone else running the plugin.
+- **Restore Defaults** button puts everything back the way it started (no custom groups, no hidden sources, Source Cooperative back as the example) if you ever mess it up. Deleting `user_sources.json` (see below) does the same thing on the next start.
 
-Source Cooperative itself is just such a group: it's seeded in on first run as a worked example, pointing at a handful of datasets published there. Since it's an ordinary editable group like any you'd create yourself, you can rename it, add or remove its datasets, or delete it entirely.
-
-This configuration lives in `user_sources.json`, inside this QGIS profile's `gpq_downloader` folder. It's plain JSON, so you can hand-edit it directly if you prefer, or use the Import/Export buttons on the Data Sources tab to back it up or share your custom sources with someone else running the plugin. If you do hand-edit it, note that `hidden_datasets` is keyed by each source's internal preset key, not the label shown in the dialog - use Export to see the real keys before editing them.
+This configuration lives in `user_sources.json`, inside this QGIS profile's `gpq_downloader` folder. It's plain JSON, so you can hand-edit it directly if you prefer. If you do, note that `hidden_datasets` is keyed by each source's internal preset key, not the label shown in the dialog - use Export to see the real keys before editing them.
 
 
 ## Contributing

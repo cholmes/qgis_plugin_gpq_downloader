@@ -842,6 +842,45 @@ def test_import_cancelled_keeps_state(qgs_app, monkeypatch, tmp_path):
     assert widget.config() == before
 
 
+# -- Restore Defaults (Task C / #84 follow-up) -------------------------------
+
+
+def test_restore_defaults_yes_resets_to_defaults_with_seeded_source_cooperative(
+    qgs_app, monkeypatch
+):
+    config = _custom_config()
+    config["hidden_sources"] = ["openstreetmap"]
+    config["hidden_datasets"] = {"overture": ["places"]}
+    widget = SourcesManagerWidget(config, PRESETS)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+
+    widget._on_restore_defaults()
+
+    expected = user_sources.default_config()
+    expected["custom_sources"] = [user_sources.source_cooperative_group(PRESETS)]
+    result = widget.config()
+    assert result == user_sources.sanitize_config(expected)
+    assert result["hidden_sources"] == []
+    assert result["hidden_datasets"] == {}
+    [sc] = result["custom_sources"]
+    assert sc["name"] == "Source Cooperative"
+    assert {d["name"] for d in sc["datasets"]} == {"VIDA Buildings", "Other_Dataset"}
+
+
+def test_restore_defaults_no_keeps_current_state(qgs_app, monkeypatch):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    before = widget.config()
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No
+    )
+
+    widget._on_restore_defaults()
+
+    assert widget.config() == before
+
+
 # -- _probe_url itself, with the REAL event-loop/task plumbing ---------------
 # Every handler test above monkeypatches _probe_url away; these run the real
 # method (QProgressDialog + QEventLoop + WorkerTask/submit) with only the
