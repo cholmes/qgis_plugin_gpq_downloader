@@ -28,6 +28,14 @@ FORMATS: Tuple[OutputFormat, ...] = (
 
 DEFAULT_FORMAT_NAME = "GeoParquet"
 
+# What the large-GeoJSON warning offers instead, in the order it offers them.
+# GeoJSON is what triggered the warning, and a DuckDB database is not an
+# interchange file, so neither appears. Named here rather than written out in
+# plugin.py so that the extension and dialog filter come from the table above
+# like everywhere else - the warning used to carry its own copy of all three,
+# which a new format or a renamed one would have left silently behind.
+LARGE_DATASET_ALTERNATIVES = ("FlatGeobuf", "GeoPackage", "GeoParquet")
+
 
 def format_names() -> Tuple[str, ...]:
     """The format names in table order, for a settings panel's dropdown."""
@@ -66,3 +74,15 @@ def format_for_path(path: str) -> Optional[OutputFormat]:
         if lowered.endswith(f.extension):
             return f
     return None
+
+
+def large_dataset_alternatives() -> Tuple[OutputFormat, ...]:
+    """The formats the large-GeoJSON warning offers, in the order it shows them.
+
+    Raises KeyError if a name in LARGE_DATASET_ALTERNATIVES is not in the
+    table. format_for() would quietly hand back GeoParquet instead, which
+    here would mean offering the user three entries where one is a duplicate
+    of another under the wrong label.
+    """
+    by_name = {f.name: f for f in FORMATS}
+    return tuple(by_name[name] for name in LARGE_DATASET_ALTERNATIVES)
