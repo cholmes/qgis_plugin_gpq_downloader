@@ -137,11 +137,17 @@ def test_unchecking_sourcecoop_child_hides_that_dataset(qgs_app):
     assert widget.config()["hidden_datasets"] == {}
 
 
-def test_overture_children_are_not_checkable(qgs_app):
+def test_overture_children_are_checkable_and_write_hidden_datasets(qgs_app):
     widget = SourcesManagerWidget(_config(), PRESETS)
     overture = _top_item(widget, "Overture Maps")
     child = _child_item(overture, "Buildings")  # key.title(), not the raw key
-    assert not (child.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+    assert child.flags() & Qt.ItemFlag.ItemIsUserCheckable
+
+    child.setCheckState(1, Qt.CheckState.Unchecked)
+    assert widget.config()["hidden_datasets"] == {"overture": ["buildings"]}
+
+    child.setCheckState(1, Qt.CheckState.Checked)
+    assert widget.config()["hidden_datasets"] == {}
 
 
 def test_add_source_then_dataset_lands_in_config(qgs_app):

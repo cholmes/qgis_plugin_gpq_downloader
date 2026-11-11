@@ -18,10 +18,11 @@ import re
 # list: it is the escape hatch and the fallback for a stale radio selection.
 HIDEABLE_SOURCES = ("overture", "source_cooperative", "openstreetmap")
 
-# Sources whose individual datasets can be hidden. Overture's page is a
-# curated layout (buildings modifiers, divisions/base subtypes) where
-# per-dataset hiding would be inconsistent, so it is hide-whole-source only.
-DATASET_HIDEABLE_SOURCES = ("source_cooperative", "openstreetmap")
+# Sources whose individual datasets can be hidden. For Overture the hideable
+# unit is each of its seven top-level presets: hiding "base" or "divisions"
+# takes their subtype rows with them, and hiding "buildings" takes its
+# modifiers, which are only reachable through it (dialog.py's Overture page).
+DATASET_HIDEABLE_SOURCES = ("overture", "source_cooperative", "openstreetmap")
 
 
 def default_config():

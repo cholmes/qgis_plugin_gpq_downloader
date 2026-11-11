@@ -73,16 +73,20 @@ def test_sanitize_drops_unhideable_sources():
         assert name in HIDEABLE_SOURCES
 
 
-def test_sanitize_limits_hidden_datasets_to_flat_sources():
+def test_sanitize_limits_hidden_datasets_to_dataset_hideable_sources():
     raw = {
         "hidden_datasets": {
             "overture": ["buildings"],
             "source_cooperative": ["usda_crop"],
+            "custom_url": ["anything"],
+            "junk": ["whatever"],
         }
     }
     result = sanitize_config(raw)
-    assert "overture" not in result["hidden_datasets"]
-    assert result["hidden_datasets"] == {"source_cooperative": ["usda_crop"]}
+    assert result["hidden_datasets"] == {
+        "overture": ["buildings"],
+        "source_cooperative": ["usda_crop"],
+    }
     for key in result["hidden_datasets"]:
         assert key in DATASET_HIDEABLE_SOURCES
 
@@ -225,16 +229,15 @@ def test_apply_hidden_removes_listed_datasets_only():
         {
             "hidden_datasets": {
                 "source_cooperative": ["a"],
-                "overture": ["buildings"],  # dropped by sanitize; not flat-hideable
+                "overture": ["buildings"],
             }
         }
     )
     result = apply_hidden(presets, config)
     assert set(result["source_cooperative"]) == {"b"}
     assert set(result["openstreetmap"]) == {"roads", "poi"}
-    # Overture is never filtered at the dataset level, and the whole source
-    # dict is never removed.
-    assert set(result["overture"]) == {"buildings", "places"}
+    assert set(result["overture"]) == {"places"}
+    # The whole source dict is never removed, even when every dataset is.
     assert set(result.keys()) == set(presets.keys())
 
 

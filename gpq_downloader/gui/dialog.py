@@ -482,24 +482,40 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             QCheckBox(label).sizeHint().width()
             for label in ["Buildings", *OVERTURE_CATEGORIES.values()]
         )
-        # Buildings, with its modifier beside it
-        buildings_row = QHBoxLayout()
+        # A preset hidden via the Options page (#84) is absent from
+        # PRESET_DATASETS, so it gets no place on the page and no entry in the
+        # checkbox dicts - get_urls and the saved state read only those dicts,
+        # so a hidden preset can never select anything. The hardcoded
+        # attributes (buildings/base/divisions) are still created, hidden and
+        # unchecked, so the code that touches them unconditionally needs no
+        # guards.
+        overture_presets = self.PRESET_DATASETS["overture"]
+
+        # Buildings, with its modifier beside it. A modifier is only reachable
+        # through Buildings, so hiding Buildings takes its modifiers with it.
         self.buildings_checkbox = QCheckBox("Buildings")
         # Fixed, not minimum: a checkbox free to grow soaks up the spare width
         # and pushes what follows it out of line with the rows below
         self.buildings_checkbox.setFixedWidth(preset_column_width)
-        self.overture_checkboxes["buildings"] = self.buildings_checkbox
-        buildings_row.addWidget(self.buildings_checkbox)
-
         self.buildings_modifier_checkboxes = {}
-        for key, label in BUILDINGS_MODIFIERS.items():
-            modifier = QCheckBox(label)
-            modifier.hide()  # shown only while Buildings is checked
-            self.buildings_modifier_checkboxes[key] = modifier
-            buildings_row.addWidget(modifier)
-            self.buildings_checkbox.toggled.connect(modifier.setVisible)
-        buildings_row.addStretch()
-        overture_layout.addLayout(buildings_row)
+        if "buildings" in overture_presets:
+            buildings_row = QHBoxLayout()
+            self.overture_checkboxes["buildings"] = self.buildings_checkbox
+            buildings_row.addWidget(self.buildings_checkbox)
+
+            for key, label in BUILDINGS_MODIFIERS.items():
+                if key not in overture_presets:
+                    continue
+                modifier = QCheckBox(label)
+                modifier.hide()  # shown only while Buildings is checked
+                self.buildings_modifier_checkboxes[key] = modifier
+                buildings_row.addWidget(modifier)
+                self.buildings_checkbox.toggled.connect(modifier.setVisible)
+            buildings_row.addStretch()
+            overture_layout.addLayout(buildings_row)
+        else:
+            self.buildings_checkbox.setParent(overture_page)
+            self.buildings_checkbox.setVisible(False)
 
         # The presets that are a single layer with nothing beside them, in a
         # grid: each new one would otherwise raise the dialog's minimum width
@@ -544,32 +560,59 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                 for layer in self.PRESET_DATASETS["overture"][key]["subtypes"]
             }
 
+        def hidden_category_placeholder(label):
+            # Hidden category (#84): the attributes live on, parented to the
+            # page but never laid out, hidden and unchecked, with no layer
+            # checkboxes to tick - so load_checkbox_state()'s unconditional
+            # visibility updates still have something to talk to.
+            checkbox = QCheckBox(label, overture_page)
+            checkbox.setVisible(False)
+            layer_widget = QWidget(overture_page)
+            layer_widget.setVisible(False)
+            return checkbox, {}, layer_widget
+
         category_lines = []  # (index of the line on the page, its layer widget)
 
-        (
-            self.divisions_checkbox,
-            self.divisions_subtype_checkboxes,
-            self.divisions_subtype_widget,
-        ) = self._add_overture_category(
-            overture_layout,
-            "divisions",
-            OVERTURE_CATEGORIES["divisions"],
-            layers_of("divisions"),
-            preset_column_width,
-        )
-        category_lines.append((overture_layout.count() - 1, self.divisions_subtype_widget))
-        (
-            self.base_checkbox,
-            self.base_subtype_checkboxes,
-            self.base_subtype_widget,
-        ) = self._add_overture_category(
-            overture_layout,
-            "base",
-            OVERTURE_CATEGORIES["base"],
-            layers_of("base"),
-            preset_column_width,
-        )
-        category_lines.append((overture_layout.count() - 1, self.base_subtype_widget))
+        if "divisions" in overture_presets:
+            (
+                self.divisions_checkbox,
+                self.divisions_subtype_checkboxes,
+                self.divisions_subtype_widget,
+            ) = self._add_overture_category(
+                overture_layout,
+                "divisions",
+                OVERTURE_CATEGORIES["divisions"],
+                layers_of("divisions"),
+                preset_column_width,
+            )
+            category_lines.append(
+                (overture_layout.count() - 1, self.divisions_subtype_widget)
+            )
+        else:
+            (
+                self.divisions_checkbox,
+                self.divisions_subtype_checkboxes,
+                self.divisions_subtype_widget,
+            ) = hidden_category_placeholder(OVERTURE_CATEGORIES["divisions"])
+        if "base" in overture_presets:
+            (
+                self.base_checkbox,
+                self.base_subtype_checkboxes,
+                self.base_subtype_widget,
+            ) = self._add_overture_category(
+                overture_layout,
+                "base",
+                OVERTURE_CATEGORIES["base"],
+                layers_of("base"),
+                preset_column_width,
+            )
+            category_lines.append((overture_layout.count() - 1, self.base_subtype_widget))
+        else:
+            (
+                self.base_checkbox,
+                self.base_subtype_checkboxes,
+                self.base_subtype_widget,
+            ) = hidden_category_placeholder(OVERTURE_CATEGORIES["base"])
 
         self._reserve_room_above_other_presets(overture_layout, category_lines)
 

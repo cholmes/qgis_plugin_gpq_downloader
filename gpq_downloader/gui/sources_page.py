@@ -280,9 +280,8 @@ class SourcesManagerWidget(QWidget):
     @staticmethod
     def _set_checkable(item, checkable):
         """QTreeWidgetItem's default flags already include
-        ItemIsUserCheckable, so a non-checkable row (Overture's children,
-        every custom row) must have it cleared explicitly rather than just
-        never OR'd in."""
+        ItemIsUserCheckable, so a non-checkable row (every custom row) must
+        have it cleared explicitly rather than just never OR'd in."""
         flags = item.flags()
         item.setFlags(
             (flags | Qt.ItemFlag.ItemIsUserCheckable)

@@ -74,6 +74,65 @@ def test_hidden_osm_dataset_has_no_checkbox(clean_settings, iface):
     assert "buildings" in dialog.osm_checkboxes
 
 
+def test_hidden_overture_dataset_has_no_checkbox(clean_settings, iface):
+    write_config(hidden_datasets={"overture": ["places"]})
+    dialog = DataSourceDialog(None, iface)
+
+    assert "places" not in dialog.overture_checkboxes
+    assert "places" not in dialog.PRESET_DATASETS["overture"]
+    assert "transportation" in dialog.overture_checkboxes
+
+
+def test_hidden_overture_buildings_takes_its_modifiers_along(clean_settings, iface):
+    write_config(hidden_datasets={"overture": ["buildings"]})
+    dialog = DataSourceDialog(None, iface)
+
+    assert "buildings" not in dialog.overture_checkboxes
+    # The modifier (building_parts) is only reachable through Buildings, so
+    # it goes too, even though it was not hidden itself.
+    assert dialog.buildings_modifier_checkboxes == {}
+    # The attribute survives, hidden and unchecked, so code that touches it
+    # unconditionally (load_checkbox_state's visibility updates) still works.
+    assert dialog.buildings_checkbox.isHidden()
+    assert not dialog.buildings_checkbox.isChecked()
+
+
+def test_hidden_overture_building_parts_drops_only_the_modifier(clean_settings, iface):
+    write_config(hidden_datasets={"overture": ["building_parts"]})
+    dialog = DataSourceDialog(None, iface)
+
+    assert "buildings" in dialog.overture_checkboxes
+    assert dialog.buildings_modifier_checkboxes == {}
+
+
+def test_hidden_overture_category_drops_its_subtype_row(clean_settings, iface):
+    write_config(hidden_datasets={"overture": ["base"]})
+    dialog = DataSourceDialog(None, iface)
+
+    assert "base" not in dialog.overture_checkboxes
+    assert dialog.base_subtype_checkboxes == {}
+    assert dialog.base_checkbox.isHidden()
+    assert not dialog.base_subtype_widget.isVisible()
+    # Divisions is untouched.
+    assert "divisions" in dialog.overture_checkboxes
+    assert dialog.divisions_subtype_checkboxes
+
+
+def test_hidden_overture_dataset_cannot_reach_get_urls(clean_settings, iface):
+    # Session 1: Places was ticked and remembered.
+    dialog = DataSourceDialog(None, iface)
+    dialog.overture_checkboxes["places"].setChecked(True)
+    dialog.save_checkbox_states()
+
+    # Session 2: Places is hidden; the saved tick must not resurrect it.
+    write_config(hidden_datasets={"overture": ["places"]})
+    dialog = DataSourceDialog(None, iface)
+    dialog.load_checkbox_states()
+    assert all(
+        not checkbox.isChecked() for checkbox in dialog.overture_checkboxes.values()
+    )
+
+
 def test_saved_radio_for_hidden_source_falls_back(clean_settings, iface):
     # Session 1: OpenStreetMap was the remembered selection.
     first = DataSourceDialog(None, iface)
