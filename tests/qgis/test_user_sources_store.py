@@ -2,24 +2,39 @@
 
 Every test here already runs under tests/qgis/conftest.py's autouse
 isolated_user_sources fixture, so user_config_path() points into this test's
-own tmp_path rather than the developer's real QGIS profile.
+own tmp_path rather than the developer's real QGIS profile, and a
+default_config() is already written there - a test that wants the missing-
+file (seeding) path removes it first.
 """
 
 import os
 
 import pytest
 
-from gpq_downloader.core.user_sources import default_config
+from gpq_downloader.core.presets import load_presets
+from gpq_downloader.core.user_sources import default_config, source_cooperative_group
 from gpq_downloader.gui import user_sources_store
 
 
-def test_missing_file_returns_defaults():
-    assert not os.path.exists(user_sources_store.user_config_path())
+def test_missing_file_returns_seeded_config():
+    """A missing file (never customized anything, or #84's autouse fixture
+    deliberately removing the file it writes up front) is seeded with the
+    "Source Cooperative" custom group, not left empty."""
+    path = user_sources_store.user_config_path()
+    os.remove(path)  # tests/qgis/conftest.py's autouse fixture wrote this
+    assert not os.path.exists(path)
 
-    assert user_sources_store.load_user_config() == default_config()
+    config = user_sources_store.load_user_config()
+
+    expected = default_config()
+    expected["custom_sources"] = [source_cooperative_group(load_presets())]
+    assert config == expected
 
 
-def test_unreadable_file_returns_defaults(logged):
+def test_unreadable_file_returns_plain_defaults_unseeded(logged):
+    """A corrupt file is NOT reseeded: a user who deleted the Source
+    Cooperative group (or everything else) must not get it back just
+    because their own file could not be read."""
     path = user_sources_store.user_config_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
@@ -29,7 +44,7 @@ def test_unreadable_file_returns_defaults(logged):
     assert len(logged) == 1
 
 
-def test_invalid_utf8_returns_defaults(logged):
+def test_invalid_utf8_returns_plain_defaults_unseeded(logged):
     path = user_sources_store.user_config_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:

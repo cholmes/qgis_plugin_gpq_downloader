@@ -16,13 +16,19 @@ import re
 
 # Sources whose radio can be hidden entirely. Custom URL is never in this
 # list: it is the escape hatch and the fallback for a stale radio selection.
-HIDEABLE_SOURCES = ("overture", "source_cooperative", "openstreetmap")
+# Source Cooperative is no longer a built-in - it is seeded into
+# custom_sources on first run (source_cooperative_group(), below) and hidden
+# or renamed the same way any other custom group is, so a legacy
+# "source_cooperative" entry here is simply dropped by sanitize_config().
+HIDEABLE_SOURCES = ("overture", "openstreetmap")
 
 # Sources whose individual datasets can be hidden. For Overture the hideable
 # unit is each of its seven top-level presets: hiding "base" or "divisions"
 # takes their subtype rows with them, and hiding "buildings" takes its
 # modifiers, which are only reachable through it (dialog.py's Overture page).
-DATASET_HIDEABLE_SOURCES = ("overture", "source_cooperative", "openstreetmap")
+# Source Cooperative is no longer a built-in (see HIDEABLE_SOURCES above); a
+# legacy "source_cooperative" entry here is dropped the same way.
+DATASET_HIDEABLE_SOURCES = ("overture", "openstreetmap")
 
 
 def default_config():
@@ -32,6 +38,36 @@ def default_config():
         "hidden_sources": [],
         "hidden_datasets": {},
         "custom_sources": [],
+    }
+
+
+def source_cooperative_group(presets):
+    """The seeded "Source Cooperative" custom group, built from the
+    bundled presets' source_cooperative section (missing -> empty datasets).
+
+    Used to seed a first-run user config (gui/user_sources_store.py) so
+    Source Cooperative starts life as an ordinary, fully editable custom
+    group rather than a hardcoded built-in.
+    """
+    datasets = []
+    for key, entry in presets.get("source_cooperative", {}).items():
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url")
+        if not isinstance(url, str) or not url:
+            continue
+        datasets.append(
+            {
+                "name": entry.get("display_name") or key.title(),
+                "url": url,
+                "info_url": entry.get("info_url", ""),
+                "group": "",
+            }
+        )
+    return {
+        "name": "Source Cooperative",
+        "info_url": "https://source.coop",
+        "datasets": datasets,
     }
 
 

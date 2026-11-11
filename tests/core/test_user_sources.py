@@ -18,6 +18,7 @@ from gpq_downloader.core.user_sources import (
     sanitize_config,
     serialize_config,
     slug,
+    source_cooperative_group,
 )
 
 
@@ -46,7 +47,7 @@ def test_sanitize_passes_valid_config_through():
     raw = {
         "version": 1,
         "hidden_sources": ["overture", "openstreetmap"],
-        "hidden_datasets": {"source_cooperative": ["usda_crop"]},
+        "hidden_datasets": {"openstreetmap": ["addresses"]},
         "custom_sources": [
             {
                 "name": "My Company Data",
@@ -73,11 +74,25 @@ def test_sanitize_drops_unhideable_sources():
         assert name in HIDEABLE_SOURCES
 
 
+def test_sanitize_drops_legacy_source_cooperative_hidden_entries():
+    """Source Cooperative is no longer a built-in (it is seeded into
+    custom_sources instead), so a "source_cooperative" entry left over from
+    an older session's hidden_sources/hidden_datasets is simply dropped
+    rather than resurrected as something meaningful."""
+    raw = {
+        "hidden_sources": ["source_cooperative", "overture"],
+        "hidden_datasets": {"source_cooperative": ["usda_crop"], "overture": ["buildings"]},
+    }
+    result = sanitize_config(raw)
+    assert result["hidden_sources"] == ["overture"]
+    assert result["hidden_datasets"] == {"overture": ["buildings"]}
+
+
 def test_sanitize_limits_hidden_datasets_to_dataset_hideable_sources():
     raw = {
         "hidden_datasets": {
             "overture": ["buildings"],
-            "source_cooperative": ["usda_crop"],
+            "openstreetmap": ["addresses"],
             "custom_url": ["anything"],
             "junk": ["whatever"],
         }
@@ -85,7 +100,7 @@ def test_sanitize_limits_hidden_datasets_to_dataset_hideable_sources():
     result = sanitize_config(raw)
     assert result["hidden_datasets"] == {
         "overture": ["buildings"],
-        "source_cooperative": ["usda_crop"],
+        "openstreetmap": ["addresses"],
     }
     for key in result["hidden_datasets"]:
         assert key in DATASET_HIDEABLE_SOURCES
@@ -222,20 +237,18 @@ def test_serialize_then_parse_roundtrips():
 def test_apply_hidden_removes_listed_datasets_only():
     presets = {
         "overture": {"buildings": {"url": "x"}, "places": {"url": "y"}},
-        "source_cooperative": {"a": {"url": "1"}, "b": {"url": "2"}},
         "openstreetmap": {"roads": {"url": "3"}, "poi": {"url": "4"}},
     }
     config = sanitize_config(
         {
             "hidden_datasets": {
-                "source_cooperative": ["a"],
+                "openstreetmap": ["poi"],
                 "overture": ["buildings"],
             }
         }
     )
     result = apply_hidden(presets, config)
-    assert set(result["source_cooperative"]) == {"b"}
-    assert set(result["openstreetmap"]) == {"roads", "poi"}
+    assert set(result["openstreetmap"]) == {"roads"}
     assert set(result["overture"]) == {"places"}
     # The whole source dict is never removed, even when every dataset is.
     assert set(result.keys()) == set(presets.keys())
@@ -243,16 +256,74 @@ def test_apply_hidden_removes_listed_datasets_only():
 
 def test_apply_hidden_leaves_original_presets_untouched():
     presets = {
-        "source_cooperative": {"a": {"url": "1"}, "b": {"url": "2"}},
+        "openstreetmap": {"a": {"url": "1"}, "b": {"url": "2"}},
     }
-    config = sanitize_config({"hidden_datasets": {"source_cooperative": ["a"]}})
+    config = sanitize_config({"hidden_datasets": {"openstreetmap": ["a"]}})
     result = apply_hidden(presets, config)
-    assert "a" in presets["source_cooperative"]
+    assert "a" in presets["openstreetmap"]
     assert result is not presets
-    assert result["source_cooperative"] is not presets["source_cooperative"]
+    assert result["openstreetmap"] is not presets["openstreetmap"]
 
 
 def test_slug():
     assert slug("My Data (2025)!") == "my_data_2025"
     assert slug("usda_crop") == "usda_crop"
     assert slug("  leading and trailing  ") == "leading_and_trailing"
+
+
+# --- source_cooperative_group(): the seeded first-run custom group --------
+
+
+def test_source_cooperative_group_shape():
+    presets = {
+        "source_cooperative": {
+            "vida_buildings": {
+                "url": "s3://vida/*.parquet",
+                "info_url": "https://source.coop/vida",
+                "display_name": "VIDA Buildings",
+            },
+        }
+    }
+    group = source_cooperative_group(presets)
+    assert group == {
+        "name": "Source Cooperative",
+        "info_url": "https://source.coop",
+        "datasets": [
+            {
+                "name": "VIDA Buildings",
+                "url": "s3://vida/*.parquet",
+                "info_url": "https://source.coop/vida",
+                "group": "",
+            }
+        ],
+    }
+
+
+def test_source_cooperative_group_falls_back_to_titled_key():
+    presets = {"source_cooperative": {"usda_crop": {"url": "https://example.com/x"}}}
+    group = source_cooperative_group(presets)
+    [dataset] = group["datasets"]
+    assert dataset["name"] == "Usda_Crop"
+    assert dataset["info_url"] == ""
+
+
+def test_source_cooperative_group_skips_entries_without_a_usable_url():
+    presets = {
+        "source_cooperative": {
+            "good": {"url": "https://example.com/good.parquet"},
+            "no_url": {"display_name": "No URL"},
+            "blank_url": {"url": "", "display_name": "Blank URL"},
+            "not_a_dict": "junk",
+        }
+    }
+    group = source_cooperative_group(presets)
+    names = [d["name"] for d in group["datasets"]]
+    assert names == ["Good"]
+
+
+def test_source_cooperative_group_missing_section_gives_empty_datasets():
+    assert source_cooperative_group({}) == {
+        "name": "Source Cooperative",
+        "info_url": "https://source.coop",
+        "datasets": [],
+    }

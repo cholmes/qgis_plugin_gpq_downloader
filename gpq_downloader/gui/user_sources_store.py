@@ -20,10 +20,12 @@ import tempfile
 from qgis.core import QgsApplication
 
 from gpq_downloader import logger
+from gpq_downloader.core.presets import load_presets
 from gpq_downloader.core.user_sources import (
     default_config,
     parse_config,
     serialize_config,
+    source_cooperative_group,
 )
 
 
@@ -35,14 +37,21 @@ def user_config_path():
 
 
 def load_user_config():
-    """The user's sanitized config, or default_config() if there is none.
+    """The user's sanitized config, or a seeded/default one if there is none.
 
     A missing file is the ordinary case for a user who has never customized
-    anything, so that is silent. A file that exists but cannot be read,
-    decoded (invalid UTF-8 raises UnicodeDecodeError, a ValueError subclass),
-    or parsed as a valid config is not silently discarded without a trace:
-    it is logged once, then treated the same as a missing file, so the
-    dialog can still open.
+    anything - first run - so it is seeded with the "Source Cooperative"
+    custom group built from the bundled presets, rather than left empty:
+    Source Cooperative is no longer a hardcoded built-in, and this is what
+    gives it to a new user without a line of SC-specific code anywhere else
+    (core/user_sources.py's source_cooperative_group()).
+
+    A file that exists but cannot be read, decoded (invalid UTF-8 raises
+    UnicodeDecodeError, a ValueError subclass), or parsed as a valid config is
+    not silently discarded without a trace: it is logged once, then treated
+    as plain default_config() - NOT reseeded - so a user who deleted the
+    Source Cooperative group (or everything else) does not get it handed back
+    by a corrupt read of their own file.
     """
     path = user_config_path()
     try:
@@ -50,7 +59,9 @@ def load_user_config():
             text = f.read()
         return parse_config(text)
     except FileNotFoundError:
-        return default_config()
+        config = default_config()
+        config["custom_sources"] = [source_cooperative_group(load_presets())]
+        return config
     except (OSError, ValueError) as exc:
         logger.log(f"Could not read user sources config at {path}: {exc}")
         return default_config()

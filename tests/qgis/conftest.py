@@ -11,6 +11,7 @@ from qgis.PyQt.QtWidgets import QMainWindow
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from gpq_downloader import logger  # noqa: E402
+from gpq_downloader.core.user_sources import default_config  # noqa: E402
 from gpq_downloader.gui import user_sources_store  # noqa: E402
 
 # Keys this plugin writes, under either of the two prefixes QSettings can
@@ -21,17 +22,26 @@ _OUR_PREFIXES = ("plugins/gpq_downloader/", "gpq_downloader/")
 @pytest.fixture(autouse=True)
 def isolated_user_sources(tmp_path, monkeypatch):
     """Every qgis test reads/writes its own user_sources.json, not the
-    developer's real one.
+    developer's real one - and starts from an explicit, empty config rather
+    than a missing file.
 
     user_sources_store.user_config_path() otherwise points inside this QGIS
     profile (QgsApplication.qgisSettingsDirPath()); autouse so old and new
     tests alike never touch that file, with no per-test fixture to remember.
+
+    load_user_config() seeds a "Source Cooperative" custom group whenever the
+    file is missing (#84 follow-up), which would otherwise give every dialog
+    test in this directory an extra custom radio and page it was not written
+    to expect. Writing default_config() here up front means a test sees that
+    seeded group only when it deliberately asks for it, by deleting this file
+    first - which is exactly what the seeding tests do.
     """
     monkeypatch.setattr(
         user_sources_store,
         "user_config_path",
         lambda: str(tmp_path / "user_sources.json"),
     )
+    user_sources_store.save_user_config(default_config())
 
 
 @pytest.fixture
