@@ -839,3 +839,88 @@ class SchemaWorker(QObject):
                 conn.interrupt()
             except Exception as e:
                 logger.log(f"Could not interrupt DuckDB query: {e}")
+
+
+class DatasetProbeWorker(QObject):
+    """Checks a custom-source dataset's URL when it is added or edited in the
+    Data Sources manager (Task B / #84 follow-up): reachable, and what its
+    geometry and bbox columns are, so a bad URL surfaces right there instead
+    of at the first download, and the discovered columns can be stored and
+    fed back into later downloads as hints.
+
+    No bbox warning, no extent, no attribute filter - this is a plain
+    reachability-and-metadata probe, not the fuller ValidationWorker a
+    Custom URL download runs. connection_factory follows Worker's pattern
+    (qgis_io/worker.py): duckdb.connect unless a test passes a stand-in, so
+    this can be unit-tested without touching real DuckDB extensions, which
+    cannot load in this project's local test process.
+    """
+
+    finished = pyqtSignal(bool, str, dict)
+    progress = pyqtSignal(str)
+
+    def __init__(self, dataset_url, *, connection_factory=None):
+        super().__init__()
+        self.dataset_url = dataset_url
+        self.connection_factory = connection_factory
+        self.killed = False
+        self.conn = None  # kept so kill() can interrupt a running query
+
+    def run(self):
+        conn = None
+        try:
+            self.progress.emit("Connecting to data source...")
+            connect = self.connection_factory or duckdb.connect
+            conn = CancellableConnection(connect(), self)
+            self.conn = conn
+            conn.execute("INSTALL spatial;")
+            conn.execute("LOAD spatial;")
+            conn.execute("INSTALL httpfs;")
+            conn.execute("LOAD httpfs;")
+            read_url = resolve_dataset_url(conn, self.dataset_url)
+            if self.killed:
+                return
+
+            self.progress.emit("Checking data format...")
+            schema_query = f"DESCRIBE SELECT * FROM read_parquet({sql_str(read_url)})"  # nosec B608
+            schema_result = conn.execute(schema_query).fetchall()
+            if self.killed:
+                return
+
+            # Same GeoParquet-metadata-then-schema-fallback logic
+            # ValidationWorker.run() uses to name the geometry and bbox
+            # columns, whatever they are called.
+            geo_primary, geo_bbox, _geo_crs = read_geo_metadata(conn, read_url)
+            if self.killed:  # read_geo_metadata may swallow an interrupt
+                return
+            geometry_column, bbox_column = detect_columns(schema_result, geo_primary, geo_bbox)
+
+            if self.killed:
+                return
+            self.finished.emit(
+                True,
+                "",
+                {
+                    "has_bbox": bbox_column is not None,
+                    "bbox_column": bbox_column,
+                    "geometry_column": geometry_column,
+                },
+            )
+        except Exception as e:
+            if not self.killed:
+                logger.log(f"Error in DatasetProbeWorker: {e}")
+                self.finished.emit(False, str(e), {})
+        finally:
+            self.conn = None
+            if conn is not None:
+                conn.close()
+
+    def kill(self):
+        """Stop the probe; interrupts the running query so cancel returns at once."""
+        self.killed = True
+        conn = self.conn
+        if conn is not None:
+            try:
+                conn.interrupt()
+            except Exception as e:
+                logger.log(f"Could not interrupt DuckDB query: {e}")
