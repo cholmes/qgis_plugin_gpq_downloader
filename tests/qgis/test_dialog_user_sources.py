@@ -366,6 +366,49 @@ def test_empty_custom_source_gets_no_radio(clean_settings, iface):
     dialog.close()
 
 
+# --- Task B / #84 follow-up: stored probe results as download hints -------
+
+
+def test_validation_hints_for_a_validated_dataset(clean_settings, iface):
+    write_config(
+        custom_sources=[
+            _custom_source(
+                datasets=[
+                    {
+                        "name": "Parcels",
+                        "url": "https://example.com/parcels.parquet",
+                        "info_url": "",
+                        "group": "",
+                        "validation": {
+                            "has_bbox": True,
+                            "bbox_column": "bbox",
+                            "geometry_column": "geometry",
+                        },
+                    },
+                    {
+                        "name": "Roads",
+                        "url": "https://example.com/roads.parquet",
+                        "info_url": "",
+                        "group": "",
+                    },
+                ]
+            )
+        ]
+    )
+    dialog = DataSourceDialog(None, iface)
+
+    assert dialog.validation_hints_for("https://example.com/parcels.parquet") == {
+        "has_bbox": True,
+        "bbox_column": "bbox",
+        "geometry_column": "geometry",
+    }
+    # Unvalidated dataset, and any URL that is not a stored dataset's own
+    # (a typed-in Custom URL, say): both get no hints at all.
+    assert dialog.validation_hints_for("https://example.com/roads.parquet") == {}
+    assert dialog.validation_hints_for("https://example.com/unknown.parquet") == {}
+    dialog.close()
+
+
 def test_custom_radio_selection_remembered(clean_settings, iface):
     write_config(custom_sources=[_custom_source()])
 

@@ -366,6 +366,19 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         self.user_config = user_sources_store.load_user_config()
         self.PRESET_DATASETS = apply_hidden(load_presets(), self.user_config)
 
+        # Stored probe results from the Data Sources manager (Task B / #84
+        # follow-up), keyed by the dataset's own URL: validation_hints_for()
+        # below is what plugin.py feeds a download as hints, letting a
+        # custom-source dataset that was already checked when it was added
+        # skip rediscovering its own columns. A typed-in Custom URL is never
+        # a key here, so that path is untouched.
+        self.custom_dataset_validation = {
+            dataset["url"]: dataset["validation"]
+            for source in self.user_config.get("custom_sources", [])
+            for dataset in source.get("datasets", [])
+            if isinstance(dataset, dict) and "validation" in dataset
+        }
+
         # A custom source with no datasets gets no radio and no page at all
         # (Design) - sanitize_config lets one through (a source is valid with
         # an empty datasets list), so it is filtered out once here and reused
@@ -1761,6 +1774,13 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             self.iface.actionPan().trigger()
 
         super().closeEvent(event)
+
+    def validation_hints_for(self, url):
+        """The stored probe results for `url` (core/user_sources.py's
+        "validation" dict - has_bbox/bbox_column/geometry_column), or {}
+        when none are stored. plugin.py passes this to the Worker as hints,
+        which it still re-checks per download (Task B / #84 follow-up)."""
+        return self.custom_dataset_validation.get(url, {})
 
     def get_urls(self, release=None):
         """Returns a list of URLs for selected datasets
