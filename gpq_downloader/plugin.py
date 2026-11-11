@@ -339,10 +339,6 @@ class QgisPluginGeoParquet:
             # Generate filename based on the URL and source type
             if dialog.overture_radio.isChecked():
                 filename = f"{overture_file_stem(url)}_{current_date}{extension}"
-            elif dialog.sourcecoop_radio.isChecked():
-                dataset_name = dialog.sourcecoop_combo.currentText()
-                clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
-                filename = f"sourcecoop_{clean_name}_{current_date}{extension}"
             elif dialog.osm_radio.isChecked():
                 # Extract layer name from URL
                 layer_name = url.split('/')[-1].replace('.parquet', '')

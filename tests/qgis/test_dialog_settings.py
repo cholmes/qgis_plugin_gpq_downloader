@@ -9,13 +9,14 @@ Each test starts with no gpq_downloader settings and puts the user's own back
 afterwards.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 from qgis.core import QgsRectangle, QgsSettings
 
 from gpq_downloader.dialog import DataSourceDialog
-from gpq_downloader.gui import settings_store
+from gpq_downloader.gui import settings_store, user_sources_store
 from gpq_downloader.plugin import QgisPluginGeoParquet
 
 PREFIXES = ("plugins/gpq_downloader/", "gpq_downloader/")
@@ -227,7 +228,6 @@ def test_clip_is_restored_from_its_own_key(clean_settings, dialogs):
 
 @pytest.mark.parametrize("radio, name", [
     ("overture_radio", "Overture Maps"),
-    ("sourcecoop_radio", "Source Cooperative"),
     ("osm_radio", "OpenStreetMap"),
     ("custom_radio", "Custom URL"),
 ])
@@ -239,15 +239,27 @@ def test_the_radio_selection_is_saved_by_name(clean_settings, dialogs, radio, na
     assert QgsSettings().value("gpq_downloader/radio_selection", section=QgsSettings.Plugins) == name
 
 
+def test_the_seeded_sourcecoop_radio_selection_is_saved_by_name(clean_settings, dialogs):
+    """The seeded "Source Cooperative" custom group's radio is saved by text
+    exactly like any other custom source's - there is no sourcecoop_radio
+    attribute any more (#84 follow-up)."""
+    os.remove(user_sources_store.user_config_path())  # missing file -> seeded
+    dialog = dialogs()
+    dialog.custom_source_radios["Source Cooperative"].setChecked(True)
+    dialog.save_radio_button_state()
+    assert our_keys() == ["plugins/gpq_downloader/radio_selection"]
+    assert QgsSettings().value("gpq_downloader/radio_selection", section=QgsSettings.Plugins) == "Source Cooperative"
+
+
 def test_no_radio_checked_saves_custom_url(clean_settings, dialogs):
     dialog = dialogs()
-    # The four radios live in an exclusive QButtonGroup, which refuses to
+    # The built-in radios live in an exclusive QButtonGroup, which refuses to
     # leave zero buttons checked - setAutoExclusive(False) is a per-button
     # flag and does not override that, so the group itself must be made
     # non-exclusive before setChecked(False) can actually clear the one
     # the dialog defaulted to.
     dialog.source_button_group.setExclusive(False)
-    for radio in (dialog.overture_radio, dialog.sourcecoop_radio, dialog.osm_radio, dialog.custom_radio):
+    for radio in (dialog.overture_radio, dialog.osm_radio, dialog.custom_radio):
         radio.setAutoExclusive(False)
         radio.setChecked(False)
     dialog.save_radio_button_state()
@@ -272,16 +284,30 @@ def run_plugin(iface):
     (None, "overture_radio"),  # nothing saved: Overture
     ("OpenStreetMap", "osm_radio"),
     ("Custom URL", "custom_radio"),
-    ("Source Cooperative", "sourcecoop_radio"),
 ])
 def test_plugin_run_restores_the_radio_selection(clean_settings, iface, saved, radio):
     if saved:
         clean_settings.setValue("gpq_downloader/radio_selection", saved, section=QgsSettings.Plugins)
     dialog = run_plugin(iface)
     try:
-        checked = [r for r in ("overture_radio", "sourcecoop_radio", "osm_radio", "custom_radio")
+        checked = [r for r in ("overture_radio", "osm_radio", "custom_radio")
                    if getattr(dialog, r).isChecked()]
         assert checked == [radio]
+    finally:
+        dialog.close()
+
+
+def test_plugin_run_restores_the_seeded_sourcecoop_radio_selection(clean_settings, iface):
+    """The saved name "Source Cooperative" matches the seeded custom
+    source's radio by text - free backward compatibility with a session
+    saved before Source Cooperative stopped being a hardcoded built-in."""
+    os.remove(user_sources_store.user_config_path())  # missing file -> seeded
+    clean_settings.setValue("gpq_downloader/radio_selection", "Source Cooperative", section=QgsSettings.Plugins)
+    dialog = run_plugin(iface)
+    try:
+        assert dialog.custom_source_radios["Source Cooperative"].isChecked()
+        for radio in (dialog.overture_radio, dialog.osm_radio, dialog.custom_radio):
+            assert not radio.isChecked()
     finally:
         dialog.close()
 
@@ -293,7 +319,7 @@ def test_plugin_run_with_an_unknown_saved_name_falls_back_to_custom_url(clean_se
     clean_settings.setValue("gpq_downloader/radio_selection", "Overture", section=QgsSettings.Plugins)
     dialog = run_plugin(iface)
     try:
-        checked = [r for r in ("overture_radio", "sourcecoop_radio", "osm_radio", "custom_radio")
+        checked = [r for r in ("overture_radio", "osm_radio", "custom_radio")
                    if getattr(dialog, r).isChecked()]
         assert checked == ["custom_radio"]
     finally:

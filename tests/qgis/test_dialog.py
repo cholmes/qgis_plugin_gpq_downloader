@@ -50,20 +50,20 @@ def test_dialog_initialization(qgs_app, mock_iface):
 def test_dialog_radio_buttons(qgs_app, mock_iface):
     """Test radio button functionality"""
     dialog = DataSourceDialog(None, mock_iface)
-    
+
     # Set Overture radio to checked (since it might not be default)
     dialog.overture_radio.setChecked(True)
-    
+
     # Check state after explicitly setting
     assert dialog.overture_radio.isChecked()
-    assert not dialog.sourcecoop_radio.isChecked()
     assert not dialog.osm_radio.isChecked()
+    assert not dialog.custom_radio.isChecked()
 
     # Test switching radio buttons
-    dialog.sourcecoop_radio.setChecked(True)
+    dialog.osm_radio.setChecked(True)
     assert not dialog.overture_radio.isChecked()
-    assert dialog.sourcecoop_radio.isChecked()
-    assert not dialog.osm_radio.isChecked()
+    assert dialog.osm_radio.isChecked()
+    assert not dialog.custom_radio.isChecked()
 
 @patch('gpq_downloader.gui.settings_store.QgsSettings')
 def test_dialog_settings_saved(mock_settings, qgs_app, mock_iface):

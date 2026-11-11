@@ -1,7 +1,9 @@
 """The data source dialog: which data to download, and from where.
 
-The source pages (Overture, Source Cooperative, OpenStreetMap, a custom URL),
-the custom URL's validation, and remembering the checkboxes between sessions.
+The source pages (Overture, OpenStreetMap, a custom URL, plus a page per
+custom source - which is what Source Cooperative is seeded into config as
+on first run, #84), the custom URL's validation, and remembering the
+checkboxes between sessions.
 The Area of Interest group is AreaOfInterestMixin, in extent.py. Moved here
 from gpq_downloader/dialog.py (#195), which re-exports its names until 1.0
 (#198).
@@ -23,7 +25,6 @@ from qgis.PyQt.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QComboBox,
     QProgressDialog,
     QRadioButton,
     QButtonGroup,
@@ -400,7 +401,6 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # exclusive regardless of which of those two parents it ends up with.
         self.source_button_group = QButtonGroup(self)
         self.overture_radio = QRadioButton("Overture Maps", self)
-        self.sourcecoop_radio = QRadioButton("Source Cooperative", self)
         self.osm_radio = QRadioButton("OpenStreetMap", self)
         self.custom_radio = QRadioButton("Custom URL", self)
 
@@ -412,7 +412,6 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         hidden_sources = self.user_config.get("hidden_sources", [])
         for source_key, radio in (
             ("overture", self.overture_radio),
-            ("source_cooperative", self.sourcecoop_radio),
             ("openstreetmap", self.osm_radio),
         ):
             self.source_button_group.addButton(radio)
@@ -623,31 +622,6 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         overture_page.setLayout(overture_layout)
 
-        # Source Cooperative page
-        sourcecoop_page = QWidget()
-        sourcecoop_layout = QVBoxLayout()
-        self.sourcecoop_combo = QComboBox()
-        self.sourcecoop_combo.addItems(
-            sorted(
-                [
-                    dataset["display_name"]
-                    for dataset in self.PRESET_DATASETS["source_cooperative"].values()
-                ],
-                key=str.lower,
-            )
-        )
-        sourcecoop_layout.addWidget(self.sourcecoop_combo)
-
-        # Add link label
-        self.sourcecoop_link = QLabel()
-        self.sourcecoop_link.setOpenExternalLinks(True)
-        self.sourcecoop_link.setWordWrap(True)
-        sourcecoop_layout.addWidget(self.sourcecoop_link)
-
-        # Connect combo box change to update link
-        self.sourcecoop_combo.currentTextChanged.connect(self.update_sourcecoop_link)
-        sourcecoop_page.setLayout(sourcecoop_layout)
-
         # OpenStreetMap page
         osm_page = QWidget()
         osm_layout = QVBoxLayout()
@@ -683,11 +657,10 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Add pages to stack
         self.stack.addWidget(custom_page)
         self.stack.addWidget(overture_page)
-        self.stack.addWidget(sourcecoop_page)
         self.stack.addWidget(osm_page)
 
-        # Custom source pages (Task 4), added after the four fixed ones so
-        # custom_radio.toggled's lambda above (index 0) and the others (1-3)
+        # Custom source pages (Task 4), added after the three fixed ones so
+        # custom_radio.toggled's lambda above (index 0) and the others (1-2)
         # keep the indices they were written against. One page per entry in
         # custom_sources, same order as the radios built above.
         self.custom_checkboxes = {}
@@ -824,13 +797,9 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Connect signals
         self.custom_radio.toggled.connect(lambda: self.stack.setCurrentIndex(0))
         self.overture_radio.toggled.connect(lambda: self.stack.setCurrentIndex(1))
-        self.sourcecoop_radio.toggled.connect(lambda: self.stack.setCurrentIndex(2))
-        self.osm_radio.toggled.connect(lambda: self.stack.setCurrentIndex(3))
+        self.osm_radio.toggled.connect(lambda: self.stack.setCurrentIndex(2))
         self.ok_button.clicked.connect(self.validate_and_accept)
         self.cancel_button.clicked.connect(self.reject)
-
-        # Add after setting up the sourcecoop_combo
-        self.update_sourcecoop_link(self.sourcecoop_combo.currentText())
 
         # Load checkbox states during initialization
         self.load_checkbox_states()
@@ -1084,7 +1053,6 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Task 4's custom-source radios are already in this list too.
         for radio in self.source_radios:
             radio.toggled.connect(self._selection_changed)
-        self.sourcecoop_combo.currentTextChanged.connect(self._selection_changed)
         self.url_input.textChanged.connect(self._selection_changed)
         self.filter_checkbox.toggled.connect(self._filter_asked_for)
         self.filter_input.textChanged.connect(self._update_filter_status)
@@ -1876,17 +1844,6 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                             subtype=type_str, release=latest_release
                         )
                     )
-        elif self.sourcecoop_radio.isChecked():
-            selection = self.sourcecoop_combo.currentText()
-            dataset = next(
-                (
-                    dataset
-                    for dataset in self.PRESET_DATASETS["source_cooperative"].values()
-                    if dataset["display_name"] == selection
-                ),
-                None,
-            )
-            return [dataset["url"]] if dataset else []
         elif self.osm_radio.isChecked():
             for layer, checkbox in self.osm_checkboxes.items():
                 if checkbox.isChecked():
@@ -1907,24 +1864,6 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
             if radio.isChecked():
                 return name
         return None
-
-    def update_sourcecoop_link(self, selection):
-        """Update the link based on the selected dataset"""
-        # Find the dataset by display_name
-        dataset = next(
-            (
-                dataset
-                for dataset in self.PRESET_DATASETS["source_cooperative"].values()
-                if dataset["display_name"] == selection
-            ),
-            None,
-        )
-        if dataset and "info_url" in dataset:
-            self.sourcecoop_link.setText(
-                f'<a href="{dataset["info_url"]}">View dataset info</a>'
-            )
-        else:
-            self.sourcecoop_link.setText("")
 
     def show_bbox_warning(self):
         """Show bbox warning dialog in main thread"""

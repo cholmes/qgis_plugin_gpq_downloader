@@ -254,7 +254,7 @@ def test_a_mocked_dialog_gives_the_worker_no_filter(mock_iface, tmp_path, clean_
     dialog.get_urls.return_value = [URL]
     dialog.get_current_extent.return_value = None
     dialog.aoi_geometry = None
-    for radio in ("overture_radio", "sourcecoop_radio", "osm_radio"):
+    for radio in ("overture_radio", "osm_radio"):
         getattr(dialog, radio).isChecked.return_value = False
     _, worker = accept_into_plugin(mock_iface, dialog, tmp_path, clean_settings)
     assert worker.call_args.kwargs["where_fragment"] is None

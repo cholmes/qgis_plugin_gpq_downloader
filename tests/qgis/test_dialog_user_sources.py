@@ -9,6 +9,7 @@ longer exists falls back to Custom URL, and a corrupt config still opens a
 dialog with every built-in showing.
 """
 
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -50,19 +51,6 @@ def test_hidden_source_radio_is_not_visible(clean_settings, iface):
     # already reaches for self.osm_radio breaks (the design's ruling).
     assert not dialog.overture_radio.isHidden()
     assert dialog.overture_radio in dialog.source_radios
-
-
-def test_hidden_sourcecoop_dataset_missing_from_combo(clean_settings, iface):
-    write_config(hidden_datasets={"source_cooperative": ["vida_buildings"]})
-    dialog = DataSourceDialog(None, iface)
-
-    combo = dialog.sourcecoop_combo
-    names = [combo.itemText(i) for i in range(combo.count())]
-    assert "VIDA Google/Microsoft/OSM Buildings" not in names
-    assert "vida_buildings" not in dialog.PRESET_DATASETS["source_cooperative"]
-    # Hiding a dataset never hides the whole source (apply_hidden's rule):
-    # other Source Cooperative datasets are still offered.
-    assert dialog.sourcecoop_combo.count() > 0
 
 
 def test_hidden_osm_dataset_has_no_checkbox(clean_settings, iface):
@@ -151,12 +139,12 @@ def test_saved_radio_for_hidden_source_falls_back(clean_settings, iface):
 
 
 def test_all_builtins_hidden_leaves_custom_url(clean_settings, iface):
-    write_config(hidden_sources=["overture", "source_cooperative", "openstreetmap"])
+    write_config(hidden_sources=["overture", "openstreetmap"])
     dialog = DataSourceDialog(None, iface)
 
     assert dialog.source_radios == [dialog.custom_radio]
     assert dialog.custom_radio.isChecked()
-    for radio in (dialog.overture_radio, dialog.sourcecoop_radio, dialog.osm_radio):
+    for radio in (dialog.overture_radio, dialog.osm_radio):
         assert radio.isHidden()
 
 
@@ -169,32 +157,51 @@ def test_dialog_opens_with_garbage_config(clean_settings, iface):
 
     for radio in (
         dialog.overture_radio,
-        dialog.sourcecoop_radio,
         dialog.osm_radio,
         dialog.custom_radio,
     ):
         assert not radio.isHidden()
     assert dialog.source_radios == [
         dialog.overture_radio,
-        dialog.sourcecoop_radio,
         dialog.osm_radio,
         dialog.custom_radio,
     ]
 
 
 def test_default_config_changes_nothing(clean_settings, iface):
-    from gpq_downloader.core.presets import load_presets
-
     dialog = DataSourceDialog(None, iface)
 
     for radio in (
         dialog.overture_radio,
-        dialog.sourcecoop_radio,
         dialog.osm_radio,
         dialog.custom_radio,
     ):
         assert not radio.isHidden()
-    assert dialog.sourcecoop_combo.count() == len(load_presets()["source_cooperative"])
+    # No custom source at all, seeded or otherwise: the autouse fixture
+    # already wrote an explicit, empty default_config() to this test's
+    # config file, so load_user_config() never takes the missing-file
+    # (seeding) branch.
+    assert dialog.source_radios == [
+        dialog.overture_radio,
+        dialog.osm_radio,
+        dialog.custom_radio,
+    ]
+
+
+def test_missing_config_seeds_source_cooperative_radio_and_page(clean_settings, iface):
+    """A first run (no user_sources.json at all) seeds the "Source
+    Cooperative" custom group (gui/user_sources_store.load_user_config()),
+    which flows through the same custom-source machinery as a group the
+    user built themselves - no SC-specific code anywhere in the dialog."""
+    os.remove(user_sources_store.user_config_path())
+
+    dialog = DataSourceDialog(None, iface)
+
+    names = [radio.text() for radio in dialog.source_radios]
+    assert "Source Cooperative" in names
+    checkboxes = dialog.custom_checkboxes["Source Cooperative"]
+    assert "VIDA Google/Microsoft/OSM Buildings" in checkboxes
+    dialog.close()
 
 
 # --- Task 4: custom source pages ---------------------------------------
