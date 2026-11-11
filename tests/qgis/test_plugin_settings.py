@@ -272,3 +272,40 @@ def test_saving_under_an_unknown_extension_remembers_no_format(
     accepted(plugin, chosen=str(tmp_path / "mystery.shp"))
 
     assert settings_store.load_text(settings_store.LAST_OUTPUT_FORMAT) == ""
+
+
+def test_a_cancelled_batch_remembers_neither_folder_nor_format(
+    clean_settings, mock_iface, tmp_path, qgs_app
+):
+    """Pick a destination for the first URL, cancel the second: nothing moves.
+
+    Both keys used to be written inside the per-URL loop, so the first
+    file's folder and format were remembered even though cancelling
+    abandons the whole batch and downloads nothing. The next dialog would
+    then open in a folder the user had browsed to and backed out of.
+    """
+    plugin = QgisPluginGeoParquet(mock_iface)
+    dialog_instance = MagicMock()
+    dialog_instance.get_urls.return_value = [
+        "https://example.com/a.parquet",
+        "https://example.com/b.parquet",
+    ]
+    dialog_instance.overture_radio.isChecked.return_value = False
+    dialog_instance.sourcecoop_radio.isChecked.return_value = False
+    dialog_instance.osm_radio.isChecked.return_value = False
+    dialog_instance.get_current_extent.return_value = None
+    dialog_instance.aoi_geometry = None
+    dialog_instance.aoi_geometry_crs = None
+
+    answers = [str(tmp_path / "first.gpkg"), ""]
+
+    def fake_save(parent, title, directory, filters, initialFilter=""):
+        return (answers.pop(0), initialFilter)
+
+    with patch("gpq_downloader.plugin.QFileDialog.getSaveFileName", side_effect=fake_save):
+        with patch.object(plugin, "process_download_queue"):
+            plugin.handle_dialog_accepted(dialog_instance)
+
+    assert answers == []  # the second dialog really was reached and cancelled
+    assert settings_store.load_text(settings_store.LAST_OUTPUT_FOLDER) == ""
+    assert settings_store.load_text(settings_store.LAST_OUTPUT_FORMAT) == ""

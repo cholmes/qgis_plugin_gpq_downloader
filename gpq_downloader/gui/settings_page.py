@@ -91,6 +91,14 @@ class SettingsPage(QgsOptionsPageWidget):
         # them before anything can read them.
         self._configured_format = output_formats.DEFAULT_FORMAT_NAME
         self._configured_folder = ""
+        # Whether each row is showing its configured default (live) or the
+        # last value used (remembered). Tracked rather than read back off the
+        # widget: isEnabled() is the *effective* state, so a disabled ancestor
+        # would make a live row look remembered and apply() would then store a
+        # stale default. Nothing disables an ancestor of this page in QGIS
+        # today, which is exactly the kind of thing that changes quietly.
+        self._format_row_live = True
+        self._folder_row_live = True
 
         self._load()
 
@@ -105,18 +113,18 @@ class SettingsPage(QgsOptionsPageWidget):
     def _configured_format_now(self):
         """The configured default format, wherever it currently lives.
 
-        While the combo is live it is the combo, so an edit the user has just
+        While the row is live it is the combo, so an edit the user has just
         made counts. Once "remember last format used" greys it out the combo
         shows something else, and the configured default is the value saved
         off at the moment it was greyed.
         """
-        if self.format_combo.isEnabled():
+        if self._format_row_live:
             self._configured_format = self.format_combo.currentText()
         return self._configured_format
 
     def _configured_folder_now(self):
         """The configured default folder. See _configured_format_now()."""
-        if self.folder_widget.isEnabled():
+        if self._folder_row_live:
             self._configured_folder = self.folder_widget.filePath()
         return self._configured_folder
 
@@ -131,6 +139,7 @@ class SettingsPage(QgsOptionsPageWidget):
         and what unticking brings back.
         """
         shown = self._configured_format_now()
+        self._format_row_live = not remembering
         self.format_combo.setEnabled(not remembering)
         if remembering:
             last = settings_store.load_text(settings_store.LAST_OUTPUT_FORMAT)
@@ -147,6 +156,7 @@ class SettingsPage(QgsOptionsPageWidget):
         than going quietly inert while still showing the configured path.
         """
         shown = self._configured_folder_now()
+        self._folder_row_live = not remembering
         self.folder_widget.setEnabled(not remembering)
         if remembering:
             shown = settings_store.load_text(settings_store.LAST_OUTPUT_FOLDER) or shown

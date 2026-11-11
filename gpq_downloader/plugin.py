@@ -334,6 +334,9 @@ class QgisPluginGeoParquet:
 
         # First, collect all file locations from user
         download_queue = []
+        # Held back until every URL has a destination; see the write below.
+        remembered_folder = None
+        remembered_format = None
         for url in urls:
             # Get current date for filename
             current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -371,7 +374,7 @@ class QgisPluginGeoParquet:
                 # guards the case only a test or a future caller could hit.
                 saved_folder = Path(output_file).parent
                 if saved_folder.is_absolute():
-                    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, str(saved_folder))
+                    remembered_folder = str(saved_folder)
                 # What was written, by the extension on disk rather than by
                 # the filter that was selected: a name typed as "x.gpkg"
                 # under the GeoParquet filter is a GeoPackage. An extension
@@ -379,10 +382,20 @@ class QgisPluginGeoParquet:
                 # would be nothing to preselect next time.
                 written = output_formats.format_for_path(output_file)
                 if written is not None:
-                    settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, written.name)
+                    remembered_format = written.name
                 download_queue.append((url, output_file))
             else:
                 return
+
+        # Written once the whole batch has a destination, not per URL.
+        # Cancelling the save dialog for the third of five URLs abandons the
+        # batch at the `return` above, and these keys would otherwise be left
+        # pointing at files nobody ever downloaded - moving the next dialog's
+        # starting folder and format on the strength of a cancelled download.
+        if remembered_folder is not None:
+            settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, remembered_folder)
+        if remembered_format is not None:
+            settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, remembered_format)
         
         # `is True` keeps a mocked dialog's truthy MagicMock from enabling clipping
         clip_checkbox = getattr(dialog, "clip_checkbox", None)

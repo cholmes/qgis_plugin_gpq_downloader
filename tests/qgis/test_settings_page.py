@@ -12,7 +12,7 @@ import pytest
 from qgis.core import QgsSettings
 
 from gpq_downloader import logger
-from qgis.PyQt.QtWidgets import QFormLayout
+from qgis.PyQt.QtWidgets import QFormLayout, QWidget
 
 from gpq_downloader.core import copy_options, output_formats
 from gpq_downloader.gui import settings_store
@@ -257,13 +257,20 @@ def test_the_jobs_write_settings_reach_the_worker(clean_settings, qgs_app, mock_
 
 
 def form_labels(page):
-    """Every "label: field" pair in the page's top form, by label text."""
+    """Every "label: field" pair in the page's top form, by label text.
+
+    A row without both a label and a field - a spanning widget, a nested
+    layout - is skipped rather than raising, so whoever adds one gets this
+    test's own assertion message instead of an AttributeError from in here.
+    """
     form = page.layout().itemAt(0).layout()
     pairs = {}
     for row in range(form.rowCount()):
-        field = form.itemAt(row, QFormLayout.ItemRole.FieldRole).widget()
-        label = form.labelForField(field)
-        pairs[label.text()] = field
+        item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+        field = item.widget() if item is not None else None
+        label = form.labelForField(field) if field is not None else None
+        if label is not None:
+            pairs[label.text()] = field
     return pairs
 
 
@@ -389,6 +396,79 @@ def test_a_default_set_just_before_ticking_remember_is_kept(clean_settings, qgs_
     page.apply()
 
     assert settings_store.load_text(settings_store.OUTPUT_FOLDER) == "/data/new"
+    assert settings_store.load_choice(
+        settings_store.OUTPUT_FORMAT, output_formats.format_names(),
+        output_formats.DEFAULT_FORMAT_NAME,
+    ) == "GeoJSON"
+    # Read back as True, not as the False an absent key also gives: the only
+    # other assertion on this key expects False, so dropping apply()'s write
+    # of it broke nothing.
+    assert settings_store.load_flag(settings_store.REMEMBER_LAST_FORMAT, False) is True
+    assert settings_store.load_flag(settings_store.REMEMBER_LAST_FOLDER, False) is True
+
+
+def test_ticking_remember_format_greys_the_row_there_and_then(clean_settings, qgs_app):
+    """The checkbox's own signal does this, not only _load().
+
+    Every other format test reaches the handler through _load()'s explicit
+    call, so disconnecting the checkbox changed nothing in the suite - while
+    in QGIS the row would sit there live, showing a default that had just
+    stopped applying, until the Options dialog was closed and reopened.
+    """
+    settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, "GeoPackage")
+    page = SettingsPage()
+    assert page.format_combo.isEnabled() is True
+
+    page.remember_format_checkbox.setChecked(True)
+
+    assert page.format_combo.isEnabled() is False
+    assert page.format_combo.currentText() == "GeoPackage"
+
+
+def test_unticking_remember_brings_the_configured_format_back(clean_settings, qgs_app):
+    """The folder row's twin, which the format row did not have.
+
+    Without it, a handler that only ever set the combo while remembering
+    passed the whole suite - and unticking would leave the last format used
+    sitting in the box, where OK would then store it as the new default.
+    """
+    settings_store.save_value(settings_store.OUTPUT_FORMAT, "FlatGeobuf")
+    settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, "GeoPackage")
+    settings_store.save_value(settings_store.REMEMBER_LAST_FORMAT, True)
+    page = SettingsPage()
+    assert page.format_combo.currentText() == "GeoPackage"
+
+    page.remember_format_checkbox.setChecked(False)
+
+    assert page.format_combo.isEnabled() is True
+    assert page.format_combo.currentText() == "FlatGeobuf"
+    page.apply()
+    assert settings_store.load_choice(
+        settings_store.OUTPUT_FORMAT, output_formats.format_names(),
+        output_formats.DEFAULT_FORMAT_NAME,
+    ) == "FlatGeobuf"
+
+
+def test_a_disabled_parent_does_not_make_a_live_row_look_remembered(clean_settings, qgs_app):
+    """The page tracks which rows are live; it does not ask the widget.
+
+    isEnabled() reports the *effective* state, so any disabled ancestor
+    makes a live row indistinguishable from one a ticked Remember box has
+    greyed out - and apply() would then write the stale default it had
+    saved off instead of what the user just chose. Nothing in QGIS disables
+    an ancestor of this page today, which is precisely why it would be a
+    quiet change to live with.
+    """
+    parent = QWidget()
+    page = SettingsPage(parent)
+    page.remember_format_checkbox.setChecked(False)
+    page.format_combo.setCurrentText("GeoJSON")
+
+    parent.setEnabled(False)
+    assert page.format_combo.isEnabled() is False  # effective state flipped
+
+    page.apply()
+
     assert settings_store.load_choice(
         settings_store.OUTPUT_FORMAT, output_formats.format_names(),
         output_formats.DEFAULT_FORMAT_NAME,
