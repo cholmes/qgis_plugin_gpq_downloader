@@ -34,6 +34,7 @@ class QgisPluginGeoParquet:
         self.iface = iface
         self.action = None
         self.settings_factory = None
+        self.dialog = None  # the open downloader dialog, for refreshes (#84)
         self.output_file = None
         self.clip_to_area = False  # from the dialog's "Clip features to the area" box
         self.where_fragment = None  # from the dialog's attribute filter; None is no filter
@@ -67,7 +68,9 @@ class QgisPluginGeoParquet:
         # Add the actions to the toolbar
         self.iface.addToolBarIcon(self.action)
 
-        self.settings_factory = SettingsPageFactory()
+        self.settings_factory = SettingsPageFactory(
+            on_sources_saved=self.refresh_dialog_sources
+        )
         self.iface.registerOptionsWidgetFactory(self.settings_factory)
 
         # Apply the stored logging level before anything else logs, so
@@ -212,12 +215,30 @@ class QgisPluginGeoParquet:
         # A download already running is no reason to refuse: what this dialog
         # asks for is queued behind it
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
+        self.dialog = dialog
 
         # Handle OK
         dialog.accepted.connect(lambda: self.handle_dialog_accepted(dialog))
 
         # Show non-modally
         dialog.show()
+
+    def refresh_dialog_sources(self):
+        """Reopen the downloader dialog so it shows the just-saved sources.
+
+        The dialog reads user_sources.json once, at construction, so applying
+        the Options page's Data Sources tab while it is open would otherwise
+        look like the edit did nothing (#84). A closed (or never-opened)
+        dialog needs no refresh: the next run() reads the new config anyway.
+        """
+        dialog = self.dialog
+        if dialog is None or not dialog.isVisible():
+            return
+        geometry = dialog.geometry()
+        dialog.close()
+        self.run()
+        if self.dialog is not None:
+            self.dialog.setGeometry(geometry)
 
     def starting_dir(self) -> Path:
         """The folder the next save dialog opens in.

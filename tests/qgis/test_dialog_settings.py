@@ -300,6 +300,47 @@ def test_plugin_run_with_an_unknown_saved_name_falls_back_to_custom_url(clean_se
         dialog.close()
 
 
+def test_refresh_dialog_sources_reopens_with_the_new_config(clean_settings, iface):
+    """Applying the Options page's Data Sources tab while the downloader is
+    open must show the new sources without the user closing and reopening it
+    themselves (#84): the dialog reads the config once, at construction, so
+    the refresh is a close-and-reopen in place."""
+    import gpq_downloader.gui.user_sources_store as user_sources_store
+
+    made = []
+
+    def make(*args):
+        made.append(DataSourceDialog(*args))
+        return made[-1]
+
+    with patch("gpq_downloader.plugin.DataSourceDialog", side_effect=make):
+        plugin = QgisPluginGeoParquet(iface)
+        plugin.run()
+        first = made[0]
+        assert first.isVisible()
+
+        config = user_sources_store.load_user_config()
+        config["hidden_sources"] = ["openstreetmap"]
+        user_sources_store.save_user_config(config)
+        plugin.refresh_dialog_sources()
+
+    assert len(made) == 2
+    second = made[1]
+    try:
+        assert not first.isVisible()
+        assert second.isVisible()
+        assert second.osm_radio.isHidden()
+        assert second.osm_radio not in second.source_radios
+    finally:
+        second.close()
+
+
+def test_refresh_dialog_sources_without_an_open_dialog_does_nothing(clean_settings, iface):
+    with patch("gpq_downloader.plugin.DataSourceDialog") as ctor:
+        QgisPluginGeoParquet(iface).refresh_dialog_sources()
+    ctor.assert_not_called()
+
+
 def test_plugin_run_does_not_resurrect_a_hidden_radio_via_the_saved_name(clean_settings, iface):
     """run() must not re-check a radio by name after the dialog's own
     restore: a hidden radio is still built and still in the button group,

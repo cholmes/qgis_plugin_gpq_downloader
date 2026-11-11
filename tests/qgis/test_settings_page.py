@@ -265,6 +265,50 @@ def test_apply_saves_sources_config(clean_settings, qgs_app):
     assert [s["name"] for s in saved["custom_sources"]] == ["My Source"]
 
 
+def test_apply_announces_a_changed_sources_config_exactly_once(clean_settings, qgs_app):
+    """The callback is how an open downloader dialog learns to refresh (#84).
+    An Apply that only touched the General tab must not fire it: the refresh
+    closes and reopens the dialog, which would disturb a user who never went
+    near the Data Sources tab."""
+    calls = []
+    page = SettingsPage(on_sources_saved=lambda: calls.append("saved"))
+
+    page.apply()  # nothing changed yet
+    assert calls == []
+
+    assert page.sources_widget._add_source({"name": "My Source", "info_url": ""})
+    page.apply()
+    assert calls == ["saved"]
+
+    page.apply()  # unchanged since the save above
+    assert calls == ["saved"]
+
+
+def test_apply_does_not_announce_sources_that_failed_to_save(
+    clean_settings, qgs_app, monkeypatch, tmp_path
+):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    unwritable = str(blocker / "user_sources.json")
+    monkeypatch.setattr(user_sources_store, "user_config_path", lambda: unwritable)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+
+    calls = []
+    page = SettingsPage(on_sources_saved=lambda: calls.append("saved"))
+    assert page.sources_widget._add_source({"name": "My Source", "info_url": ""})
+    page.apply()
+    assert calls == []
+
+
+def test_factory_hands_the_callback_to_the_page(clean_settings, qgs_app):
+    def callback():
+        pass  # pragma: no cover
+
+    factory = SettingsPageFactory(on_sources_saved=callback)
+    page = factory.createWidget(None)
+    assert page._on_sources_saved is callback
+
+
 def test_apply_still_saves_general_settings(clean_settings, qgs_app):
     page = SettingsPage()
     page.codec_combo.setCurrentText("GZIP")
