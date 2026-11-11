@@ -121,9 +121,13 @@ class _EditDialog(QDialog):
 
 
 class DatasetEditDialog(_EditDialog):
-    """Add/Edit a dataset: name and url (required), info_url, group."""
+    """Add/Edit a dataset: name, url and group (required), info_url.
 
-    def __init__(self, existing_groups=(), initial=None, parent=None):
+    "Group" is the custom group the dataset lives in: the combo lists the
+    existing ones and is editable, so a group can be created right here by
+    typing a new name instead of needing New Group… first (#84)."""
+
+    def __init__(self, group_names=(), initial=None, initial_group="", parent=None):
         super().__init__("Dataset", parent)
         initial = initial or {}
 
@@ -133,9 +137,8 @@ class DatasetEditDialog(_EditDialog):
 
         self.group_combo = QComboBox()
         self.group_combo.setEditable(True)
-        groups = sorted(g for g in set(existing_groups) if g)
-        self.group_combo.addItems(groups)
-        self.group_combo.setEditText(initial.get("group", ""))
+        self.group_combo.addItems(sorted(g for g in set(group_names) if g))
+        self.group_combo.setEditText(initial_group)
 
         form = QFormLayout()
         form.addRow("Name", self.name_edit)
@@ -147,10 +150,13 @@ class DatasetEditDialog(_EditDialog):
     def _validation_error(self):
         if not self.name_edit.text().strip() or not self.url_edit.text().strip():
             return "Name and URL are both required."
+        if not self.group_combo.currentText().strip():
+            return "A group is required — pick one or type a new name."
         return None
 
     def values(self):
-        """The dataset dict this dialog describes; empty optionals as ""."""
+        """The dataset dict this dialog describes, plus "group": the name of
+        the custom group it belongs in (which may not exist yet)."""
         return {
             "name": self.name_edit.text().strip(),
             "url": self.url_edit.text().strip(),
@@ -160,10 +166,10 @@ class DatasetEditDialog(_EditDialog):
 
 
 class SourceEditDialog(_EditDialog):
-    """Add/Edit a custom source: name (required), info_url."""
+    """Add/Edit a custom group: name (required), info_url."""
 
     def __init__(self, initial=None, parent=None):
-        super().__init__("Source", parent)
+        super().__init__("Group", parent)
         initial = initial or {}
 
         self.name_edit = QLineEdit(initial.get("name", ""))
@@ -207,7 +213,7 @@ class SourcesManagerWidget(QWidget):
 
         self.tree = QTreeWidget(self)
         self.tree.setColumnCount(2)
-        self.tree.setHeaderLabels(["Source / Dataset", "Visible"])
+        self.tree.setHeaderLabels(["Group / Dataset", "Visible"])
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tree.header().setSectionResizeMode(
@@ -216,7 +222,7 @@ class SourcesManagerWidget(QWidget):
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.itemSelectionChanged.connect(self._update_button_state)
 
-        self.new_source_button = QPushButton("New Source…", self)
+        self.new_source_button = QPushButton("New Group…", self)
         self.add_dataset_button = QPushButton("Add Dataset…", self)
         self.edit_button = QPushButton("Edit…", self)
         self.remove_button = QPushButton("Remove", self)
@@ -289,6 +295,21 @@ class SourcesManagerWidget(QWidget):
             else (flags & ~Qt.ItemFlag.ItemIsUserCheckable)
         )
 
+    @staticmethod
+    def _set_children_enabled(item, enabled):
+        """Gray out (or restore) every child row: a hidden group's datasets
+        will not display in the dialog, so their own visibility checkboxes
+        are moot while the group is off (#84). The children's check states
+        are kept, so re-showing the group restores them untouched."""
+        for i in range(item.childCount()):
+            child = item.child(i)
+            flags = child.flags()
+            child.setFlags(
+                (flags | Qt.ItemFlag.ItemIsEnabled)
+                if enabled
+                else (flags & ~Qt.ItemFlag.ItemIsEnabled)
+            )
+
     def _builtin_source_item(self, source_key, datasets):
         item = QTreeWidgetItem([BUILTIN_SOURCE_LABELS.get(source_key, source_key)])
         item.setData(_NAME_COLUMN, _SOURCE_KEY_ROLE, source_key)
@@ -326,6 +347,7 @@ class SourcesManagerWidget(QWidget):
                     ),
                 )
             item.addChild(child)
+        self._set_children_enabled(item, not hidden)
         return item
 
     def _custom_source_item(self, source):
@@ -358,6 +380,7 @@ class SourcesManagerWidget(QWidget):
                 hidden_sources.remove(source_key)
             elif not checked and source_key not in hidden_sources:
                 hidden_sources.append(source_key)
+            self._set_children_enabled(item, checked)
             return
 
         hidden_datasets = self._config["hidden_datasets"]
@@ -390,8 +413,9 @@ class SourcesManagerWidget(QWidget):
         return item.parent().data(_NAME_COLUMN, _SOURCE_KEY_ROLE)
 
     def _update_button_state(self):
+        # Add Dataset… is never disabled: its Group field names (or creates)
+        # the group, so it needs no selection to know where to put things.
         enabled = self._selected_custom_item() is not None
-        self.add_dataset_button.setEnabled(enabled)
         self.edit_button.setEnabled(enabled)
         self.remove_button.setEnabled(enabled)
 
@@ -403,12 +427,22 @@ class SourcesManagerWidget(QWidget):
                 return source
         return None
 
-    @staticmethod
-    def _existing_groups(source):
-        """The set of non-empty group names already used within `source`,
-        for pre-populating a dataset dialog's group combo. "" with no
-        source at all."""
-        return {d.get("group", "") for d in source["datasets"]} if source else set()
+    def _group_names(self):
+        """Every custom group's name, for a dataset dialog's Group combo."""
+        return [source["name"] for source in self._config["custom_sources"]]
+
+    def _ensure_group(self, name):
+        """The canonical name of the custom group called `name`, creating it
+        if it does not exist yet. None if the name is empty or reserved."""
+        name = str(name).strip()
+        if not name:
+            return None
+        existing = self._find_custom_source(name)
+        if existing is not None:
+            return existing["name"]
+        if self._add_source({"name": name, "info_url": ""}):
+            return name
+        return None
 
     # -- mutation methods (no dialogs, no QMessageBox) ----------------------
 
@@ -445,12 +479,14 @@ class SourcesManagerWidget(QWidget):
             return False
         if any(d["name"].lower() == name.lower() for d in source["datasets"]):
             return False
+        # values["group"] named the destination group (this source), not
+        # the dataset's stored sub-group, which only hand-edited JSON sets.
         source["datasets"].append(
             {
                 "name": name,
                 "url": url,
                 "info_url": values.get("info_url", "").strip(),
-                "group": values.get("group", "").strip(),
+                "group": "",
             }
         )
         self._rebuild_tree()
@@ -496,16 +532,26 @@ class SourcesManagerWidget(QWidget):
         url = values.get("url", "").strip()
         if not name or not url:
             return False
+        # values["group"] names the group the dataset should end up in; a
+        # different one than today is a move. The group must already exist -
+        # _on_edit creates a brand-new name via _ensure_group() first.
+        target = self._find_custom_source(
+            values.get("group", "").strip() or source["name"]
+        )
+        if target is None:
+            return False
         clashes = any(
             d is not dataset and d["name"].lower() == name.lower()
-            for d in source["datasets"]
+            for d in target["datasets"]
         )
         if clashes:
             return False
         dataset["name"] = name
         dataset["url"] = url
         dataset["info_url"] = values.get("info_url", "").strip()
-        dataset["group"] = values.get("group", "").strip()
+        if target is not source:
+            source["datasets"].remove(dataset)
+            target["datasets"].append(dataset)
         self._rebuild_tree()
         return True
 
@@ -538,24 +584,31 @@ class SourcesManagerWidget(QWidget):
             return
         if not self._add_source(dialog.values()):
             QMessageBox.warning(
-                self, "Duplicate source", "A source with that name already exists."
+                self, "Duplicate group", "A group with that name already exists."
             )
 
     def _on_add_dataset(self):
-        source_name = self._selected_custom_source_name()
-        if source_name is None:
-            return
-        source = self._find_custom_source(source_name)
         dialog = DatasetEditDialog(
-            existing_groups=self._existing_groups(source), parent=self
+            group_names=self._group_names(),
+            initial_group=self._selected_custom_source_name() or "",
+            parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        if not self._add_dataset(source_name, dialog.values()):
+        values = dialog.values()
+        group_name = self._ensure_group(values["group"])
+        if group_name is None:
+            QMessageBox.warning(
+                self,
+                "Invalid group name",
+                "That name is reserved by a built-in source — pick another.",
+            )
+            return
+        if not self._add_dataset(group_name, values):
             QMessageBox.warning(
                 self,
                 "Duplicate dataset",
-                "A dataset with that name already exists for this source.",
+                "A dataset with that name already exists in this group.",
             )
 
     def _on_edit(self):
@@ -576,13 +629,25 @@ class SourcesManagerWidget(QWidget):
                 else None
             )
             dialog = DatasetEditDialog(
-                existing_groups=self._existing_groups(source),
+                group_names=self._group_names(),
                 initial=dataset,
+                initial_group=source["name"] if source else "",
                 parent=self,
             )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        if not self._apply_edit(item, dialog.values()):
+        values = dialog.values()
+        if item.parent() is not None and "group" in values:
+            group_name = self._ensure_group(values["group"])
+            if group_name is None:
+                QMessageBox.warning(
+                    self,
+                    "Invalid group name",
+                    "That name is reserved by a built-in source — pick another.",
+                )
+                return
+            values["group"] = group_name
+        if not self._apply_edit(item, values):
             QMessageBox.warning(self, "Duplicate name", "That name is already used.")
 
     def _on_remove(self):
@@ -638,7 +703,7 @@ class SourcesManagerWidget(QWidget):
         reply = QMessageBox.question(
             self,
             "Replace configuration",
-            f"{custom_count} custom sources, {hidden_count} hidden items — "
+            f"{custom_count} custom groups, {hidden_count} hidden items — "
             "replace current configuration?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,

@@ -233,7 +233,7 @@ def test_edit_dataset_updates_config(qgs_app):
             "name": "Parcels 2025",
             "url": "https://example.com/parcels2025.parquet",
             "info_url": "https://example.com/parcels",
-            "group": "Boundaries",
+            "group": "My Company",  # same group: edit in place
         },
     )
     assert ok is True
@@ -243,9 +243,66 @@ def test_edit_dataset_updates_config(qgs_app):
             "name": "Parcels 2025",
             "url": "https://example.com/parcels2025.parquet",
             "info_url": "https://example.com/parcels",
-            "group": "Boundaries",
+            "group": "",  # the stored sub-group field is hand-edit only now
         }
     ]
+
+
+def test_edit_dataset_with_another_group_moves_it(qgs_app):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    assert widget._add_source({"name": "Other Co", "info_url": ""}) is True
+    custom = _top_item(widget, "My Company")
+    dataset_item = _child_item(custom, "Parcels")
+
+    ok = widget._apply_edit(
+        dataset_item,
+        {
+            "name": "Parcels",
+            "url": "https://example.com/parcels.parquet",
+            "info_url": "",
+            "group": "Other Co",
+        },
+    )
+    assert ok is True
+    by_name = {s["name"]: s for s in widget.config()["custom_sources"]}
+    assert by_name["My Company"]["datasets"] == []
+    assert [d["name"] for d in by_name["Other Co"]["datasets"]] == ["Parcels"]
+
+
+def test_edit_dataset_move_rejected_when_target_has_that_name(qgs_app):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    assert widget._add_source({"name": "Other Co", "info_url": ""}) is True
+    assert widget._add_dataset(
+        "Other Co",
+        {"name": "Parcels", "url": "https://other.example.com/p.parquet"},
+    )
+    custom = _top_item(widget, "My Company")
+    dataset_item = _child_item(custom, "Parcels")
+    before = widget.config()
+
+    ok = widget._apply_edit(
+        dataset_item,
+        {
+            "name": "Parcels",
+            "url": "https://example.com/parcels.parquet",
+            "info_url": "",
+            "group": "Other Co",
+        },
+    )
+    assert ok is False
+    assert widget.config() == before
+
+
+def test_ensure_group_creates_finds_and_refuses(qgs_app):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    # Existing group, any case: the canonical name back, nothing created.
+    assert widget._ensure_group("my company") == "My Company"
+    # New name: created on the spot (the Add Dataset flow relies on this).
+    assert widget._ensure_group("Fresh Group") == "Fresh Group"
+    assert "Fresh Group" in [s["name"] for s in widget.config()["custom_sources"]]
+    # Reserved and empty names are refused.
+    assert widget._ensure_group("Overture Maps") is None
+    assert widget._ensure_group("  ") is None
 
 
 def test_remove_source_removes_datasets(qgs_app, monkeypatch):
@@ -322,7 +379,32 @@ def test_edit_remove_disabled_for_builtin_selection(qgs_app):
 
     assert widget.edit_button.isEnabled() is False
     assert widget.remove_button.isEnabled() is False
-    assert widget.add_dataset_button.isEnabled() is False
+    # Add Dataset stays enabled everywhere: its Group field says where the
+    # dataset goes, so no custom selection is needed first.
+    assert widget.add_dataset_button.isEnabled() is True
+
+
+def test_unchecking_a_builtin_source_grays_out_its_children(qgs_app):
+    widget = SourcesManagerWidget(_config(), PRESETS)
+    osm = _top_item(widget, "OpenStreetMap")
+    child = _child_item(osm, "Addresses")
+    assert child.flags() & Qt.ItemFlag.ItemIsEnabled
+
+    osm.setCheckState(1, Qt.CheckState.Unchecked)
+    assert not (_child_item(osm, "Addresses").flags() & Qt.ItemFlag.ItemIsEnabled)
+    # The child keeps its own check state while grayed.
+    assert _child_item(osm, "Addresses").checkState(1) == Qt.CheckState.Checked
+
+    osm.setCheckState(1, Qt.CheckState.Checked)
+    assert _child_item(osm, "Addresses").flags() & Qt.ItemFlag.ItemIsEnabled
+
+
+def test_a_source_hidden_in_the_config_starts_with_grayed_children(qgs_app):
+    config = _config()
+    config["hidden_sources"] = ["openstreetmap"]
+    widget = SourcesManagerWidget(config, PRESETS)
+    osm = _top_item(widget, "OpenStreetMap")
+    assert not (_child_item(osm, "Addresses").flags() & Qt.ItemFlag.ItemIsEnabled)
 
 
 def test_config_returns_deep_copy_of_initial_when_untouched(qgs_app):
