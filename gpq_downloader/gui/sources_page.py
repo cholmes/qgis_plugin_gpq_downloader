@@ -621,6 +621,13 @@ class SourcesManagerWidget(QWidget):
             loop.quit()
 
         def on_canceled():
+            # QProgressDialog also emits canceled() when it is closed -
+            # including the close() below, AFTER the probe has finished.
+            # Only a cancel that arrives before any result counts as the
+            # user actually canceling; otherwise this would overwrite the
+            # real outcome (success or failure) with "canceled".
+            if "result" in outcome:
+                return
             outcome["result"] = (False, "canceled", {})
             task.cancel()
             loop.quit()

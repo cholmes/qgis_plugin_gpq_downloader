@@ -707,3 +707,82 @@ def test_import_cancelled_keeps_state(qgs_app, monkeypatch, tmp_path):
     )
     assert widget._import_from(path) is False
     assert widget.config() == before
+
+
+# -- _probe_url itself, with the REAL event-loop/task plumbing ---------------
+# Every handler test above monkeypatches _probe_url away; these run the real
+# method (QProgressDialog + QEventLoop + WorkerTask/submit) with only the
+# worker's DuckDB connection faked. Regression for the bug where closing the
+# progress dialog after the loop emitted canceled() and overwrote the real
+# outcome with (False, "canceled", {}) - every probe, success or failure,
+# came back "canceled", so bad URLs were silently added unvalidated.
+
+
+class _ProbeFakeConnection:
+    """Enough of a DuckDB connection for DatasetProbeWorker.run()."""
+
+    def __init__(self, describe_rows):
+        self.describe_rows = describe_rows
+
+    def execute(self, query, *args, **kwargs):
+        rows = []
+        if "DESCRIBE" in query:
+            rows = list(self.describe_rows)
+
+        class _R:
+            def fetchall(self_inner):
+                return rows
+
+            def fetchone(self_inner):
+                return rows[0] if rows else None
+
+        return _R()
+
+    def interrupt(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _patch_probe_worker(monkeypatch, connection_factory):
+    real_cls = sources_page_module.DatasetProbeWorker
+
+    def make(url, **kwargs):
+        return real_cls(url, connection_factory=connection_factory)
+
+    monkeypatch.setattr(sources_page_module, "DatasetProbeWorker", make)
+
+
+def test_probe_url_reports_a_real_failure_not_canceled(qgs_app, monkeypatch):
+    def raising_factory():
+        raise RuntimeError("IO Error: No files found that match the pattern 'ads'")
+
+    _patch_probe_worker(monkeypatch, raising_factory)
+    widget = SourcesManagerWidget(_config(), PRESETS)
+
+    success, message, results = widget._probe_url("ads")
+
+    assert success is False
+    assert "No files found" in message
+    assert message != "canceled"
+    assert results == {}
+
+
+def test_probe_url_returns_the_workers_results_on_success(qgs_app, monkeypatch):
+    describe_rows = [
+        ("id", "INTEGER"),
+        ("geometry", "GEOMETRY"),
+        ("bbox", "STRUCT(xmin DOUBLE, ymin DOUBLE, xmax DOUBLE, ymax DOUBLE)"),
+    ]
+    _patch_probe_worker(monkeypatch, lambda: _ProbeFakeConnection(describe_rows))
+    widget = SourcesManagerWidget(_config(), PRESETS)
+
+    success, message, results = widget._probe_url("https://example.com/ok.parquet")
+
+    assert success is True
+    assert results == {
+        "has_bbox": True,
+        "bbox_column": "bbox",
+        "geometry_column": "geometry",
+    }
