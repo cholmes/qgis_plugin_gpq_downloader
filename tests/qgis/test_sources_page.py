@@ -467,7 +467,7 @@ def test_add_dataset_with_probe_success_stores_validation(qgs_app, monkeypatch):
         },
     )
     results = {"has_bbox": True, "bbox_column": "bbox", "geometry_column": "geometry"}
-    monkeypatch.setattr(widget, "_probe_url", lambda url: (True, "", results))
+    monkeypatch.setattr(widget, "_probe_url", lambda url, info_url="": (True, "", results))
 
     widget._on_add_dataset()
 
@@ -487,7 +487,7 @@ def test_add_dataset_probe_failure_then_yes_adds_without_validation(qgs_app, mon
             "group": "My Company",
         },
     )
-    monkeypatch.setattr(widget, "_probe_url", lambda url: (False, "connection refused", {}))
+    monkeypatch.setattr(widget, "_probe_url", lambda url, info_url="": (False, "connection refused", {}))
     monkeypatch.setattr(
         QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
     )
@@ -511,7 +511,7 @@ def test_add_dataset_probe_failure_then_no_adds_nothing(qgs_app, monkeypatch):
             "group": "My Company",
         },
     )
-    monkeypatch.setattr(widget, "_probe_url", lambda url: (False, "connection refused", {}))
+    monkeypatch.setattr(widget, "_probe_url", lambda url, info_url="": (False, "connection refused", {}))
     monkeypatch.setattr(
         QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No
     )
@@ -534,7 +534,7 @@ def test_add_dataset_probe_canceled_adds_without_validation_and_asks_nothing(
             "group": "My Company",
         },
     )
-    monkeypatch.setattr(widget, "_probe_url", lambda url: (False, "canceled", {}))
+    monkeypatch.setattr(widget, "_probe_url", lambda url, info_url="": (False, "canceled", {}))
     asked = []
     monkeypatch.setattr(
         QMessageBox,
@@ -550,7 +550,69 @@ def test_add_dataset_probe_canceled_adds_without_validation_and_asks_nothing(
     assert "validation" not in added
 
 
-def _config_with_validated_dataset():
+# -- info_url is probed too, as a soft warning (Task C / #84 follow-up) -----
+
+
+def test_add_dataset_with_info_url_soft_warning_then_yes_stores_validation(
+    qgs_app, monkeypatch
+):
+    widget = SourcesManagerWidget(_config(), PRESETS)
+    _patch_dataset_dialog(
+        monkeypatch,
+        {
+            "name": "Roads",
+            "url": "https://example.com/roads.parquet",
+            "info_url": "https://example.com/info",
+            "group": "New Co",
+        },
+    )
+    results = {"has_bbox": True, "bbox_column": "bbox", "geometry_column": "geometry"}
+    monkeypatch.setattr(
+        widget,
+        "_probe_url",
+        lambda url, info_url="": (True, "The info URL could not be reached: 404", results),
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+
+    widget._on_add_dataset()
+
+    [dataset] = widget.config()["custom_sources"][0]["datasets"]
+    assert dataset["name"] == "Roads"
+    assert dataset["validation"] == results
+
+
+def test_add_dataset_with_info_url_soft_warning_then_no_adds_nothing(
+    qgs_app, monkeypatch
+):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    before = widget.config()
+    _patch_dataset_dialog(
+        monkeypatch,
+        {
+            "name": "Roads",
+            "url": "https://example.com/roads.parquet",
+            "info_url": "https://example.com/info",
+            "group": "My Company",
+        },
+    )
+    results = {"has_bbox": True, "bbox_column": "bbox", "geometry_column": "geometry"}
+    monkeypatch.setattr(
+        widget,
+        "_probe_url",
+        lambda url, info_url="": (True, "The info URL could not be reached: 404", results),
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No
+    )
+
+    widget._on_add_dataset()
+
+    assert widget.config() == before
+
+
+def _config_with_validated_dataset(info_url=""):
     return _config(
         custom_sources=[
             {
@@ -560,7 +622,7 @@ def _config_with_validated_dataset():
                     {
                         "name": "Parcels",
                         "url": "https://example.com/parcels.parquet",
-                        "info_url": "",
+                        "info_url": info_url,
                         "group": "",
                         "validation": {
                             "has_bbox": True,
@@ -592,7 +654,7 @@ def test_edit_dataset_with_unchanged_url_never_probes_and_keeps_validation(
     )
     probe_calls = []
     monkeypatch.setattr(
-        widget, "_probe_url", lambda url: probe_calls.append(url) or (True, "", {})
+        widget, "_probe_url", lambda url, info_url="": probe_calls.append(url) or (True, "", {})
     )
 
     widget._on_edit()
@@ -627,7 +689,7 @@ def test_edit_dataset_with_changed_url_reprobes_and_replaces_validation(
     monkeypatch.setattr(
         widget,
         "_probe_url",
-        lambda url: probe_calls.append(url) or (True, "", new_results),
+        lambda url, info_url="": probe_calls.append(url) or (True, "", new_results),
     )
 
     widget._on_edit()
@@ -636,6 +698,77 @@ def test_edit_dataset_with_changed_url_reprobes_and_replaces_validation(
     [dataset] = widget.config()["custom_sources"][0]["datasets"]
     assert dataset["url"] == "https://example.com/parcels-2026.parquet"
     assert dataset["validation"] == new_results
+
+
+def test_edit_dataset_with_only_info_url_changed_still_probes(qgs_app, monkeypatch):
+    """Changing only the info URL re-runs the probe (Task C / #84
+    follow-up) - it re-checks the data URL too, which is accepted since
+    there is no cheaper way to check the info URL alone - and the fresh
+    results are stored on success."""
+    widget = SourcesManagerWidget(_config_with_validated_dataset(), PRESETS)
+    custom = _top_item(widget, "My Company")
+    widget.tree.setCurrentItem(_child_item(custom, "Parcels"))
+    _patch_dataset_dialog(
+        monkeypatch,
+        {
+            "name": "Parcels",
+            # Same URL as the dataset already has.
+            "url": "https://example.com/parcels.parquet",
+            "info_url": "https://example.com/info",
+            "group": "My Company",
+        },
+    )
+    new_results = {"has_bbox": False, "bbox_column": None, "geometry_column": "geom"}
+    probe_calls = []
+    monkeypatch.setattr(
+        widget,
+        "_probe_url",
+        lambda url, info_url="": probe_calls.append((url, info_url))
+        or (True, "", new_results),
+    )
+
+    widget._on_edit()
+
+    assert probe_calls == [
+        ("https://example.com/parcels.parquet", "https://example.com/info")
+    ]
+    [dataset] = widget.config()["custom_sources"][0]["datasets"]
+    assert dataset["info_url"] == "https://example.com/info"
+    assert dataset["validation"] == new_results
+
+
+def test_edit_dataset_with_unchanged_url_and_info_url_never_probes(qgs_app, monkeypatch):
+    widget = SourcesManagerWidget(
+        _config_with_validated_dataset(info_url="https://example.com/info"), PRESETS
+    )
+    custom = _top_item(widget, "My Company")
+    widget.tree.setCurrentItem(_child_item(custom, "Parcels"))
+    _patch_dataset_dialog(
+        monkeypatch,
+        {
+            "name": "Parcels Renamed",
+            "url": "https://example.com/parcels.parquet",
+            "info_url": "https://example.com/info",
+            "group": "My Company",
+        },
+    )
+    probe_calls = []
+    monkeypatch.setattr(
+        widget,
+        "_probe_url",
+        lambda url, info_url="": probe_calls.append(url) or (True, "", {}),
+    )
+
+    widget._on_edit()
+
+    assert probe_calls == []
+    [dataset] = widget.config()["custom_sources"][0]["datasets"]
+    assert dataset["name"] == "Parcels Renamed"
+    assert dataset["validation"] == {
+        "has_bbox": True,
+        "bbox_column": "bbox",
+        "geometry_column": "geometry",
+    }
 
 
 # -- import / export ---------------------------------------------------------
@@ -745,11 +878,13 @@ class _ProbeFakeConnection:
         pass
 
 
-def _patch_probe_worker(monkeypatch, connection_factory):
+def _patch_probe_worker(monkeypatch, connection_factory, url_opener=None):
     real_cls = sources_page_module.DatasetProbeWorker
 
-    def make(url, **kwargs):
-        return real_cls(url, connection_factory=connection_factory)
+    def make(url, info_url="", **kwargs):
+        return real_cls(
+            url, info_url, connection_factory=connection_factory, url_opener=url_opener
+        )
 
     monkeypatch.setattr(sources_page_module, "DatasetProbeWorker", make)
 
@@ -784,5 +919,36 @@ def test_probe_url_returns_the_workers_results_on_success(qgs_app, monkeypatch):
     assert results == {
         "has_bbox": True,
         "bbox_column": "bbox",
+        "geometry_column": "geometry",
+    }
+
+
+def test_probe_url_plumbs_info_url_through_to_the_worker(qgs_app, monkeypatch):
+    """_probe_url(url, info_url) reaches the real worker with both arguments
+    - this is the real QProgressDialog/QEventLoop plumbing, just with the
+    info-URL opener faked too, so it is a soft-warning outcome, not
+    "canceled" (Task C / #84 follow-up)."""
+    describe_rows = [("id", "INTEGER"), ("geometry", "GEOMETRY")]
+    opener_calls = []
+
+    def raising_opener(url, timeout=None):
+        opener_calls.append((url, timeout))
+        raise RuntimeError("unreachable")
+
+    _patch_probe_worker(
+        monkeypatch, lambda: _ProbeFakeConnection(describe_rows), url_opener=raising_opener
+    )
+    widget = SourcesManagerWidget(_config(), PRESETS)
+
+    success, message, results = widget._probe_url(
+        "https://example.com/ok.parquet", "https://example.com/info"
+    )
+
+    assert success is True
+    assert opener_calls == [("https://example.com/info", 10)]
+    assert "info URL" in message
+    assert results == {
+        "has_bbox": False,
+        "bbox_column": None,
         "geometry_column": "geometry",
     }

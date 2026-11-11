@@ -7,6 +7,7 @@ helpers they call that need no QGIS stay in utils.py and core for now.
 """
 
 import os
+import urllib.request
 
 from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsGeometry
 from qgis.PyQt.QtCore import pyqtSignal, QObject
@@ -854,15 +855,25 @@ class DatasetProbeWorker(QObject):
     (qgis_io/worker.py): duckdb.connect unless a test passes a stand-in, so
     this can be unit-tested without touching real DuckDB extensions, which
     cannot load in this project's local test process.
+
+    The optional info_url (Task C / #84 follow-up) is checked too, but only
+    *after* the data checks succeed, and a problem with it never fails the
+    probe: the info page is just documentation, so "the data is fine but the
+    info link looks broken" is a soft warning, not a reason to refuse the
+    URL. url_opener is the test seam for that request, following the same
+    pattern as connection_factory: urllib.request.urlopen unless a test
+    passes a stand-in, so no test here makes a real network request.
     """
 
     finished = pyqtSignal(bool, str, dict)
     progress = pyqtSignal(str)
 
-    def __init__(self, dataset_url, *, connection_factory=None):
+    def __init__(self, dataset_url, info_url="", *, connection_factory=None, url_opener=None):
         super().__init__()
         self.dataset_url = dataset_url
+        self.info_url = info_url
         self.connection_factory = connection_factory
+        self.url_opener = url_opener
         self.killed = False
         self.conn = None  # kept so kill() can interrupt a running query
 
@@ -897,15 +908,25 @@ class DatasetProbeWorker(QObject):
 
             if self.killed:
                 return
-            self.finished.emit(
-                True,
-                "",
-                {
-                    "has_bbox": bbox_column is not None,
-                    "bbox_column": bbox_column,
-                    "geometry_column": geometry_column,
-                },
-            )
+            results = {
+                "has_bbox": bbox_column is not None,
+                "bbox_column": bbox_column,
+                "geometry_column": geometry_column,
+            }
+
+            message = ""
+            if self.info_url:
+                opener = self.url_opener or urllib.request.urlopen
+                try:
+                    response = opener(self.info_url, timeout=10)
+                    response.close()
+                except Exception as info_exc:
+                    # The DATA is fine - only the (optional) info link is
+                    # not - so this stays a success, just with a message the
+                    # caller can show as a soft warning.
+                    message = f"The info URL could not be reached: {info_exc}"
+
+            self.finished.emit(True, message, results)
         except Exception as e:
             if not self.killed:
                 logger.log(f"Error in DatasetProbeWorker: {e}")

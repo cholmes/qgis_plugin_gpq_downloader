@@ -145,7 +145,7 @@ class DatasetEditDialog(_EditDialog):
         form = QFormLayout()
         form.addRow("Name", self.name_edit)
         form.addRow("URL", self.url_edit)
-        form.addRow("Info URL", self.info_url_edit)
+        form.addRow("Info URL (optional)", self.info_url_edit)
         form.addRow("Group", self.group_combo)
         self._finish(form)
 
@@ -179,7 +179,7 @@ class SourceEditDialog(_EditDialog):
 
         form = QFormLayout()
         form.addRow("Name", self.name_edit)
-        form.addRow("Info URL", self.info_url_edit)
+        form.addRow("Info URL (optional)", self.info_url_edit)
         self._finish(form)
 
     def _validation_error(self):
@@ -594,19 +594,24 @@ class SourcesManagerWidget(QWidget):
 
     # -- URL pre-validation (Task B / #84 follow-up) -------------------------
 
-    def _probe_url(self, url):
-        """Probes `url` for reachability and its geometry/bbox columns,
-        blocking the caller until it is done: a cancelable, indeterminate
-        QProgressDialog and a local QEventLoop that quits once the worker's
-        finished signal arrives or Cancel is clicked - the same worker/task
-        plumbing dialog.py's validate_and_accept() uses, just driven by a
-        private event loop here instead of returning control to Qt's own.
+    def _probe_url(self, url, info_url=""):
+        """Probes `url` for reachability and its geometry/bbox columns, and
+        - if `info_url` is non-empty - that URL too, blocking the caller
+        until it is done: a cancelable, indeterminate QProgressDialog and a
+        local QEventLoop that quits once the worker's finished signal
+        arrives or Cancel is clicked - the same worker/task plumbing
+        dialog.py's validate_and_accept() uses, just driven by a private
+        event loop here instead of returning control to Qt's own.
 
         Returns (success, message, results). A cancel reports success=False
         with message "canceled" and no results - the caller's sentinel for
         "the user skipped this, don't nag them further", distinct from an
-        actual probe failure (also success=False, but with DuckDB's own
-        message) which the caller asks to confirm instead.
+        actual data-URL failure (also success=False, but with DuckDB's own
+        message) which the caller asks to confirm instead. A reachable data
+        URL but an unreachable info_url (Task C / #84 follow-up) is neither
+        of those: success stays True, with results populated, but message is
+        non-empty - the caller's cue to show it as a soft warning rather than
+        a hard failure to confirm past.
         """
         progress = QProgressDialog("Validating URL…", "Cancel", 0, 0, self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
@@ -614,7 +619,7 @@ class SourcesManagerWidget(QWidget):
         loop = QEventLoop(self)
         outcome = {}
 
-        worker = DatasetProbeWorker(url)
+        worker = DatasetProbeWorker(url, info_url)
 
         def on_finished(success, message, results):
             outcome["result"] = (success, message, results)
@@ -675,8 +680,23 @@ class SourcesManagerWidget(QWidget):
             )
             return
 
-        success, message, results = self._probe_url(values["url"])
-        if success:
+        success, message, results = self._probe_url(values["url"], values["info_url"])
+        if success and message:
+            # Soft warning (Task C / #84 follow-up): the data URL is fine,
+            # only the optional info URL could not be reached - the
+            # validation is kept either way, and the user decides whether
+            # the broken info link is worth fixing before adding this.
+            values["validation"] = results
+            reply = QMessageBox.question(
+                self,
+                "Could not validate URL",
+                f"The data URL works, but the info URL could not be reached:\n{message}\n\nAdd it anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        elif success:
             values["validation"] = results
         elif message != "canceled":
             reply = QMessageBox.question(
@@ -736,14 +756,39 @@ class SourcesManagerWidget(QWidget):
                 return
             values["group"] = group_name
 
-            # Re-probe only when the URL actually changed (Task B/#84
-            # follow-up): editing just the name or group never re-checks a
-            # URL that is already known good. _apply_dataset_edit (the
-            # mutation method) is what drops a stale "validation" when the
-            # URL changed here but no new one was supplied below.
-            if dataset is not None and values["url"].strip() != dataset["url"]:
-                success, message, results = self._probe_url(values["url"])
-                if success:
+            # Re-probe when the data URL actually changed (Task B/#84
+            # follow-up) OR when the info URL changed to a different
+            # non-empty value (Task C/#84 follow-up): editing just the name
+            # or group never re-checks URLs that are already known good.
+            # When only the info URL changed, the probe re-runs the data
+            # check too - accepted, since there is no cheaper way to check
+            # the info URL alone. _apply_dataset_edit (the mutation method)
+            # is what drops a stale "validation" when the URL changed here
+            # but no new one was supplied below.
+            info_url = values.get("info_url", "").strip()
+            url_changed = dataset is not None and values["url"].strip() != dataset["url"]
+            info_url_changed = (
+                dataset is not None
+                and info_url
+                and info_url != dataset.get("info_url", "")
+            )
+            if dataset is not None and (url_changed or info_url_changed):
+                success, message, results = self._probe_url(values["url"], info_url)
+                if success and message:
+                    # Soft warning: the data URL is fine, only the info URL
+                    # could not be reached - keep the fresh validation and
+                    # let the user decide.
+                    values["validation"] = results
+                    reply = QMessageBox.question(
+                        self,
+                        "Could not validate URL",
+                        f"The data URL works, but the info URL could not be reached:\n{message}\n\nSave it anyway?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    if reply != QMessageBox.StandardButton.Yes:
+                        return
+                elif success:
                     values["validation"] = results
                 elif message != "canceled":
                     reply = QMessageBox.question(
