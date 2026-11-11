@@ -178,6 +178,137 @@ def test_sanitize_strips_whitespace_and_coerces_missing_optional_fields():
     assert dataset["group"] == ""
 
 
+# --- dataset "validation" (Task B / #84 follow-up: URL pre-validation) ---
+
+
+def test_sanitize_keeps_a_well_formed_validation_dict():
+    raw = {
+        "custom_sources": [
+            {
+                "name": "Co",
+                "datasets": [
+                    {
+                        "name": "D",
+                        "url": "https://example.com/d.parquet",
+                        "validation": {
+                            "has_bbox": True,
+                            "bbox_column": "bbox",
+                            "geometry_column": "geom",
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    result = sanitize_config(raw)
+    dataset = result["custom_sources"][0]["datasets"][0]
+    assert dataset["validation"] == {
+        "has_bbox": True,
+        "bbox_column": "bbox",
+        "geometry_column": "geom",
+    }
+
+
+def test_sanitize_normalizes_validation_types_and_defaults():
+    raw = {
+        "custom_sources": [
+            {
+                "name": "Co",
+                "datasets": [
+                    {
+                        "name": "D",
+                        "url": "https://example.com/d.parquet",
+                        # has_bbox coerced to bool; bbox_column blank -> None;
+                        # geometry_column missing -> defaults to "geometry".
+                        "validation": {"has_bbox": 1, "bbox_column": "  "},
+                    }
+                ],
+            }
+        ]
+    }
+    result = sanitize_config(raw)
+    dataset = result["custom_sources"][0]["datasets"][0]
+    assert dataset["validation"] == {
+        "has_bbox": True,
+        "bbox_column": None,
+        "geometry_column": "geometry",
+    }
+
+
+@pytest.mark.parametrize("bad_validation", [None, "nope", 42, [], {"has_bbox": True}])
+def test_sanitize_drops_malformed_validation_but_keeps_the_dataset(bad_validation):
+    """A dataset's "validation" is not even a dict (or, for the last case, a
+    dict missing a usable shape is still handled - _sanitize_dataset_validation
+    only refuses a non-dict): either way the dataset itself is never dropped,
+    it just ends up unvalidated or with a best-effort validation dict."""
+    raw = {
+        "custom_sources": [
+            {
+                "name": "Co",
+                "datasets": [
+                    {
+                        "name": "D",
+                        "url": "https://example.com/d.parquet",
+                        "validation": bad_validation,
+                    }
+                ],
+            }
+        ]
+    }
+    result = sanitize_config(raw)
+    [dataset] = result["custom_sources"][0]["datasets"]
+    assert dataset["name"] == "D"
+    if isinstance(bad_validation, dict):
+        assert dataset["validation"] == {
+            "has_bbox": True,
+            "bbox_column": None,
+            "geometry_column": "geometry",
+        }
+    else:
+        assert "validation" not in dataset
+
+
+def test_sanitize_dataset_without_validation_key_stays_legal():
+    raw = {
+        "custom_sources": [
+            {"name": "Co", "datasets": [{"name": "D", "url": "https://example.com/d"}]}
+        ]
+    }
+    result = sanitize_config(raw)
+    dataset = result["custom_sources"][0]["datasets"][0]
+    assert "validation" not in dataset
+
+
+def test_validation_roundtrips_through_serialize_and_parse():
+    config = sanitize_config(
+        {
+            "custom_sources": [
+                {
+                    "name": "Co",
+                    "datasets": [
+                        {
+                            "name": "D",
+                            "url": "https://example.com/d",
+                            "validation": {
+                                "has_bbox": True,
+                                "bbox_column": "bbox",
+                                "geometry_column": "geometry",
+                            },
+                        },
+                        {"name": "Unvalidated", "url": "https://example.com/u"},
+                    ],
+                }
+            ]
+        }
+    )
+    text = serialize_config(config)
+    assert parse_config(text) == config
+    datasets = parse_config(text)["custom_sources"][0]["datasets"]
+    by_name = {d["name"]: d for d in datasets}
+    assert "validation" in by_name["D"]
+    assert "validation" not in by_name["Unvalidated"]
+
+
 @pytest.mark.parametrize(
     "garbage",
     [
@@ -319,6 +450,37 @@ def test_source_cooperative_group_skips_entries_without_a_usable_url():
     group = source_cooperative_group(presets)
     names = [d["name"] for d in group["datasets"]]
     assert names == ["Good"]
+
+
+def test_source_cooperative_group_carries_validation_for_needs_validation_false():
+    """A bundled SC entry whose publisher guarantees a standard GeoParquet
+    "bbox" covering (needs_validation: false) is seeded with that result
+    already stored, so a download of it never has to probe; nhd_flowlines
+    (needs_validation: true) gets no "validation" key at all, exactly like
+    an unvalidated dataset a user added themselves (Task B / #84 follow-up).
+    """
+    presets = {
+        "source_cooperative": {
+            "vida_buildings": {
+                "url": "s3://vida/*.parquet",
+                "display_name": "VIDA Buildings",
+                "needs_validation": False,
+            },
+            "nhd_flowlines": {
+                "url": "s3://nhd/*.parquet",
+                "display_name": "NHD Flowlines",
+                "needs_validation": True,
+            },
+        }
+    }
+    group = source_cooperative_group(presets)
+    by_name = {d["name"]: d for d in group["datasets"]}
+    assert by_name["VIDA Buildings"]["validation"] == {
+        "has_bbox": True,
+        "bbox_column": "bbox",
+        "geometry_column": "geometry",
+    }
+    assert "validation" not in by_name["NHD Flowlines"]
 
 
 def test_source_cooperative_group_missing_section_gives_empty_datasets():

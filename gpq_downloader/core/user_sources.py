@@ -56,14 +56,24 @@ def source_cooperative_group(presets):
         url = entry.get("url")
         if not isinstance(url, str) or not url:
             continue
-        datasets.append(
-            {
-                "name": entry.get("display_name") or key.title(),
-                "url": url,
-                "info_url": entry.get("info_url", ""),
-                "group": "",
+        dataset = {
+            "name": entry.get("display_name") or key.title(),
+            "url": url,
+            "info_url": entry.get("info_url", ""),
+            "group": "",
+        }
+        # A bundled preset that does not need validation already guarantees
+        # a standard "bbox" covering (Task B / #84 follow-up); carrying that
+        # forward as a stored validation result lets a download of it skip
+        # the pre-validation probe entirely, the same as any dataset a user
+        # has already had probed through the Data Sources manager.
+        if entry.get("needs_validation") is False:
+            dataset["validation"] = {
+                "has_bbox": True,
+                "bbox_column": "bbox",
+                "geometry_column": "geometry",
             }
-        )
+        datasets.append(dataset)
     return {
         "name": "Source Cooperative",
         "info_url": "https://source.coop",
@@ -109,6 +119,21 @@ def _sanitize_hidden_datasets(raw):
     return result
 
 
+def _sanitize_dataset_validation(raw):
+    """The normalized "validation" dict for a dataset, or None when `raw`
+    is not a dict - a dataset with no usable validation simply has no
+    "validation" key at all, which stays a legal (unvalidated) dataset."""
+    if not isinstance(raw, dict):
+        return None
+    geometry_column = _clean_str(raw.get("geometry_column")) or "geometry"
+    bbox_column = _clean_str(raw.get("bbox_column")) or None
+    return {
+        "has_bbox": bool(raw.get("has_bbox")),
+        "bbox_column": bbox_column,
+        "geometry_column": geometry_column,
+    }
+
+
 def _sanitize_dataset(raw):
     """The cleaned dataset dict, or None if it has no usable name/url."""
     if not isinstance(raw, dict):
@@ -117,12 +142,16 @@ def _sanitize_dataset(raw):
     url = _clean_str(raw.get("url"))
     if not name or not url:
         return None
-    return {
+    dataset = {
         "name": name,
         "url": url,
         "info_url": _clean_str(raw.get("info_url")),
         "group": _clean_str(raw.get("group")),
     }
+    validation = _sanitize_dataset_validation(raw.get("validation"))
+    if validation is not None:
+        dataset["validation"] = validation
+    return dataset
 
 
 def _sanitize_custom_source(raw):
