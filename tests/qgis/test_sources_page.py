@@ -8,9 +8,10 @@ tests/qgis/test_dialog*.py.
 """
 
 from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtWidgets import QMessageBox
+from qgis.PyQt.QtWidgets import QDialog, QMessageBox
 
 from gpq_downloader.core import user_sources
+from gpq_downloader.gui import sources_page as sources_page_module
 from gpq_downloader.gui.sources_page import SourcesManagerWidget
 
 PRESETS = {
@@ -425,6 +426,216 @@ def test_config_returns_deep_copy_of_initial_when_untouched(qgs_app):
     # Mutating the dict handed to __init__ afterwards must not reach in either.
     initial["custom_sources"][0]["name"] = "Also Tampered"
     assert widget.config()["custom_sources"][0]["name"] == "My Company"
+
+
+# -- URL pre-validation (Task B / #84 follow-up) -----------------------------
+
+
+class _FakeDatasetDialog:
+    """Stands in for DatasetEditDialog: no exec() loop, pre-set values()."""
+
+    def __init__(self, values):
+        self._values = values
+
+    def exec(self):
+        return QDialog.DialogCode.Accepted
+
+    def values(self):
+        return dict(self._values)
+
+
+def _patch_dataset_dialog(monkeypatch, values):
+    """Every DatasetEditDialog(...) call in sources_page returns a fake
+    dialog pre-loaded with `values`, regardless of the constructor args
+    _on_add_dataset/_on_edit pass it."""
+    monkeypatch.setattr(
+        sources_page_module,
+        "DatasetEditDialog",
+        lambda *args, **kwargs: _FakeDatasetDialog(values),
+    )
+
+
+def test_add_dataset_with_probe_success_stores_validation(qgs_app, monkeypatch):
+    widget = SourcesManagerWidget(_config(), PRESETS)
+    _patch_dataset_dialog(
+        monkeypatch,
+        {
+            "name": "Roads",
+            "url": "https://example.com/roads.parquet",
+            "info_url": "",
+            "group": "New Co",
+        },
+    )
+    results = {"has_bbox": True, "bbox_column": "bbox", "geometry_column": "geometry"}
+    monkeypatch.setattr(widget, "_probe_url", lambda url: (True, "", results))
+
+    widget._on_add_dataset()
+
+    [dataset] = widget.config()["custom_sources"][0]["datasets"]
+    assert dataset["name"] == "Roads"
+    assert dataset["validation"] == results
+
+
+def test_add_dataset_probe_failure_then_yes_adds_without_validation(qgs_app, monkeypatch):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    _patch_dataset_dialog(
+        monkeypatch,
+        {
+            "name": "Roads",
+            "url": "https://example.com/roads.parquet",
+            "info_url": "",
+            "group": "My Company",
+        },
+    )
+    monkeypatch.setattr(widget, "_probe_url", lambda url: (False, "connection refused", {}))
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+
+    widget._on_add_dataset()
+
+    datasets = widget.config()["custom_sources"][0]["datasets"]
+    added = next(d for d in datasets if d["name"] == "Roads")
+    assert "validation" not in added
+
+
+def test_add_dataset_probe_failure_then_no_adds_nothing(qgs_app, monkeypatch):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    before = widget.config()
+    _patch_dataset_dialog(
+        monkeypatch,
+        {
+            "name": "Roads",
+            "url": "https://example.com/roads.parquet",
+            "info_url": "",
+            "group": "My Company",
+        },
+    )
+    monkeypatch.setattr(widget, "_probe_url", lambda url: (False, "connection refused", {}))
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No
+    )
+
+    widget._on_add_dataset()
+
+    assert widget.config() == before
+
+
+def test_add_dataset_probe_canceled_adds_without_validation_and_asks_nothing(
+    qgs_app, monkeypatch
+):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    _patch_dataset_dialog(
+        monkeypatch,
+        {
+            "name": "Roads",
+            "url": "https://example.com/roads.parquet",
+            "info_url": "",
+            "group": "My Company",
+        },
+    )
+    monkeypatch.setattr(widget, "_probe_url", lambda url: (False, "canceled", {}))
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *a, **k: asked.append(a) or QMessageBox.StandardButton.No,
+    )
+
+    widget._on_add_dataset()
+
+    assert asked == []
+    datasets = widget.config()["custom_sources"][0]["datasets"]
+    added = next(d for d in datasets if d["name"] == "Roads")
+    assert "validation" not in added
+
+
+def _config_with_validated_dataset():
+    return _config(
+        custom_sources=[
+            {
+                "name": "My Company",
+                "info_url": "",
+                "datasets": [
+                    {
+                        "name": "Parcels",
+                        "url": "https://example.com/parcels.parquet",
+                        "info_url": "",
+                        "group": "",
+                        "validation": {
+                            "has_bbox": True,
+                            "bbox_column": "bbox",
+                            "geometry_column": "geometry",
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+
+
+def test_edit_dataset_with_unchanged_url_never_probes_and_keeps_validation(
+    qgs_app, monkeypatch
+):
+    widget = SourcesManagerWidget(_config_with_validated_dataset(), PRESETS)
+    custom = _top_item(widget, "My Company")
+    widget.tree.setCurrentItem(_child_item(custom, "Parcels"))
+    _patch_dataset_dialog(
+        monkeypatch,
+        {
+            "name": "Parcels Renamed",
+            # Same URL as the dataset already has.
+            "url": "https://example.com/parcels.parquet",
+            "info_url": "",
+            "group": "My Company",
+        },
+    )
+    probe_calls = []
+    monkeypatch.setattr(
+        widget, "_probe_url", lambda url: probe_calls.append(url) or (True, "", {})
+    )
+
+    widget._on_edit()
+
+    assert probe_calls == []
+    [dataset] = widget.config()["custom_sources"][0]["datasets"]
+    assert dataset["name"] == "Parcels Renamed"
+    assert dataset["validation"] == {
+        "has_bbox": True,
+        "bbox_column": "bbox",
+        "geometry_column": "geometry",
+    }
+
+
+def test_edit_dataset_with_changed_url_reprobes_and_replaces_validation(
+    qgs_app, monkeypatch
+):
+    widget = SourcesManagerWidget(_config_with_validated_dataset(), PRESETS)
+    custom = _top_item(widget, "My Company")
+    widget.tree.setCurrentItem(_child_item(custom, "Parcels"))
+    _patch_dataset_dialog(
+        monkeypatch,
+        {
+            "name": "Parcels",
+            "url": "https://example.com/parcels-2026.parquet",
+            "info_url": "",
+            "group": "My Company",
+        },
+    )
+    new_results = {"has_bbox": False, "bbox_column": None, "geometry_column": "geom"}
+    probe_calls = []
+    monkeypatch.setattr(
+        widget,
+        "_probe_url",
+        lambda url: probe_calls.append(url) or (True, "", new_results),
+    )
+
+    widget._on_edit()
+
+    assert probe_calls == ["https://example.com/parcels-2026.parquet"]
+    [dataset] = widget.config()["custom_sources"][0]["datasets"]
+    assert dataset["url"] == "https://example.com/parcels-2026.parquet"
+    assert dataset["validation"] == new_results
 
 
 # -- import / export ---------------------------------------------------------

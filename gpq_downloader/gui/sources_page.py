@@ -17,7 +17,7 @@ pytest - the pattern the rest of the GUI package's tests already use.
 
 import copy
 
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import QEventLoop, Qt
 from qgis.PyQt.QtWidgets import (
     QComboBox,
     QDialog,
@@ -29,6 +29,7 @@ from qgis.PyQt.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -37,6 +38,8 @@ from qgis.PyQt.QtWidgets import (
 )
 
 from gpq_downloader.core import user_sources
+from ..qgis_io.manager import QUEUED, WorkerTask, submit
+from ..qgis_io.worker import DatasetProbeWorker
 
 # Display names users already know from the main dialog's radio buttons,
 # keyed by the config/presets source key.
@@ -481,14 +484,19 @@ class SourcesManagerWidget(QWidget):
             return False
         # values["group"] named the destination group (this source), not
         # the dataset's stored sub-group, which only hand-edited JSON sets.
-        source["datasets"].append(
-            {
-                "name": name,
-                "url": url,
-                "info_url": values.get("info_url", "").strip(),
-                "group": "",
-            }
-        )
+        dataset = {
+            "name": name,
+            "url": url,
+            "info_url": values.get("info_url", "").strip(),
+            "group": "",
+        }
+        # The "validation" key (Task B / #84 follow-up) is stored only when
+        # the caller actually has probe results - an add the user chose to
+        # skip or push through anyway leaves the dataset unvalidated, which
+        # stays a legal shape (core/user_sources.py).
+        if "validation" in values:
+            dataset["validation"] = values["validation"]
+        source["datasets"].append(dataset)
         self._rebuild_tree()
         return True
 
@@ -546,9 +554,17 @@ class SourcesManagerWidget(QWidget):
         )
         if clashes:
             return False
+        # Task B / #84 follow-up: a new "validation" always wins. Otherwise,
+        # a URL that changed invalidates whatever was stored for the old one
+        # (stale results must not survive); an unchanged URL keeps it as is.
+        url_changed = url != dataset["url"]
         dataset["name"] = name
         dataset["url"] = url
         dataset["info_url"] = values.get("info_url", "").strip()
+        if "validation" in values:
+            dataset["validation"] = values["validation"]
+        elif url_changed:
+            dataset.pop("validation", None)
         if target is not source:
             source["datasets"].remove(dataset)
             target["datasets"].append(dataset)
@@ -575,6 +591,53 @@ class SourcesManagerWidget(QWidget):
                     d for d in source["datasets"] if d["name"] != dataset_key
                 ]
         self._rebuild_tree()
+
+    # -- URL pre-validation (Task B / #84 follow-up) -------------------------
+
+    def _probe_url(self, url):
+        """Probes `url` for reachability and its geometry/bbox columns,
+        blocking the caller until it is done: a cancelable, indeterminate
+        QProgressDialog and a local QEventLoop that quits once the worker's
+        finished signal arrives or Cancel is clicked - the same worker/task
+        plumbing dialog.py's validate_and_accept() uses, just driven by a
+        private event loop here instead of returning control to Qt's own.
+
+        Returns (success, message, results). A cancel reports success=False
+        with message "canceled" and no results - the caller's sentinel for
+        "the user skipped this, don't nag them further", distinct from an
+        actual probe failure (also success=False, but with DuckDB's own
+        message) which the caller asks to confirm instead.
+        """
+        progress = QProgressDialog("Validating URL…", "Cancel", 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+
+        loop = QEventLoop(self)
+        outcome = {}
+
+        worker = DatasetProbeWorker(url)
+
+        def on_finished(success, message, results):
+            outcome["result"] = (success, message, results)
+            loop.quit()
+
+        def on_canceled():
+            outcome["result"] = (False, "canceled", {})
+            task.cancel()
+            loop.quit()
+
+        # It emits from the task's thread; queued, this runs on the main
+        # thread, where loop.exec() below is what keeps delivering it.
+        worker.progress.connect(progress.setLabelText, QUEUED)
+        worker.finished.connect(on_finished, QUEUED)
+        progress.canceled.connect(on_canceled)
+
+        task = WorkerTask(f"Validating {url}", worker)
+        submit(task)
+        progress.show()
+        loop.exec()
+        progress.close()
+
+        return outcome.get("result", (False, "canceled", {}))
 
     # -- button handlers (dialogs and QMessageBox live only here) -----------
 
@@ -604,6 +667,23 @@ class SourcesManagerWidget(QWidget):
                 "That name is reserved by a built-in source — pick another.",
             )
             return
+
+        success, message, results = self._probe_url(values["url"])
+        if success:
+            values["validation"] = results
+        elif message != "canceled":
+            reply = QMessageBox.question(
+                self,
+                "Could not validate URL",
+                f"Could not read this URL:\n{message}\n\nAdd it anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        # A cancel, or a failure the user chose to add anyway, falls
+        # through with no "validation" key - unvalidated stays legal.
+
         if not self._add_dataset(group_name, values):
             QMessageBox.warning(
                 self,
@@ -615,6 +695,7 @@ class SourcesManagerWidget(QWidget):
         item = self._selected_custom_item()
         if item is None:
             return
+        dataset = None
         if item.parent() is None:
             source = self._find_custom_source(item.data(_NAME_COLUMN, _SOURCE_KEY_ROLE))
             dialog = SourceEditDialog(initial=source, parent=self)
@@ -647,6 +728,26 @@ class SourcesManagerWidget(QWidget):
                 )
                 return
             values["group"] = group_name
+
+            # Re-probe only when the URL actually changed (Task B/#84
+            # follow-up): editing just the name or group never re-checks a
+            # URL that is already known good. _apply_dataset_edit (the
+            # mutation method) is what drops a stale "validation" when the
+            # URL changed here but no new one was supplied below.
+            if dataset is not None and values["url"].strip() != dataset["url"]:
+                success, message, results = self._probe_url(values["url"])
+                if success:
+                    values["validation"] = results
+                elif message != "canceled":
+                    reply = QMessageBox.question(
+                        self,
+                        "Could not validate URL",
+                        f"Could not read this URL:\n{message}\n\nSave it anyway?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    if reply != QMessageBox.StandardButton.Yes:
+                        return
         if not self._apply_edit(item, values):
             QMessageBox.warning(self, "Duplicate name", "That name is already used.")
 
