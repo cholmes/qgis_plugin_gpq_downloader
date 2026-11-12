@@ -28,6 +28,10 @@ OSM_CHECKBOX = "gpq_downloader/osm_checkbox_{key}"
 # (core.user_sources.slug) since a source or dataset name can contain
 # anything a QgsSettings key cannot.
 CUSTOM_CHECKBOX = "gpq_downloader/custom_checkbox_{source}_{key}"
+# The dataset name picked in a drop-down-style custom source's combo. One
+# key per source (its name slugged the same way), holding a dataset name
+# rather than a flag: a drop-down group has one pick, not one tick each.
+CUSTOM_DROPDOWN = "gpq_downloader/custom_dropdown_{source}"
 
 # The settings panel's keys, added across Tasks 3-6.
 OUTPUT_FORMAT = "gpq_downloader/output_format"

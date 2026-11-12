@@ -14,6 +14,7 @@ import json
 from qgis.core import QgsApplication, QgsBlockingNetworkRequest
 from qgis.PyQt.QtNetwork import QNetworkRequest
 from qgis.PyQt.QtWidgets import (
+    QComboBox,
     QMessageBox,
     QCompleter,
     QSizePolicy,
@@ -53,7 +54,7 @@ from ..core.filters import (
 )
 from ..core.schema import field_candidates
 from ..core.presets import load_presets
-from ..core.user_sources import apply_hidden, slug
+from ..core.user_sources import STYLE_DROPDOWN, apply_hidden, normalize_style, slug
 from . import settings_store
 from . import user_sources_store
 from .extent import AoiHighlighter, AreaOfInterestMixin
@@ -689,10 +690,24 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # custom_radio.toggled's lambda above (index 0) and the others (1-2)
         # keep the indices they were written against. One page per entry in
         # custom_sources, same order as the radios built above.
+        #
+        # A source renders in exactly one of the two styles its config asks
+        # for, so it appears in exactly one of these two registries: a grid
+        # of checkboxes (several datasets at once) in self.custom_checkboxes,
+        # or a single-pick drop-down in self.custom_dropdowns. Everything
+        # downstream - get_urls, the saved state, _selection_changed - asks
+        # which registry a source is in rather than re-reading its style.
         self.custom_checkboxes = {}
+        self.custom_dropdowns = {}
+        self.custom_dropdown_links = {}
+        self.custom_dataset_links = {}
         for source in custom_sources:
-            page, checkboxes = self._build_custom_source_page(source)
-            self.custom_checkboxes[source["name"]] = checkboxes
+            if normalize_style(source.get("style")) == STYLE_DROPDOWN:
+                page = self._build_custom_dropdown_page(source)
+            else:
+                page, checkboxes, dataset_links = self._build_custom_source_page(source)
+                self.custom_checkboxes[source["name"]] = checkboxes
+                self.custom_dataset_links[source["name"]] = dataset_links
             self.stack.addWidget(page)
             stack_index = self.stack.count() - 1
             radio = self.custom_source_radios[source["name"]]
@@ -849,6 +864,9 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         for checkboxes in self.custom_checkboxes.values():
             for checkbox in checkboxes.values():
                 checkbox.toggled.connect(self.save_checkbox_states)
+        # A drop-down group's pick is remembered the same way a tick is
+        for combo in self.custom_dropdowns.values():
+            combo.currentTextChanged.connect(self.save_checkbox_states)
 
         # Ensure to call save_checkbox_states when the dialog is accepted
         self.ok_button.clicked.connect(self.save_checkbox_states)
@@ -948,15 +966,20 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         Ungrouped datasets come first in a FlowLayout, then each group in
         the order its first dataset appeared in the config, each under a
         bold QLabel heading of its own FlowLayout (Design). A dataset's
-        tooltip carries its url, plus its info_url when there is one; the
-        source's own info_url, if any, becomes an open-external-links QLabel
-        like self.osm_link.
+        tooltip carries its url, plus its info_url when there is one; a
+        dataset that has an info_url also gets a clickable ⓘ beside its
+        checkbox, so its own page is one click away rather than only
+        readable in a tooltip. The source's own info_url, if any, becomes
+        an open-external-links QLabel like self.osm_link at the bottom.
 
-        Returns (page, {dataset name: checkbox}).
+        Returns (page, {dataset name: checkbox}, {dataset name: info label}),
+        the last holding an entry only for the datasets that have an
+        info_url at all.
         """
         page = QWidget()
         page_layout = QVBoxLayout()
         checkboxes = {}
+        dataset_links = {}
 
         def add_flow_of(datasets):
             flow_widget = FlowWidget()
@@ -968,7 +991,27 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                     tooltip = f"{tooltip}\n{dataset['info_url']}"
                 checkbox.setToolTip(tooltip)
                 checkboxes[dataset["name"]] = checkbox
-                flow.addWidget(checkbox)
+                if not dataset["info_url"]:
+                    flow.addWidget(checkbox)
+                    continue
+                # The checkbox and its ⓘ have to travel as one item: the
+                # FlowLayout wraps whatever it is handed, and two separate
+                # items could land on different lines. The checkbox keeps
+                # its registry entry and stays a descendant of self.stack,
+                # so the saved state and _connect_filter_signals' findChildren
+                # sweep are untouched by the wrapping.
+                link = QLabel(f'<a href="{dataset["info_url"]}">ⓘ</a>')
+                link.setOpenExternalLinks(True)
+                link.setToolTip(dataset["info_url"])
+                dataset_links[dataset["name"]] = link
+                row_widget = QWidget()
+                row = QHBoxLayout()
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(2)
+                row.addWidget(checkbox)
+                row.addWidget(link)
+                row_widget.setLayout(row)
+                flow.addWidget(row_widget)
             flow_widget.setLayout(flow)
             page_layout.addWidget(flow_widget)
 
@@ -1000,7 +1043,85 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
 
         page_layout.addStretch()
         page.setLayout(page_layout)
-        return page, checkboxes
+        return page, checkboxes, dataset_links
+
+    def _build_custom_dropdown_page(self, source):
+        """One drop-down of a custom source's dataset names, pick one.
+
+        The page Source Cooperative had before #84 turned it into a custom
+        group, generalized to any group whose config asks for
+        STYLE_DROPDOWN: a QComboBox of the dataset names in config order, a
+        "View dataset info" link under it that follows the selection (empty
+        for a dataset with no info_url), and the group's own info link
+        under that when it has one - the same QLabel as the checkbox page's.
+
+        Registers the combo in self.custom_dropdowns and its per-selection
+        link in self.custom_dropdown_links, and returns the page.
+        """
+        page = QWidget()
+        page_layout = QVBoxLayout()
+
+        combo = QComboBox()
+        for index, dataset in enumerate(source["datasets"]):
+            combo.addItem(dataset["name"])
+            tooltip = dataset["url"]
+            if dataset["info_url"]:
+                tooltip = f"{tooltip}\n{dataset['info_url']}"
+            combo.setItemData(index, tooltip, Qt.ItemDataRole.ToolTipRole)
+        page_layout.addWidget(combo)
+
+        link = QLabel()
+        link.setOpenExternalLinks(True)
+        link.setWordWrap(True)
+        page_layout.addWidget(link)
+
+        self.custom_dropdowns[source["name"]] = combo
+        self.custom_dropdown_links[source["name"]] = link
+        # Connected after addItem(), so filling the combo does not call this
+        # before both registries above exist; the first text is applied by
+        # hand just below instead (the pre-#84 page did the same).
+        combo.currentTextChanged.connect(
+            lambda text, name=source["name"]: self._update_custom_dropdown_link(
+                name, text
+            )
+        )
+        self._update_custom_dropdown_link(source["name"], combo.currentText())
+
+        if source["info_url"]:
+            group_link = QLabel()
+            group_link.setText(
+                f'<a href="{source["info_url"]}">{source["name"]} info</a>'
+            )
+            group_link.setOpenExternalLinks(True)
+            group_link.setWordWrap(True)
+            page_layout.addWidget(group_link)
+
+        page_layout.addStretch()
+        page.setLayout(page_layout)
+        return page
+
+    def _custom_dataset_named(self, source_name, dataset_name):
+        """The dataset dict called `dataset_name` in the custom source
+        `source_name`, or None - a saved selection can name a dataset the
+        config no longer has."""
+        source = self.custom_sources_by_name.get(source_name)
+        if source is None:
+            return None
+        return next(
+            (d for d in source["datasets"] if d["name"] == dataset_name), None
+        )
+
+    def _update_custom_dropdown_link(self, source_name, selection):
+        """Point a drop-down page's info link at whatever is selected now,
+        and empty it for a dataset that has no info_url of its own."""
+        link = self.custom_dropdown_links.get(source_name)
+        if link is None:
+            return
+        dataset = self._custom_dataset_named(source_name, selection)
+        if dataset is not None and dataset["info_url"]:
+            link.setText(f'<a href="{dataset["info_url"]}">View dataset info</a>')
+        else:
+            link.setText("")
 
     def _reserve_room_above_other_presets(self, layout, category_lines):
         """Hold a category's room on the page open while its layers are hidden.
@@ -1079,6 +1200,12 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         # Task 4's custom-source radios are already in this list too.
         for radio in self.source_radios:
             radio.toggled.connect(self._selection_changed)
+        # A drop-down group's page holds no checkbox at all, so changing its
+        # pick has to report the new selection the way a tick does -
+        # otherwise the OK button and the filter's column list would still
+        # be describing the dataset that was showing before.
+        for combo in self.custom_dropdowns.values():
+            combo.currentTextChanged.connect(self._selection_changed)
         self.url_input.textChanged.connect(self._selection_changed)
         self.filter_checkbox.toggled.connect(self._filter_asked_for)
         self.filter_input.textChanged.connect(self._update_filter_status)
@@ -1893,6 +2020,13 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
         elif (source_name := self._checked_custom_source()) is not None:
             # A custom dataset's url is already complete (Design): no
             # release, no template, carried through untouched.
+            if source_name in self.custom_dropdowns:
+                # A drop-down group contributes exactly the one dataset
+                # showing in its combo - nothing at all if the combo is
+                # empty or names a dataset the config has since lost.
+                combo = self.custom_dropdowns[source_name]
+                dataset = self._custom_dataset_named(source_name, combo.currentText())
+                return [dataset["url"]] if dataset else []
             for dataset in self.custom_sources_by_name[source_name]["datasets"]:
                 checkbox = self.custom_checkboxes[source_name][dataset["name"]]
                 if checkbox.isChecked():
@@ -1995,6 +2129,15 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                     checkbox.isChecked(),
                 )
 
+        # Save each drop-down-style source's pick, by dataset name: a
+        # renamed or removed dataset simply no longer matches on the way
+        # back in (load_checkbox_states), leaving the combo as it opened.
+        for source_name, combo in self.custom_dropdowns.items():
+            settings_store.save_value(
+                settings_store.CUSTOM_DROPDOWN.format(source=slug(source_name)),
+                combo.currentText(),
+            )
+
         # Save AOI checkbox state
         settings_store.save_value(settings_store.AOI_ENABLED, self.extent_group.isChecked())
 
@@ -2045,6 +2188,17 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                     )
                 )
                 checkbox.setChecked(checked)
+
+        # Restore each drop-down-style source's pick, when the saved name
+        # still names one of its datasets; anything else (nothing saved, a
+        # dataset since renamed or removed) leaves the first one showing.
+        for source_name, combo in self.custom_dropdowns.items():
+            saved = settings_store.load_text(
+                settings_store.CUSTOM_DROPDOWN.format(source=slug(source_name))
+            )
+            index = combo.findText(saved) if saved else -1
+            if index >= 0:
+                combo.setCurrentIndex(index)
 
         # The Buildings modifiers show only while Buildings itself is checked
         for checkbox in self.buildings_modifier_checkboxes.values():

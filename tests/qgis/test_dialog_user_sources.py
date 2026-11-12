@@ -13,7 +13,7 @@ import os
 from unittest.mock import MagicMock
 
 import pytest
-from qgis.PyQt.QtWidgets import QLabel
+from qgis.PyQt.QtWidgets import QComboBox, QLabel
 
 from gpq_downloader.core.user_sources import default_config
 from gpq_downloader.dialog import DataSourceDialog
@@ -192,15 +192,21 @@ def test_missing_config_seeds_source_cooperative_radio_and_page(clean_settings, 
     """A first run (no user_sources.json at all) seeds the "Source
     Cooperative" custom group (gui/user_sources_store.load_user_config()),
     which flows through the same custom-source machinery as a group the
-    user built themselves - no SC-specific code anywhere in the dialog."""
+    user built themselves - no SC-specific code anywhere in the dialog.
+
+    It is seeded with "style": "dropdown" (user_sources.
+    source_cooperative_group()), which is the single-pick page it had
+    before #84 - so it lands in custom_dropdowns, not custom_checkboxes."""
     os.remove(user_sources_store.user_config_path())
 
     dialog = DataSourceDialog(None, iface)
 
     names = [radio.text() for radio in dialog.source_radios]
     assert "Source Cooperative" in names
-    checkboxes = dialog.custom_checkboxes["Source Cooperative"]
-    assert "VIDA Google/Microsoft/OSM Buildings" in checkboxes
+    assert "Source Cooperative" not in dialog.custom_checkboxes
+    combo = dialog.custom_dropdowns["Source Cooperative"]
+    items = [combo.itemText(i) for i in range(combo.count())]
+    assert "VIDA Google/Microsoft/OSM Buildings" in items
     dialog.close()
 
 
@@ -448,4 +454,234 @@ def test_custom_radio_selection_remembered(clean_settings, iface):
     second = DataSourceDialog(None, iface)
     radio2 = next(r for r in second.source_radios if r.text() == "My Company Data")
     assert radio2.isChecked()
+    second.close()
+
+
+# --- Task D: per-group page style (checkboxes vs drop-down) --------------
+
+
+def _dropdown_source(**overrides):
+    source = _custom_source(
+        style="dropdown",
+        datasets=[
+            {
+                "name": "Parcels",
+                "url": "https://example.com/parcels.parquet",
+                "info_url": "https://example.com/parcels",
+                "group": "",
+            },
+            {
+                "name": "Roads",
+                "url": "https://example.com/roads.parquet",
+                "info_url": "",
+                "group": "",
+            },
+        ],
+    )
+    source.update(overrides)
+    return source
+
+
+def _combo_items(combo):
+    return [combo.itemText(i) for i in range(combo.count())]
+
+
+def _radio(dialog, name):
+    return next(r for r in dialog.source_radios if r.text() == name)
+
+
+def test_dropdown_source_builds_a_combo_page_and_no_checkboxes(clean_settings, iface):
+    write_config(custom_sources=[_dropdown_source()])
+    dialog = DataSourceDialog(None, iface)
+
+    assert "My Company Data" not in dialog.custom_checkboxes
+    combo = dialog.custom_dropdowns["My Company Data"]
+    assert _combo_items(combo) == ["Parcels", "Roads"]
+    # The combo is on the page the source's own radio shows.
+    _radio(dialog, "My Company Data").setChecked(True)
+    assert combo in dialog.stack.currentWidget().findChildren(QComboBox)
+    dialog.close()
+
+
+def test_checkbox_source_has_no_dropdown_entry(clean_settings, iface):
+    """A source appears in exactly one of the two registries, and an
+    explicit "checkboxes" style renders exactly as it always has."""
+    write_config(custom_sources=[_custom_source(style="checkboxes")])
+    dialog = DataSourceDialog(None, iface)
+
+    assert "My Company Data" not in dialog.custom_dropdowns
+    assert "Parcels" in dialog.custom_checkboxes["My Company Data"]
+    dialog.close()
+
+
+def test_config_without_a_style_still_renders_checkboxes(clean_settings, iface):
+    write_config(custom_sources=[_custom_source()])
+    dialog = DataSourceDialog(None, iface)
+
+    assert dialog.custom_dropdowns == {}
+    assert "Parcels" in dialog.custom_checkboxes["My Company Data"]
+    dialog.close()
+
+
+def test_dropdown_get_urls_returns_only_the_selected_dataset(clean_settings, iface):
+    write_config(custom_sources=[_dropdown_source()])
+    dialog = DataSourceDialog(None, iface)
+    _radio(dialog, "My Company Data").setChecked(True)
+
+    combo = dialog.custom_dropdowns["My Company Data"]
+    combo.setCurrentIndex(_combo_items(combo).index("Roads"))
+    assert dialog.get_urls() == ["https://example.com/roads.parquet"]
+
+    combo.setCurrentIndex(_combo_items(combo).index("Parcels"))
+    assert dialog.get_urls() == ["https://example.com/parcels.parquet"]
+    dialog.close()
+
+
+def test_dropdown_selection_is_remembered_across_dialogs(clean_settings, iface):
+    write_config(custom_sources=[_dropdown_source()])
+
+    first = DataSourceDialog(None, iface)
+    combo = first.custom_dropdowns["My Company Data"]
+    combo.setCurrentIndex(_combo_items(combo).index("Roads"))
+    first.save_checkbox_states()
+    first.close()
+
+    second = DataSourceDialog(None, iface)
+    assert second.custom_dropdowns["My Company Data"].currentText() == "Roads"
+    second.close()
+
+
+def test_a_saved_selection_that_no_longer_exists_is_ignored(clean_settings, iface):
+    write_config(custom_sources=[_dropdown_source()])
+    first = DataSourceDialog(None, iface)
+    combo = first.custom_dropdowns["My Company Data"]
+    combo.setCurrentIndex(_combo_items(combo).index("Roads"))
+    first.save_checkbox_states()
+    first.close()
+
+    # Roads is gone from the config; the combo opens on what is left.
+    write_config(
+        custom_sources=[
+            _dropdown_source(
+                datasets=[
+                    {
+                        "name": "Parcels",
+                        "url": "https://example.com/parcels.parquet",
+                        "info_url": "https://example.com/parcels",
+                        "group": "",
+                    },
+                ]
+            )
+        ]
+    )
+    second = DataSourceDialog(None, iface)
+    assert second.custom_dropdowns["My Company Data"].currentText() == "Parcels"
+    second.close()
+
+
+def test_dropdown_info_link_follows_the_selection(clean_settings, iface):
+    write_config(custom_sources=[_dropdown_source()])
+    dialog = DataSourceDialog(None, iface)
+    combo = dialog.custom_dropdowns["My Company Data"]
+    link = dialog.custom_dropdown_links["My Company Data"]
+
+    combo.setCurrentIndex(_combo_items(combo).index("Parcels"))
+    assert "https://example.com/parcels" in link.text()
+    assert link.openExternalLinks()
+
+    # Roads has no info_url of its own, so there is nothing to link to.
+    combo.setCurrentIndex(_combo_items(combo).index("Roads"))
+    assert link.text() == ""
+    dialog.close()
+
+
+def test_dropdown_page_keeps_the_groups_own_info_link(clean_settings, iface):
+    write_config(
+        custom_sources=[_dropdown_source(info_url="https://example.com/catalog")]
+    )
+    dialog = DataSourceDialog(None, iface)
+    _radio(dialog, "My Company Data").setChecked(True)
+
+    texts = [
+        label.text() for label in dialog.stack.currentWidget().findChildren(QLabel)
+    ]
+    assert any("https://example.com/catalog" in text for text in texts)
+    dialog.close()
+
+
+def test_changing_the_dropdown_reports_the_new_selection(clean_settings, iface):
+    """currentTextChanged has to drive _selection_changed the way a tick
+    does, or the OK button would still be accounting for the old pick."""
+    write_config(custom_sources=[_dropdown_source()])
+    dialog = DataSourceDialog(None, iface)
+    _radio(dialog, "My Company Data").setChecked(True)
+
+    combo = dialog.custom_dropdowns["My Company Data"]
+    combo.setCurrentIndex(_combo_items(combo).index("Roads"))
+    assert dialog.selected_datasets() == ["https://example.com/roads.parquet"]
+    dialog.close()
+
+
+def test_checkbox_page_links_exactly_the_datasets_with_an_info_url(
+    clean_settings, iface
+):
+    write_config(
+        custom_sources=[
+            _custom_source(
+                datasets=[
+                    {
+                        "name": "Parcels",
+                        "url": "https://example.com/parcels.parquet",
+                        "info_url": "https://example.com/parcels",
+                        "group": "",
+                    },
+                    {
+                        "name": "Roads",
+                        "url": "https://example.com/roads.parquet",
+                        "info_url": "",
+                        "group": "",
+                    },
+                ]
+            )
+        ]
+    )
+    dialog = DataSourceDialog(None, iface)
+
+    links = dialog.custom_dataset_links["My Company Data"]
+    assert set(links) == {"Parcels"}
+    assert 'href="https://example.com/parcels"' in links["Parcels"].text()
+    assert links["Parcels"].openExternalLinks()
+    assert links["Parcels"].toolTip() == "https://example.com/parcels"
+    dialog.close()
+
+
+def test_wrapping_a_checkbox_in_its_info_row_changes_nothing_else(
+    clean_settings, iface
+):
+    """The info anchor sits in a QWidget with its checkbox, so the checkbox
+    is no longer a direct child of the flow - the registry, the saved state
+    and get_urls must not notice."""
+    write_config(
+        custom_sources=[
+            _custom_source(
+                datasets=[
+                    {
+                        "name": "Parcels",
+                        "url": "https://example.com/parcels.parquet",
+                        "info_url": "https://example.com/parcels",
+                        "group": "",
+                    },
+                ]
+            )
+        ]
+    )
+    first = DataSourceDialog(None, iface)
+    _radio(first, "My Company Data").setChecked(True)
+    first.custom_checkboxes["My Company Data"]["Parcels"].setChecked(True)
+    assert first.get_urls() == ["https://example.com/parcels.parquet"]
+    first.save_checkbox_states()
+    first.close()
+
+    second = DataSourceDialog(None, iface)
+    assert second.custom_checkboxes["My Company Data"]["Parcels"].isChecked()
     second.close()
