@@ -22,9 +22,9 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
-from gpq_downloader import logger
-from gpq_downloader.core import copy_options, output_formats
-from gpq_downloader.core.presets import load_presets
+from .. import logger
+from ..core import copy_options, output_formats
+from ..core.presets import load_presets
 
 from . import settings_store, user_sources_store
 from .sources_page import SourcesManagerWidget

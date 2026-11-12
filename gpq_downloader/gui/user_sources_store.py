@@ -19,9 +19,9 @@ import tempfile
 
 from qgis.core import QgsApplication
 
-from gpq_downloader import logger
-from gpq_downloader.core.presets import load_presets
-from gpq_downloader.core.user_sources import (
+from .. import logger
+from ..core.presets import load_presets
+from ..core.user_sources import (
     default_config,
     parse_config,
     serialize_config,

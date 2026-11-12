@@ -8,7 +8,7 @@ for each read or write, the same defaults and the same types.
 
 from qgis.core import QgsSettings
 
-from gpq_downloader.core import copy_options
+from ..core import copy_options
 
 RADIO_SELECTION = "gpq_downloader/radio_selection"
 CLIP_TO_AREA = "gpq_downloader/clip_to_area"

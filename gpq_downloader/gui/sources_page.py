@@ -37,7 +37,7 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
-from gpq_downloader.core import user_sources
+from ..core import user_sources
 from ..qgis_io.manager import QUEUED, WorkerTask, submit
 from ..qgis_io.worker import DatasetProbeWorker
 
