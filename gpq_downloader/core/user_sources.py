@@ -30,6 +30,24 @@ HIDEABLE_SOURCES = ("overture", "openstreetmap")
 # legacy "source_cooperative" entry here is dropped the same way.
 DATASET_HIDEABLE_SOURCES = ("overture", "openstreetmap")
 
+# How a custom source's page renders in the download dialog: a grid of
+# checkboxes (pick several) or a single-pick drop-down. Source Cooperative
+# rendered as a drop-down before #84 turned it into a seeded custom group,
+# and that is the style it is seeded with; every other group starts as
+# checkboxes, which is also how a config written before this key existed
+# reads.
+STYLE_CHECKBOXES = "checkboxes"
+STYLE_DROPDOWN = "dropdown"
+SOURCE_STYLES = (STYLE_CHECKBOXES, STYLE_DROPDOWN)
+
+
+def normalize_style(value):
+    """`value` as one of SOURCE_STYLES: only the exact string "dropdown" is
+    a drop-down, and anything else at all - absent, junk, wrong type - is
+    the checkbox grid a custom group has always rendered as.
+    """
+    return STYLE_DROPDOWN if value == STYLE_DROPDOWN else STYLE_CHECKBOXES
+
 
 def default_config():
     """A fresh, empty config — the starting point when no file exists yet."""
@@ -77,6 +95,10 @@ def source_cooperative_group(presets):
     return {
         "name": "Source Cooperative",
         "info_url": "https://source.coop",
+        # The single-pick drop-down it was before #84 made it a custom
+        # group, so a fresh profile (and Restore Defaults) still opens on
+        # the page users know rather than a grid of nine checkboxes.
+        "style": STYLE_DROPDOWN,
         "datasets": datasets,
     }
 
@@ -155,7 +177,12 @@ def _sanitize_dataset(raw):
 
 
 def _sanitize_custom_source(raw):
-    """The cleaned custom-source dict, or None if it has no usable name."""
+    """The cleaned custom-source dict, or None if it has no usable name.
+
+    "style" is always present on the way out (normalize_style), so every
+    reader downstream can take it for granted even for a config file
+    written before the key existed.
+    """
     if not isinstance(raw, dict):
         return None
     name = _clean_str(raw.get("name"))
@@ -179,6 +206,7 @@ def _sanitize_custom_source(raw):
     return {
         "name": name,
         "info_url": _clean_str(raw.get("info_url")),
+        "style": normalize_style(raw.get("style")),
         "datasets": datasets,
     }
 

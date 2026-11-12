@@ -14,6 +14,7 @@ from gpq_downloader.core.user_sources import (
     HIDEABLE_SOURCES,
     apply_hidden,
     default_config,
+    normalize_style,
     parse_config,
     sanitize_config,
     serialize_config,
@@ -52,6 +53,7 @@ def test_sanitize_passes_valid_config_through():
             {
                 "name": "My Company Data",
                 "info_url": "https://example.com/catalog",
+                "style": "checkboxes",
                 "datasets": [
                     {
                         "name": "Parcels 2025",
@@ -419,6 +421,7 @@ def test_source_cooperative_group_shape():
     assert group == {
         "name": "Source Cooperative",
         "info_url": "https://source.coop",
+        "style": "dropdown",
         "datasets": [
             {
                 "name": "VIDA Buildings",
@@ -487,5 +490,94 @@ def test_source_cooperative_group_missing_section_gives_empty_datasets():
     assert source_cooperative_group({}) == {
         "name": "Source Cooperative",
         "info_url": "https://source.coop",
+        "style": "dropdown",
         "datasets": [],
     }
+
+
+# --- per-source page style (checkboxes vs drop-down) ---------------------
+
+
+@pytest.mark.parametrize(
+    "raw_style, expected",
+    [
+        ("dropdown", "dropdown"),
+        ("checkboxes", "checkboxes"),
+        (None, "checkboxes"),
+        ("", "checkboxes"),
+        ("Dropdown", "checkboxes"),
+        ("combo", "checkboxes"),
+        (1, "checkboxes"),
+        (["dropdown"], "checkboxes"),
+        ({"style": "dropdown"}, "checkboxes"),
+    ],
+)
+def test_normalize_style(raw_style, expected):
+    assert normalize_style(raw_style) == expected
+
+
+@pytest.mark.parametrize(
+    "raw_style, expected",
+    [
+        ("dropdown", "dropdown"),
+        ("checkboxes", "checkboxes"),
+        ("junk", "checkboxes"),
+        (42, "checkboxes"),
+        (None, "checkboxes"),
+    ],
+)
+def test_sanitize_normalizes_a_custom_sources_style(raw_style, expected):
+    source = {"name": "Co", "datasets": []}
+    if raw_style is not None:
+        source["style"] = raw_style
+    [cleaned] = sanitize_config({"custom_sources": [source]})["custom_sources"]
+    assert cleaned["style"] == expected
+
+
+def test_sanitize_gives_every_custom_source_a_style():
+    """A config written before the key existed still reads as the checkbox
+    grid it always rendered as - no source ever comes out without a style."""
+    raw = {
+        "custom_sources": [
+            {"name": "Old Config Group", "datasets": []},
+            {"name": "Dropdown Group", "style": "dropdown", "datasets": []},
+        ]
+    }
+    styles = {
+        source["name"]: source["style"]
+        for source in sanitize_config(raw)["custom_sources"]
+    }
+    assert styles == {"Old Config Group": "checkboxes", "Dropdown Group": "dropdown"}
+
+
+def test_style_roundtrips_through_serialize_and_parse():
+    config = default_config()
+    config["custom_sources"] = [
+        {
+            "name": "Picker",
+            "info_url": "",
+            "style": "dropdown",
+            "datasets": [
+                {
+                    "name": "D",
+                    "url": "https://example.com/d.parquet",
+                    "info_url": "",
+                    "group": "",
+                }
+            ],
+        },
+        {
+            "name": "Grid",
+            "info_url": "",
+            "style": "checkboxes",
+            "datasets": [
+                {
+                    "name": "E",
+                    "url": "https://example.com/e.parquet",
+                    "info_url": "",
+                    "group": "",
+                }
+            ],
+        },
+    ]
+    assert parse_config(serialize_config(config)) == config
