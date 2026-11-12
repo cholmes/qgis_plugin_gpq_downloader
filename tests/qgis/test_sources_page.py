@@ -12,7 +12,7 @@ from qgis.PyQt.QtWidgets import QDialog, QMessageBox
 
 from gpq_downloader.core import user_sources
 from gpq_downloader.gui import sources_page as sources_page_module
-from gpq_downloader.gui.sources_page import SourcesManagerWidget
+from gpq_downloader.gui.sources_page import SourceEditDialog, SourcesManagerWidget
 
 PRESETS = {
     "overture": {
@@ -991,3 +991,88 @@ def test_probe_url_plumbs_info_url_through_to_the_worker(qgs_app, monkeypatch):
         "bbox_column": None,
         "geometry_column": "geometry",
     }
+
+
+# --- Task D: the group form's "Page style" choice ------------------------
+
+
+def test_source_edit_dialog_defaults_a_new_group_to_checkboxes(qgs_app):
+    dialog = SourceEditDialog()
+    assert dialog.values()["style"] == "checkboxes"
+
+
+def test_source_edit_dialog_roundtrips_each_style(qgs_app):
+    for style in ("checkboxes", "dropdown"):
+        dialog = SourceEditDialog(initial={"name": "Co", "style": style})
+        assert dialog.values()["style"] == style
+
+
+def test_source_edit_dialog_reads_an_unknown_style_as_checkboxes(qgs_app):
+    dialog = SourceEditDialog(initial={"name": "Co", "style": "junk"})
+    assert dialog.values()["style"] == "checkboxes"
+
+
+def test_source_edit_dialog_offers_exactly_the_two_styles(qgs_app):
+    dialog = SourceEditDialog()
+    combo = dialog.style_combo
+    assert not combo.isEditable()
+    values = [combo.itemData(i) for i in range(combo.count())]
+    assert values == ["checkboxes", "dropdown"]
+
+
+def test_add_source_stores_the_chosen_style(qgs_app):
+    widget = SourcesManagerWidget(_config(), PRESETS)
+
+    assert widget._add_source({"name": "Picker", "info_url": "", "style": "dropdown"})
+    assert widget._add_source({"name": "Grid", "info_url": ""})
+
+    styles = {s["name"]: s["style"] for s in widget.config()["custom_sources"]}
+    assert styles == {"Picker": "dropdown", "Grid": "checkboxes"}
+
+
+def test_apply_source_edit_changes_the_style_and_keeps_the_datasets(qgs_app):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    item = _top_item(widget, "My Company")
+
+    assert widget._apply_source_edit(
+        item,
+        {"name": "My Company", "info_url": "https://example.com", "style": "dropdown"},
+    )
+    [source] = widget.config()["custom_sources"]
+    assert source["style"] == "dropdown"
+    assert [d["name"] for d in source["datasets"]] == ["Parcels"]
+
+
+def test_apply_source_edit_without_a_style_keeps_the_one_it_had(qgs_app):
+    config = _custom_config()
+    config["custom_sources"][0]["style"] = "dropdown"
+    widget = SourcesManagerWidget(config, PRESETS)
+    item = _top_item(widget, "My Company")
+
+    assert widget._apply_source_edit(item, {"name": "Renamed", "info_url": ""})
+    [source] = widget.config()["custom_sources"]
+    assert source["name"] == "Renamed"
+    assert source["style"] == "dropdown"
+    assert [d["name"] for d in source["datasets"]] == ["Parcels"]
+
+
+def test_ensure_group_creates_a_checkbox_group(qgs_app):
+    """A group conjured out of a dataset dialog's Group field has nobody to
+    pick a style, so it gets the default one."""
+    widget = SourcesManagerWidget(_config(), PRESETS)
+    assert widget._ensure_group("Brand New") == "Brand New"
+    [source] = widget.config()["custom_sources"]
+    assert source["style"] == "checkboxes"
+
+
+def test_restore_defaults_seeds_source_cooperative_as_a_dropdown(qgs_app, monkeypatch):
+    widget = SourcesManagerWidget(_custom_config(), PRESETS)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+
+    widget._on_restore_defaults()
+
+    [sc] = widget.config()["custom_sources"]
+    assert sc["name"] == "Source Cooperative"
+    assert sc["style"] == "dropdown"

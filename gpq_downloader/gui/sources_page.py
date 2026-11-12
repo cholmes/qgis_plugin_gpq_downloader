@@ -167,8 +167,16 @@ class DatasetEditDialog(_EditDialog):
         }
 
 
+# The group form's "Page style" choices: the label the user picks from,
+# and the config value it stands for (core.user_sources.SOURCE_STYLES).
+_STYLE_CHOICES = (
+    ("Checkboxes (pick several)", user_sources.STYLE_CHECKBOXES),
+    ("Drop-down list (pick one)", user_sources.STYLE_DROPDOWN),
+)
+
+
 class SourceEditDialog(_EditDialog):
-    """Add/Edit a custom group: name (required), info_url."""
+    """Add/Edit a custom group: name (required), info_url, page style."""
 
     def __init__(self, initial=None, parent=None):
         super().__init__("Group", parent)
@@ -177,9 +185,18 @@ class SourceEditDialog(_EditDialog):
         self.name_edit = QLineEdit(initial.get("name", ""))
         self.info_url_edit = QLineEdit(initial.get("info_url", ""))
 
+        # Non-editable: the two styles the dialog knows how to render are
+        # the only two answers, and a typed one would sanitize away.
+        self.style_combo = QComboBox()
+        for label, value in _STYLE_CHOICES:
+            self.style_combo.addItem(label, value)
+        style = user_sources.normalize_style(initial.get("style"))
+        self.style_combo.setCurrentIndex(self.style_combo.findData(style))
+
         form = QFormLayout()
         form.addRow("Name", self.name_edit)
         form.addRow("Info URL (optional)", self.info_url_edit)
+        form.addRow("Page style", self.style_combo)
         self._finish(form)
 
     def _validation_error(self):
@@ -192,6 +209,7 @@ class SourceEditDialog(_EditDialog):
         return {
             "name": self.name_edit.text().strip(),
             "info_url": self.info_url_edit.text().strip(),
+            "style": user_sources.normalize_style(self.style_combo.currentData()),
         }
 
 
@@ -467,6 +485,7 @@ class SourcesManagerWidget(QWidget):
             {
                 "name": name,
                 "info_url": values.get("info_url", "").strip(),
+                "style": user_sources.normalize_style(values.get("style")),
                 "datasets": [],
             }
         )
@@ -527,6 +546,11 @@ class SourcesManagerWidget(QWidget):
             return False
         source["name"] = name
         source["info_url"] = values.get("info_url", "").strip()
+        # `values` without a "style" leaves the group's own style alone: an
+        # edit must never silently turn a drop-down group back into a grid.
+        source["style"] = user_sources.normalize_style(
+            values.get("style", source.get("style"))
+        )
         self._rebuild_tree()
         return True
 
