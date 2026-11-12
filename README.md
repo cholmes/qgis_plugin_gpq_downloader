@@ -51,6 +51,7 @@ If your QGIS doesn't have GeoParquet support you'll get a warning dialog after t
 If you regularly download from your own GeoParquet source, you don't have to retype the URL every time. Go to `Settings > Options`, find the "GeoParquet Downloader" page, and open its "Data Sources" tab:
 
 - **Add a group / add a dataset.** Click "Add Dataset…" and fill in a name, URL and (optional) info URL; its "Group" field lets you pick an existing custom group or type a new one on the spot, so you rarely need "New Group…" first. The URL gets checked right there - a quick, cancelable probe - and the result is remembered, so a bad URL turns up immediately instead of only when you try to download, and later downloads of an already-checked dataset skip re-discovering its columns.
+- **Pick how a group looks.** Each group's edit form has a "Page style" choice: render it in the main dialog as a grid of checkboxes (pick several datasets at once) or as a single-pick drop-down list, whichever suits the group.
 - **Hide what you don't use.** The same tab lets you hide any built-in source (Overture, OpenStreetMap), or individual datasets within them, so they stop showing up in the main dialog.
 - **Source Cooperative** is itself just an ordinary custom group, seeded in on first run as a worked example pointing at a handful of datasets published there. Rename it, edit its datasets, or delete it entirely - it's yours to change.
 - **Import/Export** buttons on the same tab back up your configuration or share it with someone else running the plugin.
