@@ -549,7 +549,9 @@ class QgisPluginGeoParquet:
             if result == 1:
                 # By index into the table the combo was built from, rather
                 # than by picking the extension back out of the label text.
-                chosen = alternatives[format_combo.currentIndex()]
+                # max(0, ...): a cleared selection reports -1, which Python
+                # would quietly read as the LAST entry.
+                chosen = alternatives[max(0, format_combo.currentIndex())]
                 new_output_file = os.path.splitext(job.output_file)[0] + chosen.extension
 
                 output_file, _ = QFileDialog.getSaveFileName(

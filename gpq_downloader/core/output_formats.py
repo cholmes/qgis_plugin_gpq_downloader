@@ -28,13 +28,13 @@ FORMATS: Tuple[OutputFormat, ...] = (
 
 DEFAULT_FORMAT_NAME = "GeoParquet"
 
-# What the large-GeoJSON warning offers instead, in the order it offers them.
-# GeoJSON is what triggered the warning, and a DuckDB database is not an
-# interchange file, so neither appears. Named here rather than written out in
-# plugin.py so that the extension and dialog filter come from the table above
-# like everywhere else - the warning used to carry its own copy of all three,
-# which a new format or a renamed one would have left silently behind.
-LARGE_DATASET_ALTERNATIVES = ("FlatGeobuf", "GeoPackage", "GeoParquet")
+# What the large-GeoJSON warning never offers: GeoJSON is what triggered the
+# warning, and a DuckDB database is not an interchange file. Everything else
+# in FORMATS is an alternative, derived by exclusion so a format added to
+# the table reaches the warning dialog with no second list to update - the
+# warning used to carry its own copy of all three filter strings, which a
+# new format or a renamed one would have left silently behind.
+LARGE_DATASET_EXCLUDED = ("GeoJSON", "DuckDB Database")
 
 
 def format_names() -> Tuple[str, ...]:
@@ -77,12 +77,10 @@ def format_for_path(path: str) -> Optional[OutputFormat]:
 
 
 def large_dataset_alternatives() -> Tuple[OutputFormat, ...]:
-    """The formats the large-GeoJSON warning offers, in the order it shows them.
+    """The formats the large-GeoJSON warning offers, in table order.
 
-    Raises KeyError if a name in LARGE_DATASET_ALTERNATIVES is not in the
-    table. format_for() would quietly hand back GeoParquet instead, which
-    here would mean offering the user three entries where one is a duplicate
-    of another under the wrong label.
+    FORMATS minus LARGE_DATASET_EXCLUDED: derived, not listed, so it can
+    never name a format the table no longer has (the previous allowlist
+    raised KeyError from inside a Qt slot if the two drifted apart).
     """
-    by_name = {f.name: f for f in FORMATS}
-    return tuple(by_name[name] for name in LARGE_DATASET_ALTERNATIVES)
+    return tuple(f for f in FORMATS if f.name not in LARGE_DATASET_EXCLUDED)

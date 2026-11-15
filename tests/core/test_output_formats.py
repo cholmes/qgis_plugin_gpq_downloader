@@ -67,25 +67,30 @@ def test_an_extension_we_do_not_write_is_not_a_format(path):
 
 
 def test_the_size_warnings_alternatives_are_the_binary_formats():
-    """FlatGeobuf, GeoPackage, GeoParquet, in the order the dialog shows them.
+    """Every format but GeoJSON and DuckDB, in table order.
 
     Not GeoJSON, which is what triggered the warning, and not a DuckDB
-    database, which is not an interchange file.
+    database, which is not an interchange file. Derived from FORMATS by
+    exclusion, so a format added to the table shows up here on its own.
     """
     assert [f.name for f in of.large_dataset_alternatives()] == [
-        "FlatGeobuf", "GeoPackage", "GeoParquet",
+        "GeoParquet", "GeoPackage", "FlatGeobuf",
     ]
     assert [f.dialog_filter for f in of.large_dataset_alternatives()] == [
-        "FlatGeobuf (*.fgb)", "GeoPackage (*.gpkg)", "GeoParquet (*.parquet)",
+        "GeoParquet (*.parquet)", "GeoPackage (*.gpkg)", "FlatGeobuf (*.fgb)",
     ]
 
 
-def test_an_alternative_that_left_the_table_is_loud_about_it():
-    """KeyError, not format_for()'s GeoParquet fallback.
+def test_a_format_added_to_the_table_reaches_the_alternatives_unasked():
+    """The point of deriving by exclusion: no second list to forget."""
+    geoarrow = of.OutputFormat("GeoArrow", ".arrow", "GeoArrow (*.arrow)")
+    with mock.patch.object(of, "FORMATS", of.FORMATS + (geoarrow,)):
+        assert geoarrow in of.large_dataset_alternatives()
 
-    Falling back here would offer the user three entries of which two are
-    GeoParquet, one of them labelled as something else entirely.
-    """
-    with mock.patch.object(of, "LARGE_DATASET_ALTERNATIVES", ("Shapefile",)):
-        with pytest.raises(KeyError):
-            of.large_dataset_alternatives()
+
+def test_the_excluded_names_actually_name_table_rows():
+    """A rename of GeoJSON or DuckDB in FORMATS must break here, not ship a
+    warning dialog that offers GeoJSON as an alternative to itself."""
+    table_names = {f.name for f in of.FORMATS}
+    assert set(of.LARGE_DATASET_EXCLUDED) <= table_names
+    assert of.large_dataset_alternatives()

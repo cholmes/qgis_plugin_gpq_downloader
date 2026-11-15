@@ -67,12 +67,17 @@ def _extension(output_file: str) -> str:
     """The lowercased extension of output_file's own name, "" if it has none.
 
     Split off the basename, not the whole path: rfind(".") over the path
-    reads "/my.data/output" as an extension of ".data/output". Nothing
-    downstream is fooled by that today - an unrecognised extension and an
-    empty one both fall through to the same None below - so this is a trap
-    removed rather than a bug fixed.
+    reads "/my.data/output" as an extension of ".data/output". A basename
+    that IS an extension (".gpkg", a typed dotfile name) counts as that
+    extension: splitext calls it extensionless, but format_for_path
+    endswith-matches it, so the save dialog accepts the name - this keeps
+    the two parsers agreeing on what was just written.
     """
-    return os.path.splitext(output_file)[1].lower()
+    base = os.path.basename(output_file)
+    ext = os.path.splitext(base)[1]
+    if not ext and base.startswith("."):
+        ext = base
+    return ext.lower()
 
 
 def _parquet_options(

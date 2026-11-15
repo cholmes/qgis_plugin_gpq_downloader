@@ -73,9 +73,9 @@ def test_the_offered_formats_come_from_the_format_table(clean_settings, mock_ifa
 
 
 @pytest.mark.parametrize("index, extension, name", [
-    (0, ".fgb", "FlatGeobuf"),
+    (0, ".parquet", "GeoParquet"),
     (1, ".gpkg", "GeoPackage"),
-    (2, ".parquet", "GeoParquet"),
+    (2, ".fgb", "FlatGeobuf"),
 ])
 def test_the_chosen_format_sets_the_extension_and_the_filter(
     clean_settings, mock_iface, warned, index, extension, name
