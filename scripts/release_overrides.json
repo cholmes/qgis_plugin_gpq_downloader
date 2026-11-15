@@ -41,5 +41,47 @@
   },
   "206": {
     "section": "Fixed"
+  },
+  "208": {
+    "section": "Internal"
+  },
+  "209": {
+    "section": "Internal"
+  },
+  "211": {
+    "section": "Internal"
+  },
+  "212": {
+    "section": "Internal"
+  },
+  "213": {
+    "section": "Internal"
+  },
+  "229": {
+    "section": "Internal"
+  },
+  "214": {
+    "section": "Added",
+    "title": "Filter downloads by attributes with a SQL condition"
+  },
+  "231": {
+    "section": "Added",
+    "title": "Add column completion and inline checks to the attribute filter"
+  },
+  "232": {
+    "section": "Added",
+    "title": "Add a settings panel: default format, folder and how downloads get written"
+  },
+  "216": {
+    "title": "Run downloads one at a time through a download queue"
+  },
+  "234": {
+    "title": "Offer every suitable format in the large-GeoJSON warning"
+  },
+  "236": {
+    "section": "Documentation"
+  },
+  "237": {
+    "section": "Internal"
   }
 }
