@@ -354,8 +354,11 @@ def form_labels(page):
     A row without both a label and a field - a spanning widget, a nested
     layout - is skipped rather than raising, so whoever adds one gets this
     test's own assertion message instead of an AttributeError from in here.
+
+    The form lives on the General tab (the page itself holds only the
+    QTabWidget since the Data Sources tab arrived, #84).
     """
-    form = page.layout().itemAt(0).layout()
+    form = page.tabs.widget(0).layout().itemAt(0).layout()
     pairs = {}
     for row in range(form.rowCount()):
         item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
