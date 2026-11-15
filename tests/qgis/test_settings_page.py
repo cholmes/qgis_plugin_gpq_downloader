@@ -10,12 +10,13 @@ afterwards, via the clean_settings fixture shared with test_dialog_settings.py
 
 import pytest
 from qgis.core import QgsSettings
+from qgis.PyQt.QtWidgets import QMessageBox
 
 from gpq_downloader import logger
 from qgis.PyQt.QtWidgets import QFormLayout, QWidget
 
 from gpq_downloader.core import copy_options, output_formats
-from gpq_downloader.gui import settings_store
+from gpq_downloader.gui import settings_store, user_sources_store
 from gpq_downloader.gui.dialog import DataSourceDialog
 from gpq_downloader.gui.settings_page import PAGE_OBJECT_NAME, SettingsPage, SettingsPageFactory
 from gpq_downloader.core.plan import DownloadJob
@@ -256,14 +257,108 @@ def test_the_jobs_write_settings_reach_the_worker(clean_settings, qgs_app, mock_
     ) == ("GZIP", 7, 15000, False)
 
 
+def test_page_has_general_and_data_sources_tabs(clean_settings, qgs_app):
+    page = SettingsPage()
+    titles = [page.tabs.tabText(i) for i in range(page.tabs.count())]
+    assert titles == ["General", "Data Sources"]
+
+
+def test_apply_saves_sources_config(clean_settings, qgs_app):
+    page = SettingsPage()
+    assert page.sources_widget._add_source({"name": "My Source", "info_url": ""})
+    page.apply()
+    saved = user_sources_store.load_user_config()
+    assert [s["name"] for s in saved["custom_sources"]] == ["My Source"]
+
+
+def test_apply_announces_a_changed_sources_config_exactly_once(clean_settings, qgs_app):
+    """The callback is how an open downloader dialog learns to refresh (#84).
+    An Apply that only touched the General tab must not fire it: the refresh
+    closes and reopens the dialog, which would disturb a user who never went
+    near the Data Sources tab."""
+    calls = []
+    page = SettingsPage(on_sources_saved=lambda: calls.append("saved"))
+
+    page.apply()  # nothing changed yet
+    assert calls == []
+
+    assert page.sources_widget._add_source({"name": "My Source", "info_url": ""})
+    page.apply()
+    assert calls == ["saved"]
+
+    page.apply()  # unchanged since the save above
+    assert calls == ["saved"]
+
+
+def test_apply_does_not_announce_sources_that_failed_to_save(
+    clean_settings, qgs_app, monkeypatch, tmp_path
+):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    unwritable = str(blocker / "user_sources.json")
+    monkeypatch.setattr(user_sources_store, "user_config_path", lambda: unwritable)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+
+    calls = []
+    page = SettingsPage(on_sources_saved=lambda: calls.append("saved"))
+    assert page.sources_widget._add_source({"name": "My Source", "info_url": ""})
+    page.apply()
+    assert calls == []
+
+
+def test_factory_hands_the_callback_to_the_page(clean_settings, qgs_app):
+    def callback():
+        pass  # pragma: no cover
+
+    factory = SettingsPageFactory(on_sources_saved=callback)
+    page = factory.createWidget(None)
+    assert page._on_sources_saved is callback
+
+
+def test_apply_still_saves_general_settings(clean_settings, qgs_app):
+    page = SettingsPage()
+    page.codec_combo.setCurrentText("GZIP")
+    page.apply()
+    assert settings_store.load_download_settings()["compression_codec"] == "GZIP"
+
+
+def test_apply_warns_instead_of_crashing_when_sources_cant_be_saved(
+    clean_settings, qgs_app, monkeypatch, tmp_path
+):
+    """Mirrors the warn-don't-crash pattern sources_page._export_to already
+    follows (#a5b357c): a write failure must not raise out of apply(), which
+    QGIS's Options OK handler calls directly, and the rest of apply() (the
+    General tab's settings) must still happen."""
+    # A path whose directory can never be created: "blocker" already exists
+    # as a plain file, so os.makedirs() on it raises FileExistsError - an
+    # OSError - rather than ever writing anything.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    unwritable = str(blocker / "user_sources.json")
+    monkeypatch.setattr(user_sources_store, "user_config_path", lambda: unwritable)
+
+    page = SettingsPage()
+    page.codec_combo.setCurrentText("GZIP")
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a))
+
+    page.apply()  # must not raise
+
+    assert len(warnings) == 1
+    assert settings_store.load_download_settings()["compression_codec"] == "GZIP"
+
 def form_labels(page):
     """Every "label: field" pair in the page's top form, by label text.
 
     A row without both a label and a field - a spanning widget, a nested
     layout - is skipped rather than raising, so whoever adds one gets this
     test's own assertion message instead of an AttributeError from in here.
+
+    The form lives on the General tab (the page itself holds only the
+    QTabWidget since the Data Sources tab arrived, #84).
     """
-    form = page.layout().itemAt(0).layout()
+    form = page.tabs.widget(0).layout().itemAt(0).layout()
     pairs = {}
     for row in range(form.rowCount()):
         item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)

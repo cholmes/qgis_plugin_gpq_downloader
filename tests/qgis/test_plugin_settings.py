@@ -29,7 +29,6 @@ def accepted(qgs_app):
         dialog_instance = MagicMock()
         dialog_instance.get_urls.return_value = ["https://example.com/test.parquet"]
         dialog_instance.overture_radio.isChecked.return_value = False
-        dialog_instance.sourcecoop_radio.isChecked.return_value = False
         dialog_instance.osm_radio.isChecked.return_value = False
         dialog_instance.get_current_extent.return_value = None
         dialog_instance.aoi_geometry = None

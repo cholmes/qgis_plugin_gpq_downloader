@@ -142,7 +142,7 @@ def dialog_for(*urls):
     dialog.get_urls.return_value = list(urls)
     dialog.get_current_extent.return_value = None
     dialog.aoi_geometry = None
-    for radio in ("overture_radio", "sourcecoop_radio", "osm_radio"):
+    for radio in ("overture_radio", "osm_radio"):
         getattr(dialog, radio).isChecked.return_value = False
     return dialog
 
