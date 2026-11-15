@@ -14,6 +14,7 @@ bought 0.04 MB at a cost of 1.6 extra seconds, which is not a trade worth
 making the default.
 """
 
+import os.path
 from typing import Optional
 
 CODECS = ("ZSTD", "SNAPPY", "GZIP", "BROTLI", "LZ4", "UNCOMPRESSED")
@@ -63,10 +64,20 @@ def format_options(
 
 
 def _extension(output_file: str) -> str:
-    dot = output_file.rfind(".")
-    if dot == -1:
-        return ""
-    return output_file[dot:].lower()
+    """The lowercased extension of output_file's own name, "" if it has none.
+
+    Split off the basename, not the whole path: rfind(".") over the path
+    reads "/my.data/output" as an extension of ".data/output". A basename
+    that IS an extension (".gpkg", a typed dotfile name) counts as that
+    extension: splitext calls it extensionless, but format_for_path
+    endswith-matches it, so the save dialog accepts the name - this keeps
+    the two parsers agreeing on what was just written.
+    """
+    base = os.path.basename(output_file)
+    ext = os.path.splitext(base)[1]
+    if not ext and base.startswith("."):
+        ext = base
+    return ext.lower()
 
 
 def _parquet_options(

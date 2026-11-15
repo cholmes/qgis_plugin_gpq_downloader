@@ -1,3 +1,5 @@
+from unittest import mock
+
 import pytest
 from gpq_downloader.core import copy_options, output_formats as of
 
@@ -62,3 +64,33 @@ def test_an_extension_we_do_not_write_is_not_a_format(path):
     used, and preselecting it on the next download.
     """
     assert of.format_for_path(path) is None
+
+
+def test_the_size_warnings_alternatives_are_the_binary_formats():
+    """Every format but GeoJSON and DuckDB, in table order.
+
+    Not GeoJSON, which is what triggered the warning, and not a DuckDB
+    database, which is not an interchange file. Derived from FORMATS by
+    exclusion, so a format added to the table shows up here on its own.
+    """
+    assert [f.name for f in of.large_dataset_alternatives()] == [
+        "GeoParquet", "GeoPackage", "FlatGeobuf",
+    ]
+    assert [f.dialog_filter for f in of.large_dataset_alternatives()] == [
+        "GeoParquet (*.parquet)", "GeoPackage (*.gpkg)", "FlatGeobuf (*.fgb)",
+    ]
+
+
+def test_a_format_added_to_the_table_reaches_the_alternatives_unasked():
+    """The point of deriving by exclusion: no second list to forget."""
+    geoarrow = of.OutputFormat("GeoArrow", ".arrow", "GeoArrow (*.arrow)")
+    with mock.patch.object(of, "FORMATS", of.FORMATS + (geoarrow,)):
+        assert geoarrow in of.large_dataset_alternatives()
+
+
+def test_the_excluded_names_actually_name_table_rows():
+    """A rename of GeoJSON or DuckDB in FORMATS must break here, not ship a
+    warning dialog that offers GeoJSON as an alternative to itself."""
+    table_names = {f.name for f in of.FORMATS}
+    assert set(of.LARGE_DATASET_EXCLUDED) <= table_names
+    assert of.large_dataset_alternatives()

@@ -28,6 +28,14 @@ FORMATS: Tuple[OutputFormat, ...] = (
 
 DEFAULT_FORMAT_NAME = "GeoParquet"
 
+# What the large-GeoJSON warning never offers: GeoJSON is what triggered the
+# warning, and a DuckDB database is not an interchange file. Everything else
+# in FORMATS is an alternative, derived by exclusion so a format added to
+# the table reaches the warning dialog with no second list to update - the
+# warning used to carry its own copy of all three filter strings, which a
+# new format or a renamed one would have left silently behind.
+LARGE_DATASET_EXCLUDED = ("GeoJSON", "DuckDB Database")
+
 
 def format_names() -> Tuple[str, ...]:
     """The format names in table order, for a settings panel's dropdown."""
@@ -66,3 +74,13 @@ def format_for_path(path: str) -> Optional[OutputFormat]:
         if lowered.endswith(f.extension):
             return f
     return None
+
+
+def large_dataset_alternatives() -> Tuple[OutputFormat, ...]:
+    """The formats the large-GeoJSON warning offers, in table order.
+
+    FORMATS minus LARGE_DATASET_EXCLUDED: derived, not listed, so it can
+    never name a format the table no longer has (the previous allowlist
+    raised KeyError from inside a Qt slot if the two drifted apart).
+    """
+    return tuple(f for f in FORMATS if f.name not in LARGE_DATASET_EXCLUDED)
