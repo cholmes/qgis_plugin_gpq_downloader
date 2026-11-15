@@ -1,6 +1,6 @@
 # GeoParquet Downloader for QGIS
 
-This repo contains a QGIS plugin for downloading GeoParquet data from cloud sources, including Overture Maps, Source Cooperative, and the ability to enter the location of any online GeoParquet file or partition. Just the user's current viewport then gets downloaded, as GeoParquet, DuckDB or GeoPackage.
+This repo contains a QGIS plugin for downloading GeoParquet data from cloud sources, including Overture Maps, Source Cooperative and OpenStreetMap, plus any online GeoParquet file or partition you point it at - including your own saved source groups. Just the user's current viewport (or drawn area) then gets downloaded, as GeoParquet, GeoPackage, FlatGeobuf, DuckDB or GeoJSON.
 
 ![gpq-downloader-demo4](https://github.com/user-attachments/assets/10f2a73f-2aa6-45a1-9491-41e63b7fec24)
 
@@ -14,14 +14,13 @@ The easiest way to install the plugin file is to use the QGIS plugin manager. Ju
 the 'install' tab and search for 'GeoParquet Downloader'. Click on 'Install Plugin' and it will install. Alternatively you can download the zip file from
 one of the [releases](https://github.com/cholmes/qgis_plugin_gpq_downloader/releases) and 'install from zip' in QGIS.
 
-The plugin needs the DuckDB Python package (1.1.0 or newer). Most more recent QGIS distributions should ship with it. If your qgis distro
-does _not_ ship with it then QGIS _should_ shows a message with an **Install DuckDB** button, which installs it with pip into QGIS's Python. 
-This auto-install has been tricky to get right and difficult to test properly, so if it doesn't work for you please raise an issue and we'll
-try again. 
-
-One thing to try, if that install doesn't work (for example on Linux, where the system Python may refuse pip installs), you can use the [QDuckDB plugin](https://oslandia.gitlab.io/qgis/qduckdb/) which includes a precompiled DuckDB binary. 
-They also document how to install DuckDB on [Linux](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#linux) and 
-[Mac OS/X](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#macos).
+The plugin needs the DuckDB Python package (1.1.0 or newer). The latest QGIS releases ship with DuckDB included, so if you're on a
+current QGIS (the 4.x series) you're all set - and upgrading QGIS is the easiest fix if you're not. On an older QGIS that doesn't
+ship it, the plugin shows a message with an **Install DuckDB** button, which installs it with pip into QGIS's Python. That
+auto-install has been tricky to get right, so if it doesn't work for you (for example on Linux, where the system Python may refuse
+pip installs) the [QDuckDB plugin](https://oslandia.gitlab.io/qgis/qduckdb/) includes a precompiled DuckDB binary, and its docs
+cover installing DuckDB on [Linux](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#linux) and
+[Mac OS/X](https://oslandia.gitlab.io/qgis/qduckdb/usage/installation.html#macos). And please raise an issue so we can try again.
 
 See [metadata.txt](gpq_downloader/metadata.txt) for more installation notes.
 
@@ -31,7 +30,7 @@ The plugin will install 1 button on the "Plugin" QGIS toolbar, that you might ha
 
 ![1_UuUno32b4P_UNUqJZvSPoQ](https://github.com/user-attachments/assets/16003294-9a76-42cb-a740-b5bbd308e484)
 
-It opens a dialog box, that lets you select Overture and Source Cooperative, OpenStreetMap or 'custom' - where you 
+It opens a dialog box, that lets you select Overture Maps, Source Cooperative, OpenStreetMap, any source group you've saved yourself (see [Custom data sources](#custom-data-sources)) or 'custom' - where you 
 can enter the location of any GeoParquet or partition file online.
 
 <img width="564" height="236" alt="Screenshot 2025-11-11 at 9 36 33 PM" src="https://github.com/user-attachments/assets/895f5ac4-58e9-42ba-b998-fedd5b21f15d" />
@@ -58,6 +57,17 @@ If you regularly download from your own GeoParquet source, you don't have to ret
 - **Restore Defaults** button puts everything back the way it started (no custom groups, no hidden sources, Source Cooperative back as the example) if you ever mess it up. Deleting `user_sources.json` (see below) does the same thing on the next start.
 
 This configuration lives in `user_sources.json`, inside this QGIS profile's `gpq_downloader` folder. It's plain JSON, so you can hand-edit it directly if you prefer. If you do, note that `hidden_datasets` is keyed by each source's internal preset key, not the label shown in the dialog - use Export to see the real keys before editing them.
+
+### Settings
+
+The plugin has a settings page under `Settings > Options`, on the "GeoParquet Downloader" tab. The General tab holds:
+
+- **Default output format** - which format the save dialog starts on (GeoParquet, GeoPackage, FlatGeobuf, DuckDB or GeoJSON). Tick **Remember last format used** to have it follow whatever you actually saved last instead.
+- **Default output folder** - where the save dialog opens, with its own **Remember last folder used** tick (on by default).
+- **Logging level** - how chatty the plugin is in the QGIS message log.
+- **Advanced** (applies to GeoParquet output): compression codec and level, row group size, and spatial sort, for tuning the files the plugin writes.
+
+The Data Sources tab on the same page is where custom sources and built-in visibility live - see [Custom data sources](#custom-data-sources) above.
 
 
 ## Contributing

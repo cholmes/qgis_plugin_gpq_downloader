@@ -5,26 +5,14 @@ qgisMaximumVersion=4.99.0
 version=0.9.3
 supportsQt6=yes
 icon=icons/parquet-download.png
-description=Plugin for downloading GeoParquet data from cloud sources.
-about=This plugin connects to cloud-based GeoParquet data and downloads the portion in the current viewport.
-    
-    The plugin comes with pre-configured sources for <a href="https://overturemaps.org/">Overture 
-    Maps</a>, <a href="https://source.coop/">Source Cooperative</a>, and you can enter the location 
-    of any online GeoParquet file or partition. It works best with 
-    the bbox struct from GeoParquet 1.1, but any GeoParquet file 
-    will work. You can save the output data as GeoParquet, 
-    GeoPackage, DuckDB, FlatGeobuf, or GeoJSON.
+description=Download cloud-hosted GeoParquet - Overture Maps, Source Cooperative, OpenStreetMap, your own saved sources or any URL - for just your current view.
+about=This plugin connects to cloud-hosted GeoParquet data and downloads just the portion in your current viewport, or in an area you draw or select.
 
-    The plugin does not require that your QGIS supports 
-    GeoParquet, as you can download data as GeoPackage, but 
-    GeoParquet generally works better (faster and better nested 
-    data). Most Windows installations come with it, and for Mac 
-    and Linux you can install via conda. For information on 
-    installing Geoparquet support see <a href="https://github.com/cholmes/qgis_plugin_gpq_downloader/wiki/Installing-GeoParquet-Support-in-QGIS">this wiki page</a>.
+    It comes with pre-configured sources for Overture Maps, Source Cooperative and OpenStreetMap, and you can point it at any online GeoParquet file or partition. You can also save your own sources: add the URLs you use regularly as named groups, and they show up in the download dialog right alongside the built-in ones, with checkbox or drop-down pages, your choice. SQL attribute filters let you download just the features you need.
 
-    The plugin depends on DuckDB, which should be installed
-    automatically when you install the plugin. If you have issues
-    with DuckDB installing please file an issue on the <a href="https://github.com/cholmes/qgis_plugin_gpq_downloader/issues">GitHub issue tracker</a>.
+    Data can be saved as GeoParquet, GeoPackage, FlatGeobuf, DuckDB or GeoJSON. It works best with files that have the bbox struct from GeoParquet 1.1, but any GeoParquet file will work. Your QGIS does not need GeoParquet support, since you can download as GeoPackage, but GeoParquet generally works better (faster, with better nested data handling) - the latest QGIS releases support it out of the box.
+
+    The plugin runs on DuckDB, which the latest QGIS releases ship with. If you are on an older QGIS the plugin will offer to install DuckDB for you, but the smoothest path is a current QGIS. Settings, custom sources and more are documented on the plugin homepage; problems and ideas are welcome on the issue tracker at https://github.com/cholmes/qgis_plugin_gpq_downloader/issues
 
 tags=geoparquet,parquet,overture,source cooperative,cloud,duckdb,geopackage
 
