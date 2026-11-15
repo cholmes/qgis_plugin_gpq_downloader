@@ -11,12 +11,23 @@ import os
 
 from qgis.gui import QgsCollapsibleGroupBox, QgsFileWidget, QgsOptionsPageWidget, QgsOptionsWidgetFactory
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QCheckBox, QComboBox, QFormLayout, QSpinBox, QVBoxLayout
+from qgis.PyQt.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QMessageBox,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .. import logger
 from ..core import copy_options, output_formats
+from ..core.presets import load_presets
 
-from . import settings_store
+from . import settings_store, user_sources_store
+from .sources_page import SourcesManagerWidget
 
 # The page widget's objectName, and what iface.showOptionsDialog() is given
 # to open directly on this page.
@@ -26,9 +37,13 @@ PAGE_OBJECT_NAME = "gpqDownloaderOptions"
 class SettingsPage(QgsOptionsPageWidget):
     """The options page: every settings-panel key in one form."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, on_sources_saved=None):
         super().__init__(parent)
         self.setObjectName(PAGE_OBJECT_NAME)
+        # Called after apply() writes a *changed* sources config, so the
+        # plugin can refresh a downloader dialog that is already open - the
+        # dialog reads user_sources.json once, at construction (#84).
+        self._on_sources_saved = on_sources_saved
 
         self.format_combo = QComboBox(self)
         self.format_combo.addItems(output_formats.format_names())
@@ -76,10 +91,23 @@ class SettingsPage(QgsOptionsPageWidget):
         advanced_layout.addRow("Spatial sort", self.sort_checkbox)
         advanced_box.setLayout(advanced_layout)
 
+        general_layout = QVBoxLayout()
+        general_layout.addLayout(top_layout)
+        general_layout.addWidget(advanced_box)
+        general_layout.addStretch()
+        general_page = QWidget(self)
+        general_page.setLayout(general_layout)
+
+        self.sources_widget = SourcesManagerWidget(
+            user_sources_store.load_user_config(), load_presets(), self
+        )
+
+        self.tabs = QTabWidget(self)
+        self.tabs.addTab(general_page, "General")
+        self.tabs.addTab(self.sources_widget, "Data Sources")
+
         page_layout = QVBoxLayout()
-        page_layout.addLayout(top_layout)
-        page_layout.addWidget(advanced_box)
-        page_layout.addStretch()
+        page_layout.addWidget(self.tabs)
         self.setLayout(page_layout)
 
         self.codec_combo.currentTextChanged.connect(self._update_level_enabled)
@@ -215,13 +243,29 @@ class SettingsPage(QgsOptionsPageWidget):
         settings_store.save_value(settings_store.SPATIAL_SORT, self.sort_checkbox.isChecked())
         # Takes effect on the next download without reopening anything (#93).
         logger.set_level(self.log_combo.currentText())
+        new_config = self.sources_widget.config()
+        # Compare before writing: an Apply that only touched the General tab
+        # must not reopen (and so disturb) a downloader dialog that is open.
+        sources_changed = new_config != user_sources_store.load_user_config()
+        try:
+            user_sources_store.save_user_config(new_config)
+        except OSError as exc:
+            path = user_sources_store.user_config_path()
+            QMessageBox.warning(
+                self, "Could not save data sources",
+                f"Could not write {path}:\n{exc}",
+            )
+        else:
+            if sources_changed and self._on_sources_saved is not None:
+                self._on_sources_saved()
 
 
 class SettingsPageFactory(QgsOptionsWidgetFactory):
     """Registered with iface.registerOptionsWidgetFactory() in plugin.py."""
 
-    def __init__(self):
+    def __init__(self, on_sources_saved=None):
         super().__init__()
+        self._on_sources_saved = on_sources_saved
         self.setTitle("GeoParquet Downloader")
         self.setKey(PAGE_OBJECT_NAME)
         # Without this the row in the Options tree shows a blank space where
@@ -235,4 +279,4 @@ class SettingsPageFactory(QgsOptionsWidgetFactory):
             self.setIcon(icon)
 
     def createWidget(self, parent):
-        return SettingsPage(parent)
+        return SettingsPage(parent, on_sources_saved=self._on_sources_saved)

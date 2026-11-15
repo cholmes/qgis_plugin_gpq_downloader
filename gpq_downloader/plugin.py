@@ -26,7 +26,7 @@ from .logger import message_level, set_level
 from .qgis_io.manager import DownloadManager
 from .qgis_io.worker import Worker
 from .core import output_formats
-from .core.plan import DownloadJob, custom_file_stem, overture_file_stem, overture_layer_name
+from .core.plan import DownloadJob, custom_file_stem, dataset_file_stem, overture_file_stem, overture_layer_name
 
 
 class QgisPluginGeoParquet:
@@ -34,6 +34,7 @@ class QgisPluginGeoParquet:
         self.iface = iface
         self.action = None
         self.settings_factory = None
+        self.dialog = None  # the open downloader dialog, for refreshes (#84)
         self.output_file = None
         self.clip_to_area = False  # from the dialog's "Clip features to the area" box
         self.where_fragment = None  # from the dialog's attribute filter; None is no filter
@@ -67,7 +68,9 @@ class QgisPluginGeoParquet:
         # Add the actions to the toolbar
         self.iface.addToolBarIcon(self.action)
 
-        self.settings_factory = SettingsPageFactory()
+        self.settings_factory = SettingsPageFactory(
+            on_sources_saved=self.refresh_dialog_sources
+        )
         self.iface.registerOptionsWidgetFactory(self.settings_factory)
 
         # Apply the stored logging level before anything else logs, so
@@ -212,20 +215,30 @@ class QgisPluginGeoParquet:
         # A download already running is no reason to refuse: what this dialog
         # asks for is queued behind it
         dialog = DataSourceDialog(self.iface.mainWindow(), self.iface)
-
-        # Restore last radio selection
-        selected_name = settings_store.load_radio_selection()
-        for button in [dialog.overture_radio, dialog.sourcecoop_radio, dialog.osm_radio, dialog.custom_radio]:
-            if button.text() == selected_name:
-                button.setChecked(True)
-        if not selected_name:
-            dialog.overture_radio.setChecked(True)
+        self.dialog = dialog
 
         # Handle OK
         dialog.accepted.connect(lambda: self.handle_dialog_accepted(dialog))
 
         # Show non-modally
         dialog.show()
+
+    def refresh_dialog_sources(self):
+        """Reopen the downloader dialog so it shows the just-saved sources.
+
+        The dialog reads user_sources.json once, at construction, so applying
+        the Options page's Data Sources tab while it is open would otherwise
+        look like the edit did nothing (#84). A closed (or never-opened)
+        dialog needs no refresh: the next run() reads the new config anyway.
+        """
+        dialog = self.dialog
+        if dialog is None or not dialog.isVisible():
+            return
+        geometry = dialog.geometry()
+        dialog.close()
+        self.run()
+        if self.dialog is not None:
+            self.dialog.setGeometry(geometry)
 
     def starting_dir(self) -> Path:
         """The folder the next save dialog opens in.
@@ -368,16 +381,21 @@ class QgisPluginGeoParquet:
             # Generate filename based on the URL and source type
             if dialog.overture_radio.isChecked():
                 filename = f"{overture_file_stem(url)}_{current_date}{extension}"
-            elif dialog.sourcecoop_radio.isChecked():
-                dataset_name = dialog.sourcecoop_combo.currentText()
-                clean_name = dataset_name.lower().replace(' ', '_').replace('/', '_').replace('(', '').replace(')', '')
-                filename = f"sourcecoop_{clean_name}_{current_date}{extension}"
             elif dialog.osm_radio.isChecked():
                 # Extract layer name from URL
                 layer_name = url.split('/')[-1].replace('.parquet', '')
                 filename = f"osm_{layer_name}_{current_date}{extension}"
             else:
-                filename = f"{custom_file_stem(url)}_{current_date}{extension}"
+                # A custom-source dataset the user added/edited in the Data
+                # Sources manager is named after itself rather than its URL
+                # (#84 follow-up); a typed-in Custom URL (or a mocked dialog
+                # in a test, whose attribute is a MagicMock rather than a
+                # real tuple or None) keeps the URL-derived name.
+                label = dialog.custom_dataset_label_for(url)
+                if isinstance(label, tuple) and len(label) == 2:
+                    filename = f"{dataset_file_stem(*label)}_{current_date}{extension}"
+                else:
+                    filename = f"{custom_file_stem(url)}_{current_date}{extension}"
 
             default_save_path = str(self.starting_dir() / filename)
 
@@ -413,8 +431,18 @@ class QgisPluginGeoParquet:
         where_fragment = get_where_fragment() if callable(get_where_fragment) else None
         self.where_fragment = where_fragment if isinstance(where_fragment, str) and where_fragment else None
 
+        # Stored probe results (Task B / #84 follow-up) for whichever custom-
+        # source dataset each URL is, read once per URL here - same discipline
+        # as clip_to_area/where_fragment above - rather than reaching back
+        # into `dialog` once downloads are actually running. A Custom URL
+        # typed in by hand matches no stored dataset, so it is untouched and
+        # the Worker discovers its columns itself, exactly as before.
+        validation_hints = {
+            url: dialog.validation_hints_for(url) for url, _ in download_queue
+        }
+
         # Now process downloads one at a time
-        self.process_download_queue(download_queue, extent, aoi_geometry)
+        self.process_download_queue(download_queue, extent, aoi_geometry, validation_hints)
 
     def handle_error(self, message):
         # The download that failed has ended; the progress dialog stays only
@@ -606,12 +634,13 @@ class QgisPluginGeoParquet:
             finally:
                 self._closing_progress = False
 
-    def process_download_queue(self, download_queue, extent, aoi_geometry=None):
+    def process_download_queue(self, download_queue, extent, aoi_geometry=None, validation_hints=None):
         """Queue the (url, output_file) pairs of one OK as jobs; the first starts if nothing runs."""
         # Read once for the whole batch: a setting changed while jobs are
         # queued must apply to the next batch, not write five files three
         # different ways.
         write_settings = settings_store.load_download_settings()
+        validation_hints = validation_hints or {}
         jobs = [
             DownloadJob(
                 url=url,
@@ -622,9 +651,10 @@ class QgisPluginGeoParquet:
                 aoi_geometry=aoi_geometry,
                 clip_to_area=self.clip_to_area,
                 where_fragment=self.where_fragment,
-                # No hints: the Worker reads the file's own GeoParquet metadata
-                # and schema to find the geometry and bbox columns
-                validation_results={},
+                # A stored probe result (Task B / #84 follow-up) for this
+                # URL, or {}: either way, the Worker still reads the file's
+                # own GeoParquet metadata and schema, so this is only a hint.
+                validation_results=validation_hints.get(url) or {},
                 **write_settings,
             )
             for url, output_file in download_queue

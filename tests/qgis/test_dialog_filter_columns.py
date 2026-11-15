@@ -165,12 +165,6 @@ def test_a_custom_url_is_one_dataset_and_an_empty_one_is_none(dialog):
     assert dialog.filter_is_available()
 
 
-def test_source_cooperative_is_always_one_dataset(dialog):
-    dialog.sourcecoop_radio.setChecked(True)
-    assert len(dialog.selected_datasets()) == 1
-    assert dialog.filter_is_available()
-
-
 def test_overture_subtypes_each_count_as_a_dataset(dialog):
     dialog.overture_radio.setChecked(True)
     dialog.base_checkbox.setChecked(True)
