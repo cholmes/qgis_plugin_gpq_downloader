@@ -8,6 +8,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases before 0.9.0 are described on the
 [GitHub releases page](https://github.com/cholmes/qgis_plugin_gpq_downloader/releases).
 
+## v0.10.0 (2026-11-15)
+
+This release lets you make the plugin yours. A new Data Sources tab (`Settings > Options`, GeoParquet Downloader page) saves your own GeoParquet URLs as named groups that appear in the download dialog alongside Overture Maps and OpenStreetMap - rendered as a checkbox grid or a single-pick drop-down list, your choice. Each URL is checked the moment you add it, you can hide any built-in source or dataset you never use, and Source Cooperative is now itself an editable example group. Import/Export shares a configuration with others; Restore Defaults undoes any experiment.
+
+The same options page gains a General tab for your defaults: output format and folder, each with a "remember last used" toggle, plus advanced GeoParquet write options (compression, row group size, spatial sort). And you can now download just the features you need: type a SQL condition such as `confidence > 0.9 AND class = 'school'` into the new attribute filter, with column-name completion and inline checking as you type.
+
+Downloads now run one at a time through a queue, so starting a second download while one is running no longer tangles the two. On the Overture page, Building Parts folded into Buildings as a modifier, and the divisions layers start checked.
+
+### Added
+
+- Filter downloads by attributes with a SQL condition by [@cholmes](https://github.com/cholmes) in [#214](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/214)
+- Add an Overture building_part preset by [@cholmes](https://github.com/cholmes) in [#215](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/215)
+- Add column completion and inline checks to the attribute filter by [@cholmes](https://github.com/cholmes) in [#231](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/231)
+- Add a settings panel: default format, folder and how downloads get written by [@cholmes](https://github.com/cholmes) in [#232](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/232)
+- Add user-defined data sources with full preset customization ([#84](https://github.com/cholmes/qgis_plugin_gpq_downloader/issues/84)) by [@cholmes](https://github.com/cholmes) in [#233](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/233)
+
+### Changed
+
+- Run downloads one at a time through a download queue by [@cholmes](https://github.com/cholmes) in [#216](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/216)
+- Fold Building Parts into Buildings as a modifier, default it and the divisions layers on by [@cholmes](https://github.com/cholmes) in [#230](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/230)
+- Offer every suitable format in the large-GeoJSON warning by [@cholmes](https://github.com/cholmes) in [#234](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/234)
+
+### Documentation
+
+- Refresh README and plugin-page text for 0.10.0 by [@cholmes](https://github.com/cholmes) in [#236](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/236)
+
+_7 internal changes are not listed here; the full changelog has them._
+
+**Full Changelog**: https://github.com/cholmes/qgis_plugin_gpq_downloader/compare/v0.9.3...v0.10.0
+
 ## v0.9.3 (2026-10-21)
 
 Every version of the plugin uploaded to plugins.qgis.org now gets an automated
