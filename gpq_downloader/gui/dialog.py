@@ -2017,9 +2017,12 @@ class DataSourceDialog(AreaOfInterestMixin, QDialog):
                 if checkbox.isChecked():
                     dataset = self.PRESET_DATASETS["openstreetmap"][layer]
                     urls.append(dataset["url"])
-        elif (source_name := self._checked_custom_source()) is not None:
+        elif self._checked_custom_source() is not None:
             # A custom dataset's url is already complete (Design): no
-            # release, no template, carried through untouched.
+            # release, no template, carried through untouched. No walrus
+            # above: ruff enforces the py37 floor (requires-python) and the
+            # := operator is 3.8+.
+            source_name = self._checked_custom_source()
             if source_name in self.custom_dropdowns:
                 # A drop-down group contributes exactly the one dataset
                 # showing in its combo - nothing at all if the combo is
