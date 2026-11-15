@@ -285,6 +285,27 @@ class QgisPluginGeoParquet:
                 )
         return self.download_dir
 
+    def starting_format(self):
+        """The OutputFormat the next save dialog preselects.
+
+        The format last written wins when "remember last format used" is on
+        and one is stored, then the configured default - the same order
+        starting_dir() uses for folders, and the same reason for reading it
+        per dialog rather than once at plugin load. Off by default, so a
+        plugin nobody has configured still preselects GeoParquet however many
+        GeoPackages it has written.
+        """
+        names = output_formats.format_names()
+        if settings_store.load_flag(settings_store.REMEMBER_LAST_FORMAT, False):
+            last = settings_store.load_text(settings_store.LAST_OUTPUT_FORMAT)
+            if last in names:
+                return output_formats.format_for(last)
+        return output_formats.format_for(
+            settings_store.load_choice(
+                settings_store.OUTPUT_FORMAT, names, output_formats.DEFAULT_FORMAT_NAME,
+            )
+        )
+
     def handle_dialog_accepted(self, dialog):
         """Handle the dialog being accepted"""
         # Get the selected URLs from the dialog. The dialog looked the release
@@ -321,17 +342,14 @@ class QgisPluginGeoParquet:
         # Read once for the whole batch, same discipline as the write
         # settings in process_download_queue: a format changed mid-batch
         # must not make one batch's files disagree with each other.
-        chosen_format = output_formats.format_for(
-            settings_store.load_choice(
-                settings_store.OUTPUT_FORMAT,
-                output_formats.format_names(),
-                output_formats.DEFAULT_FORMAT_NAME,
-            )
-        )
+        chosen_format = self.starting_format()
         extension = chosen_format.extension
 
         # First, collect all file locations from user
         download_queue = []
+        # Held back until every URL has a destination; see the write below.
+        remembered_folder = None
+        remembered_format = None
         for url in urls:
             # Get current date for filename
             current_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -374,10 +392,28 @@ class QgisPluginGeoParquet:
                 # guards the case only a test or a future caller could hit.
                 saved_folder = Path(output_file).parent
                 if saved_folder.is_absolute():
-                    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, str(saved_folder))
+                    remembered_folder = str(saved_folder)
+                # What was written, by the extension on disk rather than by
+                # the filter that was selected: a name typed as "x.gpkg"
+                # under the GeoParquet filter is a GeoPackage. An extension
+                # this plugin does not know is not remembered at all - there
+                # would be nothing to preselect next time.
+                written = output_formats.format_for_path(output_file)
+                if written is not None:
+                    remembered_format = written.name
                 download_queue.append((url, output_file))
             else:
                 return
+
+        # Written once the whole batch has a destination, not per URL.
+        # Cancelling the save dialog for the third of five URLs abandons the
+        # batch at the `return` above, and these keys would otherwise be left
+        # pointing at files nobody ever downloaded - moving the next dialog's
+        # starting folder and format on the strength of a cancelled download.
+        if remembered_folder is not None:
+            settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, remembered_folder)
+        if remembered_format is not None:
+            settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, remembered_format)
         
         # `is True` keeps a mocked dialog's truthy MagicMock from enabling clipping
         clip_checkbox = getattr(dialog, "clip_checkbox", None)

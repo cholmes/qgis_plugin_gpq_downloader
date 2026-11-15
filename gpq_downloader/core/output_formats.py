@@ -8,7 +8,7 @@ of three things that have to be kept in sync by eye.
 """
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -51,3 +51,18 @@ def format_for(name: str) -> OutputFormat:
         if f.name == name:
             return f
     return FORMATS[0]
+
+
+def format_for_path(path: str) -> Optional[OutputFormat]:
+    """The format whose extension ``path`` ends with, or None for an unknown one.
+
+    Matched case-insensitively, because the save dialog takes a typed
+    ``.GPKG`` and writes it. This is how the plugin learns which format it
+    just wrote: the extension on disk decides what the file actually is,
+    whichever filter happened to be selected when the name was typed.
+    """
+    lowered = str(path).lower()
+    for f in FORMATS:
+        if lowered.endswith(f.extension):
+            return f
+    return None

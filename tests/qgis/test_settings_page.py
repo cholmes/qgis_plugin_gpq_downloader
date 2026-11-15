@@ -13,6 +13,8 @@ from qgis.core import QgsSettings
 from qgis.PyQt.QtWidgets import QMessageBox
 
 from gpq_downloader import logger
+from qgis.PyQt.QtWidgets import QFormLayout, QWidget
+
 from gpq_downloader.core import copy_options, output_formats
 from gpq_downloader.gui import settings_store, user_sources_store
 from gpq_downloader.gui.dialog import DataSourceDialog
@@ -182,7 +184,7 @@ def test_the_gear_does_nothing_without_an_iface(clean_settings, qgs_app):
 
 
 def test_apply_persists_every_setting_it_shows(clean_settings, qgs_app):
-    """All eight, read back through settings_store after apply().
+    """All ten, read back through settings_store after apply().
 
     Deleting four of apply()'s eight writes broke nothing in the suite: the
     page's own state was asserted, but not that any of it survived the trip
@@ -191,9 +193,12 @@ def test_apply_persists_every_setting_it_shows(clean_settings, qgs_app):
     every later one.
     """
     page = SettingsPage()
+    # Unticked first: a ticked box greys its row out, and a greyed row shows
+    # the last value used rather than the default being set here.
+    page.remember_format_checkbox.setChecked(False)
+    page.remember_checkbox.setChecked(False)
     page.format_combo.setCurrentText("GeoPackage")
     page.folder_widget.setFilePath("/tmp/gpq-test-folder")
-    page.remember_checkbox.setChecked(False)
     page.log_combo.setCurrentText("Debug")
     page.codec_combo.setCurrentText("GZIP")
     page.level_spin.setValue(7)
@@ -208,6 +213,7 @@ def test_apply_persists_every_setting_it_shows(clean_settings, qgs_app):
     ) == "GeoPackage"
     assert settings_store.load_text(settings_store.OUTPUT_FOLDER) == "/tmp/gpq-test-folder"
     assert settings_store.load_flag(settings_store.REMEMBER_LAST_FOLDER, True) is False
+    assert settings_store.load_flag(settings_store.REMEMBER_LAST_FORMAT, False) is False
     assert settings_store.load_choice(
         settings_store.LOG_LEVEL, settings_store.LOG_LEVELS, settings_store.DEFAULT_LOG_LEVEL
     ) == "Debug"
@@ -341,3 +347,221 @@ def test_apply_warns_instead_of_crashing_when_sources_cant_be_saved(
 
     assert len(warnings) == 1
     assert settings_store.load_download_settings()["compression_codec"] == "GZIP"
+
+def form_labels(page):
+    """Every "label: field" pair in the page's top form, by label text.
+
+    A row without both a label and a field - a spanning widget, a nested
+    layout - is skipped rather than raising, so whoever adds one gets this
+    test's own assertion message instead of an AttributeError from in here.
+    """
+    form = page.layout().itemAt(0).layout()
+    pairs = {}
+    for row in range(form.rowCount()):
+        item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+        field = item.widget() if item is not None else None
+        label = form.labelForField(field) if field is not None else None
+        if label is not None:
+            pairs[label.text()] = field
+    return pairs
+
+
+def test_the_two_defaults_are_labelled_as_defaults(clean_settings, qgs_app):
+    """A tick can override either row, so neither is "the output format".
+
+    Named settings, not positions: the page can gain a row without this
+    test's expectations shifting by one.
+    """
+    page = SettingsPage()
+    labels = form_labels(page)
+    assert labels["Default output format"] is page.format_combo
+    assert labels["Remember last format used"] is page.remember_format_checkbox
+    assert labels["Default output folder"] is page.folder_widget
+    assert labels["Remember last folder used"] is page.remember_checkbox
+
+
+def test_the_defaults_leave_format_live_and_folder_remembered(clean_settings, qgs_app):
+    """Format remembering is opt-in; folder remembering is on (#1).
+
+    The asymmetry is deliberate: a remembered folder only moves where a file
+    lands, a remembered format changes what the file is.
+    """
+    page = SettingsPage()
+    assert page.remember_format_checkbox.isChecked() is False
+    assert page.format_combo.isEnabled() is True
+    assert page.remember_checkbox.isChecked() is True
+    assert page.folder_widget.isEnabled() is False
+
+
+def test_a_remembered_row_shows_what_the_next_download_will_use(clean_settings, qgs_app):
+    """Greyed out, and reporting ~/dude rather than the configured path.
+
+    The whole point of greying the row out: before this, the panel kept
+    displaying the configured folder while every download went somewhere
+    else, with nothing on screen admitting it.
+    """
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, "/data/overture")
+    settings_store.save_value(settings_store.OUTPUT_FORMAT, "GeoParquet")
+    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, "/home/me/dude")
+    settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, "GeoPackage")
+    settings_store.save_value(settings_store.REMEMBER_LAST_FORMAT, True)
+    settings_store.save_value(settings_store.REMEMBER_LAST_FOLDER, True)
+
+    page = SettingsPage()
+
+    assert page.folder_widget.filePath() == "/home/me/dude"
+    assert page.folder_widget.isEnabled() is False
+    assert page.format_combo.currentText() == "GeoPackage"
+    assert page.format_combo.isEnabled() is False
+
+
+def test_a_remembered_row_falls_back_to_the_default_until_something_is_used(
+    clean_settings, qgs_app
+):
+    """Nothing written yet, so the greyed row shows the default - truthfully,
+    because that is what the next download will use."""
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, "/data/overture")
+    settings_store.save_value(settings_store.OUTPUT_FORMAT, "FlatGeobuf")
+    settings_store.save_value(settings_store.REMEMBER_LAST_FORMAT, True)
+
+    page = SettingsPage()
+
+    assert page.folder_widget.filePath() == "/data/overture"
+    assert page.format_combo.currentText() == "FlatGeobuf"
+
+
+def test_ok_on_a_remembered_row_does_not_overwrite_the_default(clean_settings, qgs_app):
+    """The configured default outlives the value shown in its place.
+
+    The row displays the last value used, so an apply() that wrote its
+    widgets back would move the default to /home/me/dude the first time
+    anybody opened Options and clicked OK - silently, and with no way back
+    to the folder they had configured.
+    """
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, "/data/overture")
+    settings_store.save_value(settings_store.OUTPUT_FORMAT, "FlatGeobuf")
+    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, "/home/me/dude")
+    settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, "GeoPackage")
+    settings_store.save_value(settings_store.REMEMBER_LAST_FORMAT, True)
+    settings_store.save_value(settings_store.REMEMBER_LAST_FOLDER, True)
+
+    page = SettingsPage()
+    page.apply()
+
+    assert settings_store.load_text(settings_store.OUTPUT_FOLDER) == "/data/overture"
+    assert settings_store.load_choice(
+        settings_store.OUTPUT_FORMAT, output_formats.format_names(),
+        output_formats.DEFAULT_FORMAT_NAME,
+    ) == "FlatGeobuf"
+
+
+def test_unticking_remember_brings_the_configured_default_back(clean_settings, qgs_app):
+    """Untick and the row goes live again, showing the default it holds -
+    not the last-used value it was displaying a moment ago."""
+    settings_store.save_value(settings_store.OUTPUT_FOLDER, "/data/overture")
+    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, "/home/me/dude")
+    page = SettingsPage()
+    assert page.folder_widget.filePath() == "/home/me/dude"
+
+    page.remember_checkbox.setChecked(False)
+
+    assert page.folder_widget.isEnabled() is True
+    assert page.folder_widget.filePath() == "/data/overture"
+
+
+def test_a_default_set_just_before_ticking_remember_is_kept(clean_settings, qgs_app):
+    """Set a folder, then tick remember, then OK: the folder is still stored.
+
+    Ticking the box replaces what the row displays, so the value typed into
+    it a moment earlier has to be captured rather than read off the widget
+    at apply() time.
+    """
+    settings_store.save_value(settings_store.LAST_OUTPUT_FOLDER, "/home/me/dude")
+    page = SettingsPage()
+    page.remember_checkbox.setChecked(False)
+    page.folder_widget.setFilePath("/data/new")
+    page.remember_format_checkbox.setChecked(False)
+    page.format_combo.setCurrentText("GeoJSON")
+
+    page.remember_checkbox.setChecked(True)
+    page.remember_format_checkbox.setChecked(True)
+    page.apply()
+
+    assert settings_store.load_text(settings_store.OUTPUT_FOLDER) == "/data/new"
+    assert settings_store.load_choice(
+        settings_store.OUTPUT_FORMAT, output_formats.format_names(),
+        output_formats.DEFAULT_FORMAT_NAME,
+    ) == "GeoJSON"
+    # Read back as True, not as the False an absent key also gives: the only
+    # other assertion on this key expects False, so dropping apply()'s write
+    # of it broke nothing.
+    assert settings_store.load_flag(settings_store.REMEMBER_LAST_FORMAT, False) is True
+    assert settings_store.load_flag(settings_store.REMEMBER_LAST_FOLDER, False) is True
+
+
+def test_ticking_remember_format_greys_the_row_there_and_then(clean_settings, qgs_app):
+    """The checkbox's own signal does this, not only _load().
+
+    Every other format test reaches the handler through _load()'s explicit
+    call, so disconnecting the checkbox changed nothing in the suite - while
+    in QGIS the row would sit there live, showing a default that had just
+    stopped applying, until the Options dialog was closed and reopened.
+    """
+    settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, "GeoPackage")
+    page = SettingsPage()
+    assert page.format_combo.isEnabled() is True
+
+    page.remember_format_checkbox.setChecked(True)
+
+    assert page.format_combo.isEnabled() is False
+    assert page.format_combo.currentText() == "GeoPackage"
+
+
+def test_unticking_remember_brings_the_configured_format_back(clean_settings, qgs_app):
+    """The folder row's twin, which the format row did not have.
+
+    Without it, a handler that only ever set the combo while remembering
+    passed the whole suite - and unticking would leave the last format used
+    sitting in the box, where OK would then store it as the new default.
+    """
+    settings_store.save_value(settings_store.OUTPUT_FORMAT, "FlatGeobuf")
+    settings_store.save_value(settings_store.LAST_OUTPUT_FORMAT, "GeoPackage")
+    settings_store.save_value(settings_store.REMEMBER_LAST_FORMAT, True)
+    page = SettingsPage()
+    assert page.format_combo.currentText() == "GeoPackage"
+
+    page.remember_format_checkbox.setChecked(False)
+
+    assert page.format_combo.isEnabled() is True
+    assert page.format_combo.currentText() == "FlatGeobuf"
+    page.apply()
+    assert settings_store.load_choice(
+        settings_store.OUTPUT_FORMAT, output_formats.format_names(),
+        output_formats.DEFAULT_FORMAT_NAME,
+    ) == "FlatGeobuf"
+
+
+def test_a_disabled_parent_does_not_make_a_live_row_look_remembered(clean_settings, qgs_app):
+    """The page tracks which rows are live; it does not ask the widget.
+
+    isEnabled() reports the *effective* state, so any disabled ancestor
+    makes a live row indistinguishable from one a ticked Remember box has
+    greyed out - and apply() would then write the stale default it had
+    saved off instead of what the user just chose. Nothing in QGIS disables
+    an ancestor of this page today, which is precisely why it would be a
+    quiet change to live with.
+    """
+    parent = QWidget()
+    page = SettingsPage(parent)
+    page.remember_format_checkbox.setChecked(False)
+    page.format_combo.setCurrentText("GeoJSON")
+
+    parent.setEnabled(False)
+    assert page.format_combo.isEnabled() is False  # effective state flipped
+
+    page.apply()
+
+    assert settings_store.load_choice(
+        settings_store.OUTPUT_FORMAT, output_formats.format_names(),
+        output_formats.DEFAULT_FORMAT_NAME,
+    ) == "GeoJSON"
