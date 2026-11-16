@@ -25,6 +25,7 @@ types is DuckDB's call; the dialog asks it before accepting
 
 import difflib
 import re
+import string
 from typing import NamedTuple, Optional, Tuple
 
 from .schema import field_names, resolve_path, strip_subscripts, type_label
@@ -208,12 +209,12 @@ def apply_where_fragment(base_condition: str, fragment: "str | None") -> str:
 
 # Characters an unquoted DuckDB identifier is made of. A leading digit makes a
 # number, not a name, so the first character is checked against the letters.
-_IDENT_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-)
-_IDENT_START = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
-)
+# Built from string's constants rather than written out: the spelled-out
+# alphabet is the base64 character set, which plugins.qgis.org's
+# detect-secrets scan reads as a high-entropy secret (v0.10.0 was rejected
+# for exactly these two lines).
+_IDENT_CHARS = frozenset(string.ascii_letters + string.digits + "_")
+_IDENT_START = frozenset(string.ascii_letters + "_")
 
 # Words that can stand on their own in a condition without being a column:
 # operators, the type names a CAST may use, and INTERVAL's units. Generous on
