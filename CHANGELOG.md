@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Releases before 0.9.0 are described on the
 [GitHub releases page](https://github.com/cholmes/qgis_plugin_gpq_downloader/releases).
 
+## v0.10.1 (2026-11-16)
+
+If you install from the QGIS Plugin Manager, this is the release that actually brings you everything in [v0.10.0](https://github.com/cholmes/qgis_plugin_gpq_downloader/releases/tag/v0.10.0) - your own saved data sources, the settings panel and the SQL attribute filter. The v0.10.0 upload was rejected by plugins.qgis.org's security scan, which misread two spelled-out `a-zA-Z0-9_` identifier alphabets as potential secrets; this release writes them differently and changes nothing else.
+
+### Fixed
+
+- Fix the identifier alphabets tripping the plugins.qgis.org secrets scan by [@cholmes](https://github.com/cholmes) in [#239](https://github.com/cholmes/qgis_plugin_gpq_downloader/pull/239)
+
+**Full Changelog**: https://github.com/cholmes/qgis_plugin_gpq_downloader/compare/v0.10.0...v0.10.1
+
 ## v0.10.0 (2026-11-15)
 
 This release lets you make the plugin yours. A new Data Sources tab (`Settings > Options`, GeoParquet Downloader page) saves your own GeoParquet URLs as named groups that appear in the download dialog alongside Overture Maps and OpenStreetMap - rendered as a checkbox grid or a single-pick drop-down list, your choice. Each URL is checked the moment you add it, you can hide any built-in source or dataset you never use, and Source Cooperative is now itself an editable example group. Import/Export shares a configuration with others; Restore Defaults undoes any experiment.
